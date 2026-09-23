@@ -1,138 +1,554 @@
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-import { createClient } from "@supabase/supabase-js";
+// --------------------------------------------------
+// TEXT NORMALIZATION
+// --------------------------------------------------
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT || 8080);
-const HOST = "0.0.0.0";
+function normalizeText(value = "") {
+  return String(value)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-// SUPABASE
-function db() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function tokenize(value = "") {
+  return [
+    ...new Set(
+      normalizeText(value)
+        .split(/\s+/)
+        .filter(Boolean)
+    )
+  ].slice(0, 8);
+}
 
-  if (!url || !key) {
-    throw new Error(
-      "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing"
-    );
+function countOccurrences(text, term) {
+  if (!text || !term) return 0;
+
+  let count = 0;
+  let position = 0;
+
+  while (true) {
+    const index = text.indexOf(term, position);
+
+    if (index === -1) break;
+
+    count++;
+
+    position =
+      index + Math.max(term.length, 1);
+
+    if (count >= 50) break;
   }
 
-  return createClient(url, key);
+  return count;
 }
 
-// RESPONSE
-function send(res, status, data, type = "application/json") {
-  res.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store"
-  });
+// --------------------------------------------------
+// QUERY WORD PROXIMITY
+// --------------------------------------------------
 
-  res.end(
-    type.includes("json")
-      ? JSON.stringify(data)
-      : data
-  );
+function proximityScore(text, words) {
+  if (!text || words.length < 2) {
+    return 0;
+  }
+
+  const positions = [];
+
+  for (const word of words) {
+    const index = text.indexOf(word);
+
+    if (index >= 0) {
+      positions.push(index);
+    }
+  }
+
+  if (positions.length < 2) {
+    return 0;
+  }
+
+  positions.sort((a, b) => a - b);
+
+  const distance =
+    positions[positions.length - 1] -
+    positions[0];
+
+  if (distance <= 30) return 45;
+  if (distance <= 80) return 30;
+  if (distance <= 160) return 18;
+  if (distance <= 300) return 8;
+
+  return 0;
 }
 
-// SEARCH SCORING
-function escRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// --------------------------------------------------
+// PAGE QUALITY
+// --------------------------------------------------
 
-function score(p, words) {
-  const title = (p.title || "").toLowerCase();
-  const description = (p.description || "").toLowerCase();
-  const url = (p.url || "").toLowerCase();
-  const content = (p.content || "").toLowerCase();
+function pageQuality(page) {
+  const title =
+    normalizeText(page.title);
+
+  const description =
+    normalizeText(page.description);
+
+  const content =
+    normalizeText(page.content);
 
   let score = 0;
 
-  for (const word of words) {
-    if (title.includes(word)) score += 30;
-    if (description.includes(word)) score += 12;
-    if (url.includes(word)) score += 8;
-
-    score += Math.min(
-      (content.match(new RegExp(escRegExp(word), "g")) || []).length,
-      25
-    );
+  if (title.length >= 5) {
+    score += 5;
   }
 
-  if (words.length > 1 && words.every(w => title.includes(w))) {
-    score += 40;
+  if (description.length >= 30) {
+    score += 5;
+  }
+
+  if (content.length >= 500) {
+    score += 8;
+  }
+
+  if (content.length >= 2000) {
+    score += 5;
+  }
+
+  // Very thin pages get a small penalty.
+  if (
+    content.length > 0 &&
+    content.length < 100
+  ) {
+    score -= 12;
   }
 
   return score;
 }
 
-// NEWS SCORING
-function newsScore(n, words) {
-  const title = (n.title || "").toLowerCase();
-  const description = (n.description || "").toLowerCase();
-  const source = (n.source_name || "").toLowerCase();
+// --------------------------------------------------
+// FRESHNESS
+// --------------------------------------------------
+
+function freshnessScore(updatedAt) {
+  if (!updatedAt) {
+    return 0;
+  }
+
+  const timestamp =
+    Date.parse(updatedAt);
+
+  if (!Number.isFinite(timestamp)) {
+    return 0;
+  }
+
+  const ageDays = Math.max(
+    0,
+    (Date.now() - timestamp) /
+      86400000
+  );
+
+  if (ageDays <= 7) return 10;
+  if (ageDays <= 30) return 7;
+  if (ageDays <= 90) return 4;
+  if (ageDays <= 365) return 2;
+
+  return 0;
+}
+
+// --------------------------------------------------
+// STRONG PAGE RANKING
+// --------------------------------------------------
+
+function scorePage(
+  page,
+  query,
+  words
+) {
+  const title =
+    normalizeText(page.title);
+
+  const description =
+    normalizeText(page.description);
+
+  const url =
+    normalizeText(page.url);
+
+  const content =
+    normalizeText(page.content);
+
+  const phrase =
+    normalizeText(query);
 
   let score = 0;
 
-  for (const word of words) {
-    if (title.includes(word)) score += 40;
-    if (description.includes(word)) score += 15;
-    if (source.includes(word)) score += 4;
+  // ================================================
+  // 1. EXACT TITLE
+  // ================================================
+
+  if (title === phrase) {
+    score += 1000;
   }
 
-  const age = n.published_at
-    ? Math.max(
-        0,
-        (Date.now() - Date.parse(n.published_at)) / 86400000
-      )
-    : 999;
+  // ================================================
+  // 2. EXACT QUERY PHRASE IN TITLE
+  // ================================================
 
-  return score + Math.max(0, 20 - age);
-}
+  if (
+    phrase &&
+    title.includes(phrase)
+  ) {
+    score += 500;
+  }
 
-// SNIPPET
-function snippet(p, words) {
-  const text = (p.content || p.description || "")
-    .replace(/\s+/g, " ");
+  // ================================================
+  // 3. ALL QUERY WORDS IN TITLE
+  // ================================================
 
-  let at = Infinity;
+  const titleMatches =
+    words.filter(
+      word => title.includes(word)
+    ).length;
+
+  if (
+    words.length > 0 &&
+    titleMatches === words.length
+  ) {
+    score += 350;
+  }
+
+  // ================================================
+  // 4. INDIVIDUAL TITLE MATCHES
+  // ================================================
 
   for (const word of words) {
-    const index = text.toLowerCase().indexOf(word);
+    if (title.includes(word)) {
+      score += 100;
+    }
 
-    if (index >= 0) {
-      at = Math.min(at, index);
+    const occurrences =
+      countOccurrences(
+        title,
+        word
+      );
+
+    score += Math.min(
+      occurrences * 20,
+      60
+    );
+  }
+
+  // ================================================
+  // 5. TITLE PROXIMITY
+  // ================================================
+
+  score += proximityScore(
+    title,
+    words
+  );
+
+  // ================================================
+  // 6. DESCRIPTION
+  // ================================================
+
+  if (
+    phrase &&
+    description.includes(phrase)
+  ) {
+    score += 100;
+  }
+
+  const descriptionMatches =
+    words.filter(
+      word =>
+        description.includes(word)
+    ).length;
+
+  score +=
+    descriptionMatches * 25;
+
+  // ================================================
+  // 7. CONTENT EXACT PHRASE
+  // ================================================
+
+  if (
+    phrase &&
+    content.includes(phrase)
+  ) {
+    score += 80;
+  }
+
+  // ================================================
+  // 8. CONTENT WORD MATCHES
+  // ================================================
+
+  let contentWords = 0;
+
+  for (const word of words) {
+    const occurrences =
+      countOccurrences(
+        content,
+        word
+      );
+
+    if (occurrences > 0) {
+      contentWords++;
+    }
+
+    // Content frequency intentionally has
+    // much lower weight than title relevance.
+    score += Math.min(
+      occurrences * 2,
+      20
+    );
+  }
+
+  if (
+    words.length > 1 &&
+    contentWords === words.length
+  ) {
+    score += 40;
+  }
+
+  // ================================================
+  // 9. CONTENT PROXIMITY
+  // ================================================
+
+  score += proximityScore(
+    content,
+    words
+  );
+
+  // ================================================
+  // 10. URL
+  // ================================================
+
+  if (
+    phrase &&
+    url.includes(phrase)
+  ) {
+    score += 35;
+  }
+
+  for (const word of words) {
+    if (url.includes(word)) {
+      score += 8;
     }
   }
 
-  if (!isFinite(at)) {
+  // ================================================
+  // 11. QUALITY
+  // ================================================
+
+  score += pageQuality(page);
+
+  // ================================================
+  // 12. FRESHNESS
+  // ================================================
+
+  score += freshnessScore(
+    page.updated_at
+  );
+
+  return score;
+}
+
+// --------------------------------------------------
+// NEWS RANKING
+// --------------------------------------------------
+
+function newsScore(
+  item,
+  query,
+  words
+) {
+  const title =
+    normalizeText(item.title);
+
+  const description =
+    normalizeText(item.description);
+
+  const source =
+    normalizeText(item.source_name);
+
+  const phrase =
+    normalizeText(query);
+
+  let score = 0;
+
+  if (title === phrase) {
+    score += 500;
+  }
+
+  if (
+    phrase &&
+    title.includes(phrase)
+  ) {
+    score += 250;
+  }
+
+  for (const word of words) {
+    if (title.includes(word)) {
+      score += 70;
+    }
+
+    if (
+      description.includes(word)
+    ) {
+      score += 20;
+    }
+
+    if (source.includes(word)) {
+      score += 3;
+    }
+  }
+
+  // Freshness is useful for news,
+  // but should not completely dominate relevance.
+  const age = item.published_at
+    ? Math.max(
+        0,
+        (Date.now() -
+          Date.parse(
+            item.published_at
+          )) /
+          86400000
+      )
+    : 999;
+
+  if (age <= 1) {
+    score += 30;
+  } else if (age <= 3) {
+    score += 20;
+  } else if (age <= 7) {
+    score += 12;
+  } else if (age <= 30) {
+    score += 5;
+  }
+
+  return score;
+}
+
+// --------------------------------------------------
+// SNIPPET
+// --------------------------------------------------
+
+function snippet(
+  page,
+  query,
+  words
+) {
+  const content =
+    String(page.content || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const description =
+    String(page.description || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const text =
+    content ||
+    description ||
+    String(page.title || "");
+
+  if (!text) {
+    return "";
+  }
+
+  const lower =
+    normalizeText(text);
+
+  const phrase =
+    normalizeText(query);
+
+  let at = -1;
+
+  // Prefer exact query phrase.
+  if (phrase) {
+    at = lower.indexOf(phrase);
+  }
+
+  // Otherwise find first relevant word.
+  if (at === -1) {
+    for (const word of words) {
+      const index =
+        lower.indexOf(word);
+
+      if (
+        index >= 0 &&
+        (
+          at === -1 ||
+          index < at
+        )
+      ) {
+        at = index;
+      }
+    }
+  }
+
+  if (at === -1) {
     return text.slice(0, 280);
   }
 
-  return text.slice(
-    Math.max(0, at - 110),
-    at + 230
-  );
+  const start =
+    Math.max(0, at - 120);
+
+  const end =
+    Math.min(
+      text.length,
+      at + 300
+    );
+
+  let result =
+    text.slice(start, end);
+
+  if (start > 0) {
+    result =
+      "… " + result;
+  }
+
+  if (end < text.length) {
+    result += " …";
+  }
+
+  return result;
 }
 
+// --------------------------------------------------
 // SEARCH
+// --------------------------------------------------
+
 async function search(q) {
-  const words = [
-    ...new Set(
-      q
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean)
-    )
-  ].slice(0, 8);
+  const query =
+    String(q || "").trim();
+
+  const words =
+    tokenize(query);
+
+  if (
+    !query ||
+    words.length === 0
+  ) {
+    return {
+      query,
+      total: 0,
+      results: []
+    };
+  }
 
   const sb = db();
 
+  // Keep the existing API/database architecture.
+  // Candidate retrieval is still from the existing
+  // Supabase pages table.
   const [
-    { data: pages, error: pageError },
-    { data: newsData, error: newsError }
+    {
+      data: pages,
+      error: pageError
+    },
+    {
+      data: newsData,
+      error: newsError
+    }
   ] = await Promise.all([
     sb
       .from("pages")
@@ -146,273 +562,114 @@ async function search(q) {
       .select(
         "title,description,url,source_name,source_domain,published_at,image_url"
       )
-      .order("published_at", {
-        ascending: false
-      })
+      .order(
+        "published_at",
+        {
+          ascending: false
+        }
+      )
       .limit(300)
   ]);
 
-  if (pageError) throw pageError;
-  if (newsError) throw newsError;
+  if (pageError) {
+    throw pageError;
+  }
 
-  const pageResults = (pages || [])
-    .map(p => ({
-      ...p,
-      type: "web",
-      score: score(p, words),
-      snippet: snippet(p, words)
-    }))
-    .filter(x => x.score > 0);
+  if (newsError) {
+    throw newsError;
+  }
 
-  const newsResults = (newsData || [])
-    .map(n => ({
-      ...n,
-      type: "news",
-      score: newsScore(n, words),
-      snippet: n.description || ""
-    }))
-    .filter(x => x.score > 0);
+  // ----------------------------------------------
+  // WEB
+  // ----------------------------------------------
+
+  const pageResults =
+    (pages || [])
+      .map(page => ({
+        ...page,
+        type: "web",
+        score:
+          scorePage(
+            page,
+            query,
+            words
+          ),
+        snippet:
+          snippet(
+            page,
+            query,
+            words
+          )
+      }))
+      .filter(
+        result =>
+          result.score > 0 &&
+          result.url
+      );
+
+  // ----------------------------------------------
+  // NEWS
+  // ----------------------------------------------
+
+  const newsResults =
+    (newsData || [])
+      .map(item => ({
+        ...item,
+        type: "news",
+        score:
+          newsScore(
+            item,
+            query,
+            words
+          ),
+        snippet:
+          item.description ||
+          item.title ||
+          ""
+      }))
+      .filter(
+        result =>
+          result.score > 0 &&
+          result.url
+      );
+
+  // ----------------------------------------------
+  // REMOVE DUPLICATE URLS
+  // ----------------------------------------------
+
+  const seen =
+    new Set();
 
   const results = [
-    ...newsResults,
-    ...pageResults
+    ...pageResults,
+    ...newsResults
   ]
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
+    .filter(result => {
+      const url =
+        normalizeText(
+          result.url
+        );
+
+      if (
+        !url ||
+        seen.has(url)
+      ) {
+        return false;
+      }
+
+      seen.add(url);
+
+      return true;
+    })
     .slice(0, 30);
 
   return {
-    query: q,
+    query,
     total: results.length,
     results
   };
-}
-
-// NEWS
-async function news() {
-  const {
-    data,
-    error
-  } = await db()
-    .from("news")
-    .select(
-      "id,title,description,url,source_name,source_domain,published_at,image_url"
-    )
-    .order("published_at", {
-      ascending: false
-    })
-    .limit(12);
-
-  if (error) throw error;
-
-  return {
-    items: data || [],
-    generated: false,
-    source: "publisher feeds"
-  };
-}
-
-// STATIC FILE TYPES
-function contentType(file) {
-  const ext = path.extname(file).toLowerCase();
-
-  return (
-    {
-      ".html": "text/html; charset=utf-8",
-      ".js": "text/javascript; charset=utf-8",
-      ".css": "text/css; charset=utf-8",
-      ".json": "application/json",
-      ".svg": "image/svg+xml",
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".ico": "image/x-icon"
-    }[ext] || "application/octet-stream"
-  );
-}
-
-// STATIC FRONTEND
-function serveStatic(req, res) {
-  let pathname = decodeURIComponent(
-    new URL(
-      req.url,
-      `http://${req.headers.host || "localhost"}`
-    ).pathname
-  );
-
-  if (pathname === "/") {
-    pathname = "/index.html";
-  }
-
-  const root = path.resolve(__dirname);
-  const file = path.resolve(
-    root,
-    "." + pathname
-  );
-
-  if (!file.startsWith(root)) {
-    return send(res, 403, {
-      error: "Forbidden"
-    });
-  }
-
-  fs.readFile(file, (err, data) => {
-    if (err) {
-      if (!path.extname(pathname)) {
-        return fs.readFile(
-          path.join(root, "index.html"),
-          (indexError, indexData) => {
-            if (indexError) {
-              return send(res, 404, {
-                error: "Not found"
-              });
-            }
-
-            return send(
-              res,
-              200,
-              indexData,
-              "text/html; charset=utf-8"
-            );
-          }
-        );
-      }
-
-      return send(res, 404, {
-        error: "Not found"
-      });
-    }
-
-    return send(
-      res,
-      200,
-      data,
-      contentType(file)
-    );
-  });
-}
-
-// SERVER
-const server = http.createServer(
-  async (req, res) => {
-    try {
-      const u = new URL(
-        req.url,
-        `http://${req.headers.host || "localhost"}`
-      );
-
-      // HEALTH
-      if (
-        req.method === "GET" &&
-        u.pathname === "/health"
-      ) {
-        return send(res, 200, {
-          ok: true,
-          service: "HEXORA",
-          status: "running",
-          port: PORT
-        });
-      }
-
-      // SEARCH
-      if (
-        req.method === "GET" &&
-        (
-          u.pathname === "/search" ||
-          u.pathname === "/api/search" ||
-          u.pathname === "/.netlify/functions/search"
-        )
-      ) {
-        const q = u.searchParams.get("q")?.trim();
-
-        if (!q) {
-          return send(res, 400, {
-            error: "Missing search query"
-          });
-        }
-
-        return send(
-          res,
-          200,
-          await search(q)
-        );
-      }
-
-      // NEWS
-      if (
-        req.method === "GET" &&
-        (
-          u.pathname === "/news" ||
-          u.pathname === "/api/news" ||
-          u.pathname === "/.netlify/functions/news"
-        )
-      ) {
-        return send(
-          res,
-          200,
-          await news()
-        );
-      }
-
-      // FRONTEND
-      return serveStatic(req, res);
-
-    } catch (error) {
-      console.error(
-        "HEXORA SERVER ERROR:",
-        error
-      );
-
-      return send(res, 500, {
-        error:
-          error?.message ||
-          "Server error"
-      });
-    }
-  }
-);
-
-server.listen(
-  PORT,
-  HOST,
-  () => {
-    console.log(
-      `HEXORA server running on http://${HOST}:${PORT}`
-    );
-  }
-);
-
-// CRAWLER
-if (process.env.DISABLE_CRAWLER !== "1") {
-  const child = spawn(
-    process.execPath,
-    [
-      path.join(
-        __dirname,
-        "worker/worker.mjs"
-      )
-    ],
-    {
-      stdio: "inherit",
-      env: process.env
-    }
-  );
-
-  child.on("exit", code => {
-    console.log(
-      `HEXORA crawler exited with code ${code}`
-    );
-  });
-
-  const stop = () => {
-    try {
-      child.kill("SIGTERM");
-    } catch {}
-
-    server.close(() => {
-      process.exit(0);
-    });
-  };
-
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
 }
