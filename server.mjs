@@ -1,15 +1,29 @@
-```js
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { db } from "./netlify/functions/_supabase.mjs";
+import { createClient } from "@supabase/supabase-js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8080);
 const HOST = "0.0.0.0";
 
+// SUPABASE
+function db() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error(
+      "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing"
+    );
+  }
+
+  return createClient(url, key);
+}
+
+// RESPONSE
 function send(res, status, data, type = "application/json") {
   res.writeHead(status, {
     "content-type": type,
@@ -23,6 +37,7 @@ function send(res, status, data, type = "application/json") {
   );
 }
 
+// SEARCH SCORING
 function escRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -53,6 +68,7 @@ function score(p, words) {
   return score;
 }
 
+// NEWS SCORING
 function newsScore(n, words) {
   const title = (n.title || "").toLowerCase();
   const description = (n.description || "").toLowerCase();
@@ -76,6 +92,7 @@ function newsScore(n, words) {
   return score + Math.max(0, 20 - age);
 }
 
+// SNIPPET
 function snippet(p, words) {
   const text = (p.content || p.description || "")
     .replace(/\s+/g, " ");
@@ -100,6 +117,7 @@ function snippet(p, words) {
   );
 }
 
+// SEARCH
 async function search(q) {
   const words = [
     ...new Set(
@@ -169,6 +187,7 @@ async function search(q) {
   };
 }
 
+// NEWS
 async function news() {
   const {
     data,
@@ -192,6 +211,7 @@ async function news() {
   };
 }
 
+// STATIC FILE TYPES
 function contentType(file) {
   const ext = path.extname(file).toLowerCase();
 
@@ -210,6 +230,7 @@ function contentType(file) {
   );
 }
 
+// STATIC FRONTEND
 function serveStatic(req, res) {
   let pathname = decodeURIComponent(
     new URL(
@@ -270,6 +291,7 @@ function serveStatic(req, res) {
   });
 }
 
+// SERVER
 const server = http.createServer(
   async (req, res) => {
     try {
@@ -291,18 +313,16 @@ const server = http.createServer(
         });
       }
 
-      // SEARCH API
-      // Supports both /search and /api/search
+      // SEARCH
       if (
         req.method === "GET" &&
         (
           u.pathname === "/search" ||
-          u.pathname === "/api/search"
+          u.pathname === "/api/search" ||
+          u.pathname === "/.netlify/functions/search"
         )
       ) {
-        const q = u.searchParams
-          .get("q")
-          ?.trim();
+        const q = u.searchParams.get("q")?.trim();
 
         if (!q) {
           return send(res, 400, {
@@ -310,30 +330,37 @@ const server = http.createServer(
           });
         }
 
-        const result = await search(q);
-
-        return send(res, 200, result);
+        return send(
+          res,
+          200,
+          await search(q)
+        );
       }
 
-      // NEWS API
-      // Supports both /news and /api/news
+      // NEWS
       if (
         req.method === "GET" &&
         (
           u.pathname === "/news" ||
-          u.pathname === "/api/news"
+          u.pathname === "/api/news" ||
+          u.pathname === "/.netlify/functions/news"
         )
       ) {
-        const result = await news();
-
-        return send(res, 200, result);
+        return send(
+          res,
+          200,
+          await news()
+        );
       }
 
-      // FRONTEND / STATIC FILES
+      // FRONTEND
       return serveStatic(req, res);
 
     } catch (error) {
-      console.error("HEXORA SERVER ERROR:", error);
+      console.error(
+        "HEXORA SERVER ERROR:",
+        error
+      );
 
       return send(res, 500, {
         error:
@@ -370,14 +397,11 @@ if (process.env.DISABLE_CRAWLER !== "1") {
     }
   );
 
-  child.on(
-    "exit",
-    code => {
-      console.log(
-        `HEXORA crawler exited with code ${code}`
-      );
-    }
-  );
+  child.on("exit", code => {
+    console.log(
+      `HEXORA crawler exited with code ${code}`
+    );
+  });
 
   const stop = () => {
     try {
@@ -392,4 +416,3 @@ if (process.env.DISABLE_CRAWLER !== "1") {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }
-```
