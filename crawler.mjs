@@ -1,4 +1,3 @@
-```javascript
 const DEFAULT_SEEDS = [
   "https://en.wikipedia.org/",
   "https://www.india.gov.in/",
@@ -19,7 +18,7 @@ export async function crawlBatch(
     .map((x) => x.trim())
     .filter(Boolean);
 
-  await supabase
+  const { error: seedError } = await supabase
     .from("crawl_queue")
     .upsert(
       seeds.map((url) => ({
@@ -32,7 +31,8 @@ export async function crawlBatch(
       }
     );
 
-  // Recover jobs left in "crawling" state after a worker restart.
+  if (seedError) throw seedError;
+
   await supabase
     .from("crawl_queue")
     .update({
@@ -62,12 +62,14 @@ export async function crawlBatch(
       urls.slice(i, i + concurrency).map(async (url) => {
         try {
           await crawlOne(supabase, url);
-        } catch (e) {
+        } catch (error) {
+          console.error("Crawl failed:", url, error);
+
           await supabase
             .from("crawl_queue")
             .update({
               status: "error",
-              last_error: String(e).slice(0, 500)
+              last_error: String(error).slice(0, 500)
             })
             .eq("url", url);
         }
@@ -80,8 +82,10 @@ export async function crawlBatch(
   };
 }
 
-async function crawlOne(sb, url) {
-  await sb
+async function crawlOne(supabase, url) {
+  console.log("Crawling:", url);
+
+  await supabase
     .from("crawl_queue")
     .update({
       status: "crawling",
@@ -89,12 +93,12 @@ async function crawlOne(sb, url) {
     })
     .eq("url", url);
 
-  const u = new URL(url);
+  const parsedUrl = new URL(url);
 
-  const robots = await getRobots(u.origin);
+  const robots = await getRobots(parsedUrl.origin);
 
   if (!robots.canFetch("HEXORA-Bot/1.0", url)) {
-    await sb
+    await supabase
       .from("crawl_queue")
       .update({
         status: "blocked",
@@ -102,6 +106,7 @@ async function crawlOne(sb, url) {
       })
       .eq("url", url);
 
+    console.log("Blocked by robots.txt:", url);
     return;
   }
 
@@ -114,32 +119,39 @@ async function crawlOne(sb, url) {
     signal: AbortSignal.timeout(12000)
   });
 
-  const contentType = response.headers.get("content-type") || "";
+  const contentType =
+    response.headers.get("content-type") || "";
 
-  if (!response.ok || !contentType.includes("text/html")) {
-    throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    throw new Error("HTTP " + response.status);
+  }
+
+  if (!contentType.includes("text/html")) {
+    throw new Error(
+      "Unsupported content type: " + contentType
+    );
   }
 
   const html = await response.text();
 
-  const parsed = parseHtml(
+  const page = parseHtml(
     new URL(response.url).toString(),
     html
   );
 
-  const hash = await sha256(parsed.text);
+  const hash = await sha256(page.text);
 
-  const { error: pageError } = await sb
+  const { error: pageError } = await supabase
     .from("pages")
     .upsert(
       {
-        url: parsed.canonical,
-        title: parsed.title,
-        description: parsed.description,
-        content: parsed.text,
+        url: page.canonical,
+        title: page.title,
+        description: page.description,
+        content: page.text,
         content_hash: hash,
-        word_count: countWords(parsed.text),
-        language: detectLanguage(parsed.text),
+        word_count: countWords(page.text),
+        language: detectLanguage(page.text),
         updated_at: new Date().toISOString()
       },
       {
@@ -147,23 +159,29 @@ async function crawlOne(sb, url) {
       }
     );
 
-  if (pageError) throw pageError;
+  if (pageError) {
+    throw pageError;
+  }
 
-  const links = parsed.links.map((link) => ({
+  const links = page.links.map((link) => ({
     url: link,
     status: "queued"
   }));
 
-  if (links.length) {
-    await sb
+  if (links.length > 0) {
+    const { error: linkError } = await supabase
       .from("crawl_queue")
       .upsert(links, {
         onConflict: "url",
         ignoreDuplicates: true
       });
+
+    if (linkError) {
+      throw linkError;
+    }
   }
 
-  await sb
+  const { error: doneError } = await supabase
     .from("crawl_queue")
     .update({
       status: "done",
@@ -171,39 +189,54 @@ async function crawlOne(sb, url) {
       last_error: null
     })
     .eq("url", url);
+
+  if (doneError) {
+    throw doneError;
+  }
+
+  console.log(
+    "Crawled successfully:",
+    url,
+    "links:",
+    page.links.length
+  );
 }
 
 async function getRobots(origin) {
   try {
-    const response = await fetch(`${origin}/robots.txt`, {
-      headers: {
-        "user-agent": "HEXORA-Bot/1.0"
-      },
-      signal: AbortSignal.timeout(5000)
-    });
+    const response = await fetch(
+      origin + "/robots.txt",
+      {
+        headers: {
+          "user-agent": "HEXORA-Bot/1.0"
+        },
+        signal: AbortSignal.timeout(5000)
+      }
+    );
 
-    const text = response.ok ? await response.text() : "";
+    const text = response.ok
+      ? await response.text()
+      : "";
 
-    return new Robots(text, origin);
+    return new Robots(text);
   } catch {
-    return new Robots("", origin);
+    return new Robots("");
   }
 }
 
 class Robots {
-  constructor(text, origin) {
-    this.origin = origin;
+  constructor(text) {
     this.disallow = [];
 
     let active = false;
 
     for (const line of text.split(/\r?\n/)) {
-      const [keyPart, ...valueParts] = line.split(":");
+      const parts = line.split(":");
+      const key = (parts.shift() || "")
+        .trim()
+        .toLowerCase();
 
-      if (!keyPart) continue;
-
-      const key = keyPart.trim().toLowerCase();
-      const value = valueParts.join(":").trim();
+      const value = parts.join(":").trim();
 
       if (key === "user-agent") {
         active =
@@ -253,20 +286,30 @@ function parseHtml(url, html) {
       /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)/i
     )?.[1];
 
-  let baseUrl = url;
+  let canonicalUrl = url;
 
   try {
     if (canonical) {
-      baseUrl = new URL(canonical, url).toString();
+      canonicalUrl = new URL(
+        canonical,
+        url
+      ).toString();
     }
-  } catch {
-    baseUrl = url;
-  }
+  } catch {}
 
   const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(
+      /<script[\s\S]*?<\/script>/gi,
+      " "
+    )
+    .replace(
+      /<style[\s\S]*?<\/style>/gi,
+      " "
+    )
+    .replace(
+      /<noscript[\s\S]*?<\/noscript>/gi,
+      " "
+    )
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
@@ -283,17 +326,21 @@ function parseHtml(url, html) {
   ]
     .map((match) => {
       try {
-        const link = new URL(match[1], url);
+        const link = new URL(
+          match[1],
+          url
+        );
 
         if (
-          link.protocol === "http:" ||
-          link.protocol === "https:"
+          link.protocol !== "http:" &&
+          link.protocol !== "https:"
         ) {
-          link.hash = "";
-          return link.toString();
+          return null;
         }
 
-        return null;
+        link.hash = "";
+
+        return link.toString();
       } catch {
         return null;
       }
@@ -304,7 +351,7 @@ function parseHtml(url, html) {
   return {
     title,
     description,
-    canonical: baseUrl,
+    canonical: canonicalUrl,
     text,
     links: [...new Set(links)]
   };
@@ -323,7 +370,6 @@ function countWords(text) {
 function detectLanguage(text) {
   if (!text) return "unknown";
 
-  // Basic script detection.
   if (/[\u0980-\u09FF]/.test(text)) {
     return "as";
   }
@@ -361,4 +407,3 @@ async function sha256(text) {
     )
     .join("");
 }
-```
