@@ -1,675 +1,471 @@
-// --------------------------------------------------
-// TEXT NORMALIZATION
-// --------------------------------------------------
+import { createClient } from "@supabase/supabase-js";
+import * as cheerio from "cheerio";
+import crypto from "node:crypto";
 
-function normalizeText(value = "") {
-  return String(value)
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+}
+
+const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY
+);
+
+const USER_AGENT = "HEXORA-Bot/1.0";
+
+const TIMEOUT_MS = Number(process.env.CRAWL_TIMEOUT_MS || 15000);
+const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE || 10);
+const CONCURRENCY = Number(process.env.CRAWL_CONCURRENCY || 2);
+
+function cleanText(text = "") {
+  return text
     .replace(/\s+/g, " ")
+    .replace(/\u00a0/g, " ")
     .trim();
 }
 
-function tokenize(value = "") {
-  return [
-    ...new Set(
-      normalizeText(value)
-        .split(/\s+/)
-        .filter(Boolean)
-    )
-  ].slice(0, 8);
+function hashContent(text = "") {
+  return crypto
+    .createHash("sha256")
+    .update(text)
+    .digest("hex");
 }
 
-function countOccurrences(text, term) {
-  if (!text || !term) return 0;
+function normalizeUrl(url, baseUrl) {
+  try {
+    const parsed = new URL(url, baseUrl);
 
-  let count = 0;
-  let position = 0;
-
-  while (true) {
-    const index = text.indexOf(term, position);
-
-    if (index === -1) break;
-
-    count++;
-
-    position =
-      index + Math.max(term.length, 1);
-
-    if (count >= 50) break;
-  }
-
-  return count;
-}
-
-// --------------------------------------------------
-// QUERY WORD PROXIMITY
-// --------------------------------------------------
-
-function proximityScore(text, words) {
-  if (!text || words.length < 2) {
-    return 0;
-  }
-
-  const positions = [];
-
-  for (const word of words) {
-    const index = text.indexOf(word);
-
-    if (index >= 0) {
-      positions.push(index);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return null;
     }
+
+    parsed.hash = "";
+
+    return parsed.toString();
+  } catch {
+    return null;
   }
-
-  if (positions.length < 2) {
-    return 0;
-  }
-
-  positions.sort((a, b) => a - b);
-
-  const distance =
-    positions[positions.length - 1] -
-    positions[0];
-
-  if (distance <= 30) return 45;
-  if (distance <= 80) return 30;
-  if (distance <= 160) return 18;
-  if (distance <= 300) return 8;
-
-  return 0;
 }
 
-// --------------------------------------------------
-// PAGE QUALITY
-// --------------------------------------------------
+function extractPage(html, pageUrl) {
+  const $ = cheerio.load(html);
 
-function pageQuality(page) {
-  const title =
-    normalizeText(page.title);
+  $("script, style, noscript, iframe, svg").remove();
 
-  const description =
-    normalizeText(page.description);
-
-  const content =
-    normalizeText(page.content);
-
-  let score = 0;
-
-  if (title.length >= 5) {
-    score += 5;
-  }
-
-  if (description.length >= 30) {
-    score += 5;
-  }
-
-  if (content.length >= 500) {
-    score += 8;
-  }
-
-  if (content.length >= 2000) {
-    score += 5;
-  }
-
-  // Very thin pages get a small penalty.
-  if (
-    content.length > 0 &&
-    content.length < 100
-  ) {
-    score -= 12;
-  }
-
-  return score;
-}
-
-// --------------------------------------------------
-// FRESHNESS
-// --------------------------------------------------
-
-function freshnessScore(updatedAt) {
-  if (!updatedAt) {
-    return 0;
-  }
-
-  const timestamp =
-    Date.parse(updatedAt);
-
-  if (!Number.isFinite(timestamp)) {
-    return 0;
-  }
-
-  const ageDays = Math.max(
-    0,
-    (Date.now() - timestamp) /
-      86400000
+  const title = cleanText(
+    $("title").first().text()
   );
 
-  if (ageDays <= 7) return 10;
-  if (ageDays <= 30) return 7;
-  if (ageDays <= 90) return 4;
-  if (ageDays <= 365) return 2;
-
-  return 0;
-}
-
-// --------------------------------------------------
-// STRONG PAGE RANKING
-// --------------------------------------------------
-
-function scorePage(
-  page,
-  query,
-  words
-) {
-  const title =
-    normalizeText(page.title);
-
-  const description =
-    normalizeText(page.description);
-
-  const url =
-    normalizeText(page.url);
-
-  const content =
-    normalizeText(page.content);
-
-  const phrase =
-    normalizeText(query);
-
-  let score = 0;
-
-  // ================================================
-  // 1. EXACT TITLE
-  // ================================================
-
-  if (title === phrase) {
-    score += 1000;
-  }
-
-  // ================================================
-  // 2. EXACT QUERY PHRASE IN TITLE
-  // ================================================
-
-  if (
-    phrase &&
-    title.includes(phrase)
-  ) {
-    score += 500;
-  }
-
-  // ================================================
-  // 3. ALL QUERY WORDS IN TITLE
-  // ================================================
-
-  const titleMatches =
-    words.filter(
-      word => title.includes(word)
-    ).length;
-
-  if (
-    words.length > 0 &&
-    titleMatches === words.length
-  ) {
-    score += 350;
-  }
-
-  // ================================================
-  // 4. INDIVIDUAL TITLE MATCHES
-  // ================================================
-
-  for (const word of words) {
-    if (title.includes(word)) {
-      score += 100;
-    }
-
-    const occurrences =
-      countOccurrences(
-        title,
-        word
-      );
-
-    score += Math.min(
-      occurrences * 20,
-      60
-    );
-  }
-
-  // ================================================
-  // 5. TITLE PROXIMITY
-  // ================================================
-
-  score += proximityScore(
-    title,
-    words
+  const description = cleanText(
+    $('meta[name="description"]').attr("content") || ""
   );
 
-  // ================================================
-  // 6. DESCRIPTION
-  // ================================================
-
-  if (
-    phrase &&
-    description.includes(phrase)
-  ) {
-    score += 100;
-  }
-
-  const descriptionMatches =
-    words.filter(
-      word =>
-        description.includes(word)
-    ).length;
-
-  score +=
-    descriptionMatches * 25;
-
-  // ================================================
-  // 7. CONTENT EXACT PHRASE
-  // ================================================
-
-  if (
-    phrase &&
-    content.includes(phrase)
-  ) {
-    score += 80;
-  }
-
-  // ================================================
-  // 8. CONTENT WORD MATCHES
-  // ================================================
-
-  let contentWords = 0;
-
-  for (const word of words) {
-    const occurrences =
-      countOccurrences(
-        content,
-        word
-      );
-
-    if (occurrences > 0) {
-      contentWords++;
-    }
-
-    // Content frequency intentionally has
-    // much lower weight than title relevance.
-    score += Math.min(
-      occurrences * 2,
-      20
-    );
-  }
-
-  if (
-    words.length > 1 &&
-    contentWords === words.length
-  ) {
-    score += 40;
-  }
-
-  // ================================================
-  // 9. CONTENT PROXIMITY
-  // ================================================
-
-  score += proximityScore(
-    content,
-    words
+  const canonical = normalizeUrl(
+    $('link[rel="canonical"]').attr("href") || pageUrl,
+    pageUrl
   );
 
-  // ================================================
-  // 10. URL
-  // ================================================
-
-  if (
-    phrase &&
-    url.includes(phrase)
-  ) {
-    score += 35;
-  }
-
-  for (const word of words) {
-    if (url.includes(word)) {
-      score += 8;
-    }
-  }
-
-  // ================================================
-  // 11. QUALITY
-  // ================================================
-
-  score += pageQuality(page);
-
-  // ================================================
-  // 12. FRESHNESS
-  // ================================================
-
-  score += freshnessScore(
-    page.updated_at
+  const content = cleanText(
+    $("body").text()
   );
 
-  return score;
-}
+  const links = new Set();
 
-// --------------------------------------------------
-// NEWS RANKING
-// --------------------------------------------------
+  $("a[href]").each((_, element) => {
+    const href = $(element).attr("href");
 
-function newsScore(
-  item,
-  query,
-  words
-) {
-  const title =
-    normalizeText(item.title);
+    if (!href) return;
 
-  const description =
-    normalizeText(item.description);
-
-  const source =
-    normalizeText(item.source_name);
-
-  const phrase =
-    normalizeText(query);
-
-  let score = 0;
-
-  if (title === phrase) {
-    score += 500;
-  }
-
-  if (
-    phrase &&
-    title.includes(phrase)
-  ) {
-    score += 250;
-  }
-
-  for (const word of words) {
-    if (title.includes(word)) {
-      score += 70;
-    }
-
-    if (
-      description.includes(word)
-    ) {
-      score += 20;
-    }
-
-    if (source.includes(word)) {
-      score += 3;
-    }
-  }
-
-  // Freshness is useful for news,
-  // but should not completely dominate relevance.
-  const age = item.published_at
-    ? Math.max(
-        0,
-        (Date.now() -
-          Date.parse(
-            item.published_at
-          )) /
-          86400000
-      )
-    : 999;
-
-  if (age <= 1) {
-    score += 30;
-  } else if (age <= 3) {
-    score += 20;
-  } else if (age <= 7) {
-    score += 12;
-  } else if (age <= 30) {
-    score += 5;
-  }
-
-  return score;
-}
-
-// --------------------------------------------------
-// SNIPPET
-// --------------------------------------------------
-
-function snippet(
-  page,
-  query,
-  words
-) {
-  const content =
-    String(page.content || "")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const description =
-    String(page.description || "")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const text =
-    content ||
-    description ||
-    String(page.title || "");
-
-  if (!text) {
-    return "";
-  }
-
-  const lower =
-    normalizeText(text);
-
-  const phrase =
-    normalizeText(query);
-
-  let at = -1;
-
-  // Prefer exact query phrase.
-  if (phrase) {
-    at = lower.indexOf(phrase);
-  }
-
-  // Otherwise find first relevant word.
-  if (at === -1) {
-    for (const word of words) {
-      const index =
-        lower.indexOf(word);
-
-      if (
-        index >= 0 &&
-        (
-          at === -1 ||
-          index < at
-        )
-      ) {
-        at = index;
-      }
-    }
-  }
-
-  if (at === -1) {
-    return text.slice(0, 280);
-  }
-
-  const start =
-    Math.max(0, at - 120);
-
-  const end =
-    Math.min(
-      text.length,
-      at + 300
+    const normalized = normalizeUrl(
+      href,
+      pageUrl
     );
 
-  let result =
-    text.slice(start, end);
-
-  if (start > 0) {
-    result =
-      "… " + result;
-  }
-
-  if (end < text.length) {
-    result += " …";
-  }
-
-  return result;
-}
-
-// --------------------------------------------------
-// SEARCH
-// --------------------------------------------------
-
-async function search(q) {
-  const query =
-    String(q || "").trim();
-
-  const words =
-    tokenize(query);
-
-  if (
-    !query ||
-    words.length === 0
-  ) {
-    return {
-      query,
-      total: 0,
-      results: []
-    };
-  }
-
-  const sb = db();
-
-  // Keep the existing API/database architecture.
-  // Candidate retrieval is still from the existing
-  // Supabase pages table.
-  const [
-    {
-      data: pages,
-      error: pageError
-    },
-    {
-      data: newsData,
-      error: newsError
+    if (normalized) {
+      links.add(normalized);
     }
-  ] = await Promise.all([
-    sb
-      .from("pages")
-      .select(
-        "url,title,description,content,updated_at"
-      )
-      .limit(1200),
+  });
 
-    sb
-      .from("news")
-      .select(
-        "title,description,url,source_name,source_domain,published_at,image_url"
-      )
-      .order(
-        "published_at",
-        {
-          ascending: false
-        }
-      )
-      .limit(300)
-  ]);
+  const wordCount = content
+    ? content.split(/\s+/).length
+    : 0;
 
-  if (pageError) {
-    throw pageError;
-  }
-
-  if (newsError) {
-    throw newsError;
-  }
-
-  // ----------------------------------------------
-  // WEB
-  // ----------------------------------------------
-
-  const pageResults =
-    (pages || [])
-      .map(page => ({
-        ...page,
-        type: "web",
-        score:
-          scorePage(
-            page,
-            query,
-            words
-          ),
-        snippet:
-          snippet(
-            page,
-            query,
-            words
-          )
-      }))
-      .filter(
-        result =>
-          result.score > 0 &&
-          result.url
-      );
-
-  // ----------------------------------------------
-  // NEWS
-  // ----------------------------------------------
-
-  const newsResults =
-    (newsData || [])
-      .map(item => ({
-        ...item,
-        type: "news",
-        score:
-          newsScore(
-            item,
-            query,
-            words
-          ),
-        snippet:
-          item.description ||
-          item.title ||
-          ""
-      }))
-      .filter(
-        result =>
-          result.score > 0 &&
-          result.url
-      );
-
-  // ----------------------------------------------
-  // REMOVE DUPLICATE URLS
-  // ----------------------------------------------
-
-  const seen =
-    new Set();
-
-  const results = [
-    ...pageResults,
-    ...newsResults
-  ]
-    .sort(
-      (a, b) =>
-        b.score - a.score
-    )
-    .filter(result => {
-      const url =
-        normalizeText(
-          result.url
-        );
-
-      if (
-        !url ||
-        seen.has(url)
-      ) {
-        return false;
-      }
-
-      seen.add(url);
-
-      return true;
-    })
-    .slice(0, 30);
+  const contentHash = hashContent(content);
 
   return {
-    query,
-    total: results.length,
-    results
+    title,
+    description,
+    canonical,
+    content,
+    links: [...links],
+    wordCount,
+    contentHash
   };
 }
+
+async function canFetch(url) {
+  try {
+    const parsed = new URL(url);
+
+    const robotsUrl =
+      `${parsed.origin}/robots.txt`;
+
+    const response = await fetch(robotsUrl, {
+      headers: {
+        "User-Agent": USER_AGENT
+      },
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) {
+      return true;
+    }
+
+    const robots = await response.text();
+
+    const lines = robots
+      .split(/\r?\n/)
+      .map(line =>
+        line.trim()
+          .toLowerCase()
+      );
+
+    let activeUserAgent = false;
+
+    for (const line of lines) {
+      if (line.startsWith("user-agent:")) {
+        const value =
+          line.split(":")[1]?.trim();
+
+        activeUserAgent =
+          value === "*" ||
+          value === "hexora-bot";
+      }
+
+      if (
+        activeUserAgent &&
+        line.startsWith("disallow:")
+      ) {
+        const path =
+          line.split(":").slice(1).join(":").trim();
+
+        if (!path) continue;
+
+        const currentPath =
+          new URL(url).pathname;
+
+        if (currentPath.startsWith(path)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+
+  } catch {
+    return true;
+  }
+}
+
+async function fetchPage(url) {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      "Accept":
+        "text/html,application/xhtml+xml"
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(TIMEOUT_MS)
+  });
+
+  return response;
+}
+
+async function markFailure(id, error) {
+  try {
+    await supabase
+      .from("crawl_queue")
+      .update({
+        last_error: String(error).slice(0, 1000),
+        last_crawled_at: new Date().toISOString()
+      })
+      .eq("id", id);
+  } catch (dbError) {
+    console.error(
+      "[HEXORA] Failed to update queue error:",
+      dbError.message
+    );
+  }
+}
+
+async function crawlUrl(item) {
+  const url = item.url;
+
+  console.log(`[HEXORA] Crawling: ${url}`);
+
+  try {
+    const allowed = await canFetch(url);
+
+    if (!allowed) {
+      console.log(
+        `[HEXORA] robots.txt blocked: ${url}`
+      );
+
+      await markFailure(
+        item.id,
+        "Blocked by robots.txt"
+      );
+
+      return;
+    }
+
+    const response = await fetchPage(url);
+
+    if (!response.ok) {
+      const error =
+        `HTTP ${response.status}`;
+
+      console.log(
+        `[HEXORA] ${error}: ${url}`
+      );
+
+      await markFailure(
+        item.id,
+        error
+      );
+
+      return;
+    }
+
+    const contentType =
+      response.headers.get("content-type") || "";
+
+    if (!contentType.includes("text/html")) {
+      console.log(
+        `[HEXORA] Skipped non-HTML: ${url}`
+      );
+
+      await markFailure(
+        item.id,
+        "Non-HTML content"
+      );
+
+      return;
+    }
+
+    const html = await response.text();
+
+    if (!html || html.length < 50) {
+      await markFailure(
+        item.id,
+        "Empty or invalid HTML"
+      );
+
+      return;
+    }
+
+    const page = extractPage(
+      html,
+      url
+    );
+
+    const now =
+      new Date().toISOString();
+
+    const pageData = {
+      url,
+      title: page.title || url,
+      description:
+        page.description || "",
+      content:
+        page.content || "",
+      canonical:
+        page.canonical || url,
+      content_hash:
+        page.contentHash,
+      word_count:
+        page.wordCount,
+      language: "unknown",
+      last_crawled_at: now
+    };
+
+    const { error: pageError } =
+      await supabase
+        .from("pages")
+        .upsert(
+          pageData,
+          {
+            onConflict: "url"
+          }
+        );
+
+    if (pageError) {
+      throw pageError;
+    }
+
+    for (const link of page.links) {
+      try {
+        await supabase
+          .from("crawl_queue")
+          .upsert(
+            {
+              url: link,
+              status: "pending"
+            },
+            {
+              onConflict: "url",
+              ignoreDuplicates: true
+            }
+          );
+      } catch (error) {
+        console.log(
+          `[HEXORA] Queue error: ${link}`,
+          error.message
+        );
+      }
+    }
+
+    await supabase
+      .from("crawl_queue")
+      .update({
+        status: "done",
+        last_error: null,
+        last_crawled_at: now
+      })
+      .eq("id", item.id);
+
+    console.log(
+      `[HEXORA] Crawled successfully: ${url} | links: ${page.links.length}`
+    );
+
+  } catch (error) {
+    console.error(
+      `[HEXORA] Crawl failed: ${url}`,
+      error.message
+    );
+
+    await markFailure(
+      item.id,
+      error.message
+    );
+  }
+}
+
+async function crawlBatch() {
+  const { data, error } =
+    await supabase
+      .from("crawl_queue")
+      .select("*")
+      .eq("status", "pending")
+      .order("created_at", {
+        ascending: true
+      })
+      .limit(BATCH_SIZE);
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    console.log(
+      "[HEXORA] No pending URLs."
+    );
+
+    return 0;
+  }
+
+  let index = 0;
+
+  async function worker() {
+    while (true) {
+      const current = index++;
+
+      if (current >= data.length) {
+        return;
+      }
+
+      const item = data[current];
+
+      await supabase
+        .from("crawl_queue")
+        .update({
+          status: "processing"
+        })
+        .eq("id", item.id);
+
+      await crawlUrl(item);
+    }
+  }
+
+  const workers = [];
+
+  for (
+    let i = 0;
+    i < Math.min(CONCURRENCY, data.length);
+    i++
+  ) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+
+  return data.length;
+}
+
+export async function startCrawler() {
+  console.log(
+    "================================"
+  );
+
+  console.log(
+    "HEXORA crawler worker started"
+  );
+
+  console.log(
+    `Batch: ${BATCH_SIZE}`
+  );
+
+  console.log(
+    `Concurrency: ${CONCURRENCY}`
+  );
+
+  console.log(
+    "================================"
+  );
+
+  while (true) {
+    try {
+      const processed =
+        await crawlBatch();
+
+      console.log(
+        `[HEXORA] Crawl cycle completed | processed: ${processed}`
+      );
+
+    } catch (error) {
+      console.error(
+        "[HEXORA] Crawl cycle error:",
+        error.message
+      );
+    }
+
+    const interval =
+      Number(
+        process.env.CRAWL_INTERVAL_MS ||
+        30000
+      );
+
+    await new Promise(
+      resolve =>
+        setTimeout(resolve, interval)
+    );
+  }
+}
+
+export default {
+  startCrawler,
+  crawlBatch
+};
