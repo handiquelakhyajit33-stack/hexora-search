@@ -1,231 +1,223 @@
-import http from "http";
+import http from "node:http";
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import crypto from "crypto";
-
-const PORT = Number(process.env.PORT || 8080);
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const USER_AGENT = "HEXORA-Bot/1.0";
-const TIMEOUT_MS = Number(process.env.CRAWL_TIMEOUT_MS || 15000);
-const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE || 10);
-const CONCURRENCY = Number(process.env.CRAWL_CONCURRENCY || 2);
-const CRAWL_INTERVAL_MS = Number(
-  process.env.CRAWL_INTERVAL_MS || 30000
-);
-
-const MAX_DISCOVERED_LINKS = 200;
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("[HEXORA] Missing Supabase environment variables");
-  process.exit(1);
+  throw new Error(
+    "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
+  );
 }
 
 const supabase = createClient(
   SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    }
-  }
+  SUPABASE_SERVICE_ROLE_KEY
 );
 
-/* =========================================================
-   SMART SEEDS
-========================================================= */
+const PORT = Number(process.env.PORT || 8080);
 
-const GLOBAL_SEEDS = [
+const USER_AGENT =
+  process.env.HEXORA_USER_AGENT ||
+  "HEXORA-Bot/1.0";
 
-  /* ---------- GENERAL WEB ---------- */
+const TIMEOUT_MS =
+  Number(process.env.CRAWL_TIMEOUT_MS || 15000);
 
-  "https://www.wikipedia.org/",
-  "https://en.wikipedia.org/",
-  "https://www.reddit.com/",
-  "https://github.com/",
-  "https://stackoverflow.com/",
-  "https://developer.mozilla.org/",
+const BATCH_SIZE =
+  Number(process.env.CRAWL_BATCH_SIZE || 10);
 
-  /* ---------- NEWS / WORLD ---------- */
+const CONCURRENCY =
+  Number(process.env.CRAWL_CONCURRENCY || 2);
 
-  "https://www.bbc.com/",
-  "https://www.bbc.com/news",
-  "https://apnews.com/",
-  "https://www.aljazeera.com/",
-  "https://www.theguardian.com/",
-  "https://www.reuters.com/",
+const CRAWL_INTERVAL_MS =
+  Number(process.env.CRAWL_INTERVAL_MS || 30000);
 
-  /* ---------- INDIA ---------- */
 
+// =====================================================
+// HEXORA SMART WEB COVERAGE
+// =====================================================
+
+const SEED_URLS = [
+  // -------------------------
+  // ASSAM / NORTHEAST
+  // -------------------------
+  "https://assamtribune.com/",
+  "https://www.sentinelassam.com/",
+  "https://www.pratidintime.com/",
+  "https://newslivetv.com/",
+  "https://www.guwahatiplus.com/",
+  "https://www.eastmojo.com/",
+  "https://northeasttoday.in/",
+
+  // -------------------------
+  // INDIA
+  // -------------------------
   "https://www.ndtv.com/",
   "https://indianexpress.com/",
   "https://www.thehindu.com/",
   "https://www.hindustantimes.com/",
-  "https://timesofindia.indiatimes.com/",
   "https://www.indiatoday.in/",
+  "https://www.livemint.com/",
+  "https://www.moneycontrol.com/",
   "https://www.news18.com/",
 
-  /* ---------- ASSAM / NORTHEAST ---------- */
+  // -------------------------
+  // WORLD NEWS
+  // -------------------------
+  "https://www.bbc.com/",
+  "https://apnews.com/",
+  "https://www.aljazeera.com/",
+  "https://www.reuters.com/",
+  "https://www.theguardian.com/",
 
-  "https://assamtribune.com/",
-  "https://www.sentinelassam.com/",
-  "https://nenow.in/",
-  "https://www.pratidintime.com/",
-  "https://www.guwahatiplus.com/",
-  "https://www.eastmojo.com/",
-  "https://www.northeasttoday.in/",
-
-  /* ---------- TECHNOLOGY ---------- */
-
+  // -------------------------
+  // TECHNOLOGY
+  // -------------------------
   "https://techcrunch.com/",
   "https://www.theverge.com/",
-  "https://www.wired.com/",
   "https://arstechnica.com/",
-  "https://www.zdnet.com/",
+  "https://www.wired.com/",
   "https://www.techradar.com/",
+  "https://github.com/",
+  "https://developer.mozilla.org/",
+  "https://web.dev/",
+  "https://docs.python.org/3/",
+  "https://stackoverflow.com/",
 
-  /* ---------- SCIENCE / SPACE ---------- */
-
+  // -------------------------
+  // SCIENCE / SPACE
+  // -------------------------
   "https://www.nasa.gov/",
   "https://www.esa.int/",
-  "https://www.nature.com/",
-  "https://www.sciencedaily.com/",
-  "https://www.sciencenews.org/",
+  "https://www.noaa.gov/",
   "https://www.who.int/",
-  "https://www.un.org/"
+  "https://www.un.org/",
+  "https://www.nature.com/",
+  "https://www.scientificamerican.com/",
+  "https://phys.org/",
+  "https://www.sciencedaily.com/",
+
+  // -------------------------
+  // GENERAL WEB
+  // -------------------------
+  "https://www.wikipedia.org/",
+  "https://en.wikipedia.org/",
+  "https://www.britannica.com/",
+  "https://www.nationalgeographic.com/",
+  "https://www.imdb.com/",
+  "https://www.reddit.com/"
 ];
 
-/* =========================================================
-   TRUSTED DOMAINS
-========================================================= */
+const TRACKING_PARAMS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "gclid",
+  "fbclid",
+  "mc_cid",
+  "mc_eid",
+  "ref",
+  "ref_src"
+]);
 
-const TRUSTED_DOMAINS = new Set([
+const BLOCKED_PATH_PARTS = [
+  "/wp-admin",
+  "/wp-login",
+  "/login",
+  "/signin",
+  "/signup",
+  "/register",
+  "/account",
+  "/cart",
+  "/checkout",
+  "action=edit",
+  "action=history",
+  "/w/index.php",
+  "/api/",
+  "/feed",
+  "/rss",
+  "/sitemap",
+  "/robots.txt"
+];
 
-  "wikipedia.org",
+const ASSAM_DOMAINS = [
+  "assamtribune.com",
+  "sentinelassam.com",
+  "pratidintime.com",
+  "newslivetv.com",
+  "guwahatiplus.com",
+  "eastmojo.com",
+  "northeasttoday.in"
+];
 
-  "bbc.com",
-  "apnews.com",
-  "aljazeera.com",
-  "theguardian.com",
-  "reuters.com",
-
+const INDIA_DOMAINS = [
   "ndtv.com",
   "indianexpress.com",
   "thehindu.com",
   "hindustantimes.com",
   "indiatoday.in",
-  "news18.com",
-  "timesofindia.indiatimes.com",
+  "livemint.com",
+  "moneycontrol.com",
+  "news18.com"
+];
 
-  "assamtribune.com",
-  "sentinelassam.com",
-  "nenow.in",
-  "pratidintime.com",
-  "guwahatiplus.com",
-  "eastmojo.com",
-  "northeasttoday.in",
+const NEWS_DOMAINS = [
+  "bbc.com",
+  "apnews.com",
+  "aljazeera.com",
+  "reuters.com",
+  "theguardian.com"
+];
 
-  "github.com",
-  "stackoverflow.com",
-  "developer.mozilla.org",
-
+const TECH_DOMAINS = [
   "techcrunch.com",
   "theverge.com",
-  "wired.com",
   "arstechnica.com",
-  "zdnet.com",
+  "wired.com",
   "techradar.com",
+  "github.com",
+  "developer.mozilla.org",
+  "web.dev",
+  "docs.python.org",
+  "stackoverflow.com"
+];
 
+const SCIENCE_DOMAINS = [
   "nasa.gov",
   "esa.int",
-  "nature.com",
-  "sciencedaily.com",
-  "sciencenews.org",
+  "noaa.gov",
   "who.int",
   "un.org",
+  "nature.com",
+  "scientificamerican.com",
+  "phys.org",
+  "sciencedaily.com"
+];
 
-  "reddit.com"
-]);
+const WIKIPEDIA_DOMAINS = [
+  "wikipedia.org"
+];
 
-/* =========================================================
-   DOMAIN CATEGORY
-========================================================= */
 
-function domainCategory(domain) {
-
-  if (
-    domain.includes("assam") ||
-    domain.includes("nenow") ||
-    domain.includes("eastmojo") ||
-    domain.includes("northeast") ||
-    domain.includes("guwahati")
-  ) {
-    return "assam";
-  }
-
-  if (
-    domain.includes("ndtv") ||
-    domain.includes("indianexpress") ||
-    domain.includes("thehindu") ||
-    domain.includes("hindustantimes") ||
-    domain.includes("indiatoday") ||
-    domain.includes("news18") ||
-    domain.includes("timesofindia")
-  ) {
-    return "india";
-  }
-
-  if (
-    domain.includes("bbc") ||
-    domain.includes("reuters") ||
-    domain.includes("apnews") ||
-    domain.includes("aljazeera") ||
-    domain.includes("guardian")
-  ) {
-    return "news";
-  }
-
-  if (
-    domain.includes("techcrunch") ||
-    domain.includes("theverge") ||
-    domain.includes("wired") ||
-    domain.includes("arstechnica") ||
-    domain.includes("zdnet") ||
-    domain.includes("techradar") ||
-    domain.includes("github") ||
-    domain.includes("stackoverflow") ||
-    domain.includes("mozilla")
-  ) {
-    return "technology";
-  }
-
-  if (
-    domain.includes("nasa") ||
-    domain.includes("esa.int") ||
-    domain.includes("nature") ||
-    domain.includes("sciencedaily") ||
-    domain.includes("sciencenews") ||
-    domain.includes("who.int")
-  ) {
-    return "science";
-  }
-
-  return "general";
-}
-
-/* =========================================================
-   HELPERS
-========================================================= */
+// =====================================================
+// HELPERS
+// =====================================================
 
 function cleanText(text = "") {
-  return text
+  return String(text)
     .replace(/\s+/g, " ")
     .replace(/\u00a0/g, " ")
     .trim();
 }
+
 
 function hashContent(text = "") {
   return crypto
@@ -234,110 +226,204 @@ function hashContent(text = "") {
     .digest("hex");
 }
 
-function normalizeUrl(rawUrl, baseUrl = null) {
 
+function getDomain(url) {
   try {
+    return new URL(url)
+      .hostname
+      .toLowerCase()
+      .replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
 
-    const u = new URL(rawUrl, baseUrl || undefined);
 
-    if (!["http:", "https:"].includes(u.protocol)) {
+function domainMatches(domain, list) {
+  return list.some(
+    item =>
+      domain === item ||
+      domain.endsWith("." + item)
+  );
+}
+
+
+function isWikipedia(url) {
+  return domainMatches(
+    getDomain(url),
+    WIKIPEDIA_DOMAINS
+  );
+}
+
+
+function isBlockedUrl(url) {
+  const value = String(url).toLowerCase();
+
+  return BLOCKED_PATH_PARTS.some(
+    part => value.includes(part)
+  );
+}
+
+
+function normalizeUrl(url, baseUrl) {
+  try {
+    const parsed = new URL(url, baseUrl);
+
+    if (
+      !["http:", "https:"].includes(
+        parsed.protocol
+      )
+    ) {
       return null;
     }
 
-    u.hash = "";
+    parsed.hash = "";
 
-    const removeParams = [
-      "utm_source",
-      "utm_medium",
-      "utm_campaign",
-      "utm_term",
-      "utm_content",
-      "fbclid",
-      "gclid",
-      "ref",
-      "ref_src"
-    ];
-
-    for (const p of removeParams) {
-      u.searchParams.delete(p);
+    for (
+      const key of [...parsed.searchParams.keys()]
+    ) {
+      if (
+        TRACKING_PARAMS.has(
+          key.toLowerCase()
+        )
+      ) {
+        parsed.searchParams.delete(key);
+      }
     }
 
-    return u.toString();
+    const normalized =
+      parsed.toString();
+
+    if (isBlockedUrl(normalized)) {
+      return null;
+    }
+
+    return normalized;
 
   } catch {
     return null;
   }
 }
 
-function getDomain(url) {
 
-  try {
-    return new URL(url).hostname
-      .replace(/^www\./, "")
-      .toLowerCase();
-  } catch {
-    return "";
-  }
-}
+// =====================================================
+// CATEGORY
+// =====================================================
 
-function domainAuthority(domain) {
+function getCategory(url) {
+  const domain = getDomain(url);
 
-  if (!domain) return 0;
-
-  if (domain === "wikipedia.org") return 7;
-
-  if (TRUSTED_DOMAINS.has(domain)) return 10;
-
-  for (const trusted of TRUSTED_DOMAINS) {
-
-    if (
-      domain.endsWith("." + trusted)
-    ) {
-      return 8;
-    }
+  if (
+    domainMatches(
+      domain,
+      ASSAM_DOMAINS
+    )
+  ) {
+    return "assam";
   }
 
-  return 0;
+  if (
+    domainMatches(
+      domain,
+      INDIA_DOMAINS
+    )
+  ) {
+    return "india";
+  }
+
+  if (
+    domainMatches(
+      domain,
+      NEWS_DOMAINS
+    )
+  ) {
+    return "news";
+  }
+
+  if (
+    domainMatches(
+      domain,
+      TECH_DOMAINS
+    )
+  ) {
+    return "technology";
+  }
+
+  if (
+    domainMatches(
+      domain,
+      SCIENCE_DOMAINS
+    )
+  ) {
+    return "science";
+  }
+
+  if (isWikipedia(url)) {
+    return "wikipedia";
+  }
+
+  return "general";
 }
 
-function urlQuality(url) {
 
-  let score = 0;
+// =====================================================
+// CRAWL PRIORITY
+// =====================================================
+
+function crawlPriority(url) {
+  const category =
+    getCategory(url);
+
+  let score = 50;
+
+  if (category === "assam") {
+    score = 150;
+  }
+
+  if (category === "india") {
+    score = 135;
+  }
+
+  if (category === "news") {
+    score = 125;
+  }
+
+  if (category === "technology") {
+    score = 115;
+  }
+
+  if (category === "science") {
+    score = 110;
+  }
+
+  if (category === "general") {
+    score = 80;
+  }
+
+  if (category === "wikipedia") {
+    score = 20;
+  }
 
   try {
-
-    const u = new URL(url);
-    const path = u.pathname.toLowerCase();
+    const pathname =
+      new URL(url)
+        .pathname
+        .toLowerCase();
 
     if (
-      path.includes("/article/") ||
-      path.includes("/news/") ||
-      path.includes("/science/") ||
-      path.includes("/technology/") ||
-      path.includes("/world/") ||
-      path.includes("/india/")
+      /assam|guwahati|northeast|india|news|world|technology|tech|science|space|ai|python|article|story|business/.test(
+        pathname
+      )
     ) {
-      score += 8;
+      score += 20;
     }
 
     if (
-      path.includes("/login") ||
-      path.includes("/signup") ||
-      path.includes("/register") ||
-      path.includes("/cart") ||
-      path.includes("/checkout") ||
-      path.includes("/wp-admin") ||
-      path.includes("/account")
+      /\.(pdf|zip|rar|exe|mp4|mp3|jpg|jpeg|png|gif|webp)$/i.test(
+        pathname
+      )
     ) {
-      score -= 20;
-    }
-
-    if (
-      path.includes("/edit") ||
-      path.includes("/history") ||
-      path.includes("/special:")
-    ) {
-      score -= 25;
+      score -= 100;
     }
 
   } catch {}
@@ -345,223 +431,174 @@ function urlQuality(url) {
   return score;
 }
 
-function isProbablyWebPage(url) {
 
-  try {
+// =====================================================
+// HTML EXTRACTION
+// =====================================================
 
-    const u = new URL(url);
-    const path = u.pathname.toLowerCase();
-
-    const badExtensions = [
-      ".jpg",
-      ".jpeg",
-      ".png",
-      ".gif",
-      ".webp",
-      ".svg",
-      ".pdf",
-      ".zip",
-      ".rar",
-      ".mp3",
-      ".mp4",
-      ".avi",
-      ".mov",
-      ".webm",
-      ".exe",
-      ".dmg",
-      ".iso"
-    ];
-
-    if (
-      badExtensions.some(ext =>
-        path.endsWith(ext)
-      )
-    ) {
-      return false;
-    }
-
-    const badPaths = [
-      "/login",
-      "/logout",
-      "/signin",
-      "/signup",
-      "/register",
-      "/cart",
-      "/checkout",
-      "/wp-admin",
-      "/wp-login.php",
-      "/account",
-      "/user/login",
-      "/edit",
-      "/history",
-      "/action=edit"
-    ];
-
-    if (
-      badPaths.some(p =>
-        path.includes(p)
-      )
-    ) {
-      return false;
-    }
-
-    return true;
-
-  } catch {
-    return false;
-  }
-}
-
-/* =========================================================
-   PAGE EXTRACTION
-========================================================= */
-
-function extractPage(html, finalUrl) {
-
+function extractPage(html, pageUrl) {
   const $ = cheerio.load(html);
 
   $(
-    "script,style,noscript,iframe,svg,canvas,template"
+    "script, style, noscript, iframe, svg, canvas"
   ).remove();
 
-  const title = cleanText(
-    $("title").first().text()
-  );
+  const title =
+    cleanText(
+      $("title")
+        .first()
+        .text()
+    );
 
-  const description = cleanText(
-    $('meta[name="description"]').attr("content") ||
-    $('meta[property="og:description"]').attr("content") ||
-    ""
-  );
+  const description =
+    cleanText(
+      $('meta[name="description"]')
+        .attr("content") || ""
+    );
 
   const canonical =
     normalizeUrl(
-      $('link[rel="canonical"]').attr("href"),
-      finalUrl
-    ) || finalUrl;
+      $('link[rel="canonical"]')
+        .attr("href") ||
+        pageUrl,
+      pageUrl
+    ) || pageUrl;
 
-  const bodyText = cleanText(
-    $("body").text()
-  );
-
-  const links = [];
-
-  $("a[href]").each((_, el) => {
-
-    if (links.length >= MAX_DISCOVERED_LINKS) {
-      return;
-    }
-
-    const href = $(el).attr("href");
-
-    const normalized = normalizeUrl(
-      href,
-      finalUrl
+  const content =
+    cleanText(
+      $("body")
+        .text()
     );
 
-    if (!normalized) return;
+  const links =
+    new Set();
 
-    if (!isProbablyWebPage(normalized)) {
-      return;
+  $("a[href]").each(
+    (_, element) => {
+      const href =
+        $(element)
+          .attr("href");
+
+      if (!href) {
+        return;
+      }
+
+      const normalized =
+        normalizeUrl(
+          href,
+          pageUrl
+        );
+
+      if (
+        normalized &&
+        !isBlockedUrl(normalized)
+      ) {
+        links.add(normalized);
+      }
     }
-
-    links.push(normalized);
-  });
+  );
 
   return {
     title,
     description,
-    content: bodyText.slice(0, 100000),
     canonical,
-    links: [...new Set(links)],
-    wordCount: bodyText
-      ? bodyText.split(/\s+/).length
-      : 0,
-    contentHash: hashContent(bodyText)
+    content,
+    links: [...links],
+    contentHash:
+      hashContent(content)
   };
 }
 
-/* =========================================================
-   ROBOTS
-========================================================= */
+
+// =====================================================
+// ROBOTS
+// =====================================================
 
 async function canFetch(url) {
-
   try {
-
-    const u = new URL(url);
+    const parsed =
+      new URL(url);
 
     const robotsUrl =
-      `${u.protocol}//${u.host}/robots.txt`;
+      `${parsed.origin}/robots.txt`;
 
-    const controller =
-      new AbortController();
-
-    const timer = setTimeout(
-      () => controller.abort(),
-      5000
-    );
-
-    const response = await fetch(
-      robotsUrl,
-      {
-        headers: {
-          "User-Agent": USER_AGENT
-        },
-        signal: controller.signal
-      }
-    );
-
-    clearTimeout(timer);
+    const response =
+      await fetch(
+        robotsUrl,
+        {
+          headers: {
+            "User-Agent":
+              USER_AGENT
+          },
+          signal:
+            AbortSignal.timeout(10000)
+        }
+      );
 
     if (!response.ok) {
       return true;
     }
 
-    const text = await response.text();
+    const robots =
+      await response.text();
 
-    const lines = text
-      .split(/\r?\n/)
-      .map(x => x.trim());
+    const lines =
+      robots
+        .split(/\r?\n/)
+        .map(line =>
+          line.trim()
+        );
 
     let applies = false;
 
-    for (const line of lines) {
-
-      const lower = line.toLowerCase();
-
-      if (lower.startsWith("user-agent:")) {
-
-        const agent =
-          lower
-            .split(":")
-            .slice(1)
-            .join(":")
-            .trim();
-
-        applies =
-          agent === "*" ||
-          agent === "hexora-bot";
-
-        continue;
-      }
+    for (const raw of lines) {
+      const line =
+        raw.toLowerCase();
 
       if (
-        applies &&
-        lower.startsWith("disallow:")
+        line.startsWith(
+          "user-agent:"
+        )
       ) {
-
-        const path =
+        const value =
           line
             .split(":")
             .slice(1)
             .join(":")
             .trim();
 
-        if (!path) continue;
+        applies =
+          value === "*" ||
+          value === "hexora-bot";
+
+        continue;
+      }
+
+      if (
+        applies &&
+        line.startsWith(
+          "disallow:"
+        )
+      ) {
+        const blockedPath =
+          line
+            .split(":")
+            .slice(1)
+            .join(":")
+            .trim();
+
+        if (!blockedPath) {
+          continue;
+        }
+
+        const currentPath =
+          new URL(url)
+            .pathname;
 
         if (
-          u.pathname.startsWith(path)
+          currentPath.startsWith(
+            blockedPath
+          )
         ) {
           return false;
         }
@@ -571,44 +608,114 @@ async function canFetch(url) {
     return true;
 
   } catch {
-
     return true;
   }
 }
 
-/* =========================================================
-   FETCH
-========================================================= */
+
+// =====================================================
+// FETCH
+// =====================================================
 
 async function fetchPage(url) {
+  return fetch(
+    url,
+    {
+      headers: {
+        "User-Agent":
+          USER_AGENT,
 
-  const controller =
-    new AbortController();
+        "Accept":
+          "text/html,application/xhtml+xml"
+      },
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    TIMEOUT_MS
+      redirect: "follow",
+
+      signal:
+        AbortSignal.timeout(
+          TIMEOUT_MS
+        )
+    }
+  );
+}
+
+
+// =====================================================
+// QUEUE FAILURE
+// =====================================================
+
+async function markFailure(
+  id,
+  error
+) {
+  try {
+    await supabase
+      .from("crawl_queue")
+      .update({
+        last_error:
+          String(error)
+            .slice(0, 1000),
+
+        last_crawled_at:
+          new Date()
+            .toISOString()
+      })
+      .eq(
+        "id",
+        id
+      );
+  } catch (dbError) {
+    console.error(
+      "[HEXORA] Queue error:",
+      dbError.message
+    );
+  }
+}
+
+
+// =====================================================
+// CRAWL URL
+// =====================================================
+
+async function crawlUrl(item) {
+  const originalUrl =
+    item.url;
+
+  console.log(
+    `[HEXORA] Crawling: ${originalUrl}`
   );
 
   try {
+    const allowed =
+      await canFetch(
+        originalUrl
+      );
 
-    const response = await fetch(
-      url,
-      {
-        redirect: "follow",
-        headers: {
-          "User-Agent": USER_AGENT,
-          "Accept":
-            "text/html,application/xhtml+xml"
-        },
-        signal: controller.signal
-      }
-    );
+    if (!allowed) {
+      console.log(
+        `[HEXORA] robots.txt blocked: ${originalUrl}`
+      );
+
+      await markFailure(
+        item.id,
+        "Blocked by robots.txt"
+      );
+
+      return;
+    }
+
+    const response =
+      await fetchPage(
+        originalUrl
+      );
 
     if (!response.ok) {
-      throw new Error(
+      await markFailure(
+        item.id,
         `HTTP ${response.status}`
       );
+
+      return;
     }
 
     const contentType =
@@ -617,139 +724,123 @@ async function fetchPage(url) {
       ) || "";
 
     if (
-      !contentType.includes("text/html") &&
-      !contentType.includes("application/xhtml+xml")
+      !contentType.includes(
+        "text/html"
+      )
     ) {
-      throw new Error(
-        `Not HTML: ${contentType}`
+      await markFailure(
+        item.id,
+        "Non-HTML content"
       );
+
+      return;
     }
+
+    const finalUrl =
+      response.url ||
+      originalUrl;
 
     const html =
       await response.text();
 
-    return {
-      html,
-      finalUrl: response.url || url
-    };
-
-  } finally {
-
-    clearTimeout(timer);
-  }
-}
-
-/* =========================================================
-   FAILURE
-========================================================= */
-
-async function markFailure(url) {
-
-  try {
-
-    await supabase
-      .from("crawl_queue")
-      .update({
-        status: "pending"
-      })
-      .eq("url", url);
-
-  } catch (error) {
-
-    console.error(
-      "[HEXORA] Queue reset error:",
-      error.message
-    );
-  }
-}
-
-/* =========================================================
-   CRAWL ONE URL
-========================================================= */
-
-async function crawlUrl(url) {
-
-  console.log(
-    `[HEXORA] Crawling: ${url}`
-  );
-
-  try {
-
-    if (!isProbablyWebPage(url)) {
-      await markFailure(url);
-      return;
-    }
-
-    const allowed =
-      await canFetch(url);
-
-    if (!allowed) {
-
-      console.log(
-        `[HEXORA] robots.txt blocked: ${url}`
+    if (
+      !html ||
+      html.length < 100
+    ) {
+      await markFailure(
+        item.id,
+        "Empty HTML"
       );
 
-      await markFailure(url);
       return;
     }
 
     const page =
-      await fetchPage(url);
-
-    const finalUrl =
-      normalizeUrl(
-        page.finalUrl
-      ) || url;
-
-    const extracted =
       extractPage(
-        page.html,
+        html,
         finalUrl
       );
 
-    if (!extracted.title &&
-        !extracted.content) {
+    if (
+      !page.content ||
+      page.content.length < 50
+    ) {
+      await markFailure(
+        item.id,
+        "Insufficient page content"
+      );
 
-      await markFailure(url);
       return;
     }
 
-    const pageRecord = {
+    const now =
+      new Date()
+        .toISOString();
+
+    // IMPORTANT:
+    // Only use columns that are part of
+    // the basic HEXORA pages table.
+    const pageData = {
       url: finalUrl,
-      title: extracted.title,
-      description: extracted.description,
-      content: extracted.content,
-      canonical: extracted.canonical,
-      word_count: extracted.wordCount,
-      content_hash: extracted.contentHash
+
+      title:
+        page.title ||
+        finalUrl,
+
+      description:
+        page.description ||
+        "",
+
+      content:
+        page.content || "",
+
+      last_crawled_at:
+        now
     };
 
-    const { error } =
+    const {
+      error: pageError
+    } =
       await supabase
         .from("pages")
         .upsert(
-          pageRecord,
+          pageData,
           {
             onConflict: "url"
           }
         );
 
-    if (error) {
-      throw error;
+    if (pageError) {
+      throw pageError;
     }
 
-    /* ---------- DISCOVER LINKS ---------- */
+    // ---------------------------------
+    // DISCOVER LINKS
+    // ---------------------------------
+
+    const MAX_LINKS_PER_PAGE = 80;
 
     const discovered =
-      extracted.links;
+      page.links
+        .filter(
+          link =>
+            link !== finalUrl &&
+            !isBlockedUrl(link)
+        )
+        .sort(
+          (a, b) =>
+            crawlPriority(b) -
+            crawlPriority(a)
+        )
+        .slice(
+          0,
+          MAX_LINKS_PER_PAGE
+        );
 
-    for (const link of discovered) {
-
-      if (!isProbablyWebPage(link)) {
-        continue;
-      }
-
-      const { error: queueError } =
+    for (
+      const link of discovered
+    ) {
+      try {
         await supabase
           .from("crawl_queue")
           .upsert(
@@ -762,75 +853,76 @@ async function crawlUrl(url) {
               ignoreDuplicates: true
             }
           );
-
-      if (queueError) {
-        console.error(
-          "[HEXORA] Queue insert:",
-          queueError.message
-        );
-      }
+      } catch {}
     }
 
     await supabase
       .from("crawl_queue")
       .update({
-        status: "done"
+        status: "done",
+
+        last_error: null,
+
+        last_crawled_at:
+          now
       })
-      .eq("url", url);
-
-    if (finalUrl !== url) {
-
-      await supabase
-        .from("crawl_queue")
-        .update({
-          status: "done"
-        })
-        .eq("url", finalUrl);
-    }
+      .eq(
+        "id",
+        item.id
+      );
 
     console.log(
-      `[HEXORA] Crawled successfully: ${finalUrl} | links: ${discovered.length}`
+      `[HEXORA] Crawled successfully: ${finalUrl} | category: ${getCategory(
+        finalUrl
+      )} | links: ${discovered.length}`
     );
 
   } catch (error) {
-
     console.error(
-      `[HEXORA] Crawl failed: ${url} | ${error.message}`
+      `[HEXORA] Crawl failed: ${originalUrl}`,
+      error.message
     );
 
-    await markFailure(url);
+    await markFailure(
+      item.id,
+      error.message
+    );
   }
 }
 
-/* =========================================================
-   SMART SEED REFRESH
-========================================================= */
+
+// =====================================================
+// SEED REFRESH
+// =====================================================
 
 async function refreshSeeds() {
-
-  for (const url of GLOBAL_SEEDS) {
-
+  for (
+    const url of SEED_URLS
+  ) {
     try {
+      const normalized =
+        normalizeUrl(url);
 
-      if (!isProbablyWebPage(url)) {
+      if (!normalized) {
         continue;
       }
 
+      // Explicitly put important seeds
+      // back into the pending queue.
       await supabase
         .from("crawl_queue")
         .upsert(
           {
-            url,
-            status: "pending"
+            url: normalized,
+            status: "pending",
+            last_error: null
           },
           {
-            onConflict: "url",
-            ignoreDuplicates: true
+            onConflict: "url"
           }
         );
 
     } catch (error) {
-
       console.error(
         "[HEXORA] Seed error:",
         url,
@@ -840,652 +932,910 @@ async function refreshSeeds() {
   }
 
   console.log(
-    `[HEXORA] Smart seed refresh completed | seeds: ${GLOBAL_SEEDS.length}`
+    `[HEXORA] Smart seeds refreshed: ${SEED_URLS.length}`
   );
 }
 
-/* =========================================================
-   CRAWL PRIORITY
-========================================================= */
 
-function crawlPriority(url) {
+// =====================================================
+// GET IMPORTANT PENDING SEEDS
+// This prevents Wikipedia starvation.
+// =====================================================
 
-  let score = 0;
-
-  const domain =
-    getDomain(url);
-
-  const category =
-    domainCategory(domain);
-
-  /* Trusted domain */
-
-  score +=
-    domainAuthority(domain) * 10;
-
-  /* Category diversity */
-
-  if (category === "assam") {
-    score += 45;
-  }
-
-  if (category === "india") {
-    score += 35;
-  }
-
-  if (category === "news") {
-    score += 30;
-  }
-
-  if (category === "technology") {
-    score += 25;
-  }
-
-  if (category === "science") {
-    score += 25;
-  }
-
-  /* URL quality */
-
-  score += urlQuality(url);
-
-  /* Avoid Wikipedia over-priority */
-
-  if (domain === "wikipedia.org") {
-    score -= 30;
-  }
-
-  try {
-
-    const path =
-      new URL(url)
-        .pathname
-        .toLowerCase();
-
-    if (
-      path.includes("/news") ||
-      path.includes("/article") ||
-      path.includes("/technology") ||
-      path.includes("/science") ||
-      path.includes("/india") ||
-      path.includes("/assam")
-    ) {
-      score += 20;
-    }
-
-  } catch {}
-
-  return score;
-}
-
-/* =========================================================
-   DIVERSIFIED CRAWL BATCH
-========================================================= */
-
-async function crawlBatch() {
-
-  try {
-
-    await refreshSeeds();
-
-    const { data, error } =
-      await supabase
-        .from("crawl_queue")
-        .select("url")
-        .eq("status", "pending")
-        .limit(500);
-
-    if (error) {
-      throw error;
-    }
-
-    if (!data || !data.length) {
-
-      console.log(
-        "[HEXORA] No pending URLs"
+async function getSeedQueueItems() {
+  const {
+    data,
+    error
+  } =
+    await supabase
+      .from("crawl_queue")
+      .select("*")
+      .eq(
+        "status",
+        "pending"
+      )
+      .in(
+        "url",
+        SEED_URLS
       );
 
-      return 0;
-    }
-
-    const sorted =
-      data
-        .map(row => row.url)
-        .filter(isProbablyWebPage)
-        .sort(
-          (a, b) =>
-            crawlPriority(b) -
-            crawlPriority(a)
-        );
-
-    /* ---------- DOMAIN DIVERSITY ---------- */
-
-    const selected = [];
-    const domainCounts = new Map();
-
-    for (const url of sorted) {
-
-      const domain =
-        getDomain(url);
-
-      const count =
-        domainCounts.get(domain) || 0;
-
-      /*
-        Maximum 2 URLs per domain
-        in one batch.
-      */
-
-      if (count >= 2) {
-        continue;
-      }
-
-      selected.push(url);
-
-      domainCounts.set(
-        domain,
-        count + 1
-      );
-
-      if (
-        selected.length >= BATCH_SIZE
-      ) {
-        break;
-      }
-    }
-
-    /* ---------- FALLBACK ---------- */
-
-    if (!selected.length) {
-
-      selected.push(
-        ...sorted.slice(0, BATCH_SIZE)
-      );
-    }
-
-    let index = 0;
-
-    async function worker() {
-
-      while (true) {
-
-        const current =
-          index++;
-
-        if (
-          current >= selected.length
-        ) {
-          break;
-        }
-
-        await crawlUrl(
-          selected[current]
-        );
-      }
-    }
-
-    const workers = [];
-
-    for (
-      let i = 0;
-      i < Math.min(
-        CONCURRENCY,
-        selected.length
-      );
-      i++
-    ) {
-      workers.push(worker());
-    }
-
-    await Promise.all(workers);
-
-    console.log(
-      `[HEXORA] Crawl cycle completed | processed: ${selected.length}`
-    );
-
-    return selected.length;
-
-  } catch (error) {
-
+  if (error) {
     console.error(
-      "[HEXORA] Crawl cycle error:",
+      "[HEXORA] Seed queue error:",
       error.message
     );
 
-    return 0;
-  }
-}
-
-/* =========================================================
-   SEARCH
-========================================================= */
-
-function normalizeSearchText(text = "") {
-
-  return text
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function countWordMatches(text, words) {
-
-  const lower =
-    normalizeSearchText(text);
-
-  let count = 0;
-
-  for (const word of words) {
-
-    if (
-      lower.includes(word)
-    ) {
-      count++;
-    }
-  }
-
-  return count;
-}
-
-function freshnessScore(row) {
-
-  const date =
-    row.updated_at ||
-    row.created_at;
-
-  if (!date) return 0;
-
-  const time =
-    new Date(date).getTime();
-
-  if (!Number.isFinite(time)) {
-    return 0;
-  }
-
-  const days =
-    (Date.now() - time) /
-    86400000;
-
-  if (days <= 1) return 12;
-  if (days <= 7) return 8;
-  if (days <= 30) return 5;
-  if (days <= 180) return 2;
-
-  return 0;
-}
-
-async function searchPages(q) {
-
-  const query =
-    normalizeSearchText(q);
-
-  if (!query) {
     return [];
   }
 
-  const words =
-    query
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 12);
+  return data || [];
+}
 
-  const candidates = new Map();
 
-  /* ---------- FTS ---------- */
+// =====================================================
+// GET GENERAL PENDING QUEUE
+// =====================================================
 
-  try {
+async function getGeneralQueueItems() {
+  const {
+    data,
+    error
+  } =
+    await supabase
+      .from("crawl_queue")
+      .select("*")
+      .eq(
+        "status",
+        "pending"
+      )
+      .order(
+        "created_at",
+        {
+          ascending: true
+        }
+      )
+      .limit(500);
 
-    const { data } =
-      await supabase
-        .from("pages")
-        .select(
-          "url,title,description,content,word_count,updated_at,created_at"
-        )
-        .textSearch(
-          "search_vector",
-          query,
-          {
-            type: "websearch",
-            config: "simple"
-          }
-        )
-        .limit(300);
+  if (error) {
+    throw error;
+  }
 
-    for (const row of data || []) {
+  return data || [];
+}
 
-      if (row.url) {
-        candidates.set(
-          row.url,
-          row
-        );
-      }
-    }
 
-  } catch (error) {
+// =====================================================
+// BALANCED CRAWL BATCH
+// =====================================================
 
-    console.error(
-      "[HEXORA] FTS error:",
-      error.message
+async function crawlBatch() {
+  const seedItems =
+    await getSeedQueueItems();
+
+  const generalItems =
+    await getGeneralQueueItems();
+
+  const all =
+    new Map();
+
+  for (
+    const item of seedItems
+  ) {
+    all.set(
+      item.id,
+      item
     );
   }
 
-  /* ---------- TITLE FALLBACK ---------- */
-
-  for (const word of words) {
-
-    try {
-
-      const { data } =
-        await supabase
-          .from("pages")
-          .select(
-            "url,title,description,content,word_count,updated_at,created_at"
-          )
-          .ilike(
-            "title",
-            `%${word}%`
-          )
-          .limit(100);
-
-      for (const row of data || []) {
-
-        if (row.url) {
-          candidates.set(
-            row.url,
-            row
-          );
-        }
-      }
-
-    } catch {}
+  for (
+    const item of generalItems
+  ) {
+    all.set(
+      item.id,
+      item
+    );
   }
 
-  /* ---------- DESCRIPTION FALLBACK ---------- */
+  const available =
+    [...all.values()];
 
-  for (const word of words) {
+  if (!available.length) {
+    console.log(
+      "[HEXORA] No pending URLs."
+    );
 
-    try {
-
-      const { data } =
-        await supabase
-          .from("pages")
-          .select(
-            "url,title,description,content,word_count,updated_at,created_at"
-          )
-          .ilike(
-            "description",
-            `%${word}%`
-          )
-          .limit(100);
-
-      for (const row of data || []) {
-
-        if (row.url) {
-          candidates.set(
-            row.url,
-            row
-          );
-        }
-      }
-
-    } catch {}
+    return 0;
   }
 
-  /* ---------- SCORE ---------- */
+  // ---------------------------------
+  // CATEGORY BALANCE
+  // ---------------------------------
 
-  const results = [];
+  const groups = {
+    assam: [],
+    india: [],
+    news: [],
+    technology: [],
+    science: [],
+    general: [],
+    wikipedia: []
+  };
 
-  for (const row of candidates.values()) {
-
-    const title =
-      normalizeSearchText(
-        row.title || ""
-      );
-
-    const description =
-      normalizeSearchText(
-        row.description || ""
-      );
-
-    const content =
-      normalizeSearchText(
-        row.content || ""
-      );
-
-    const url =
-      normalizeSearchText(
-        row.url || ""
-      );
-
-    const domain =
-      getDomain(row.url);
-
+  for (
+    const item of available
+  ) {
     const category =
-      domainCategory(domain);
-
-    let score = 0;
-
-    /* Exact phrase */
+      getCategory(item.url);
 
     if (
-      title === query
+      groups[category]
     ) {
-      score += 2000;
+      groups[category].push(
+        item
+      );
+    } else {
+      groups.general.push(
+        item
+      );
     }
+  }
+
+  for (
+    const key of Object.keys(groups)
+  ) {
+    groups[key].sort(
+      (a, b) =>
+        crawlPriority(b.url) -
+        crawlPriority(a.url)
+    );
+  }
+
+  const selected = [];
+  const usedIds =
+    new Set();
+
+  // Reserve one slot for each
+  // major category when available.
+  const categoryOrder = [
+    "assam",
+    "india",
+    "news",
+    "technology",
+    "science",
+    "general"
+  ];
+
+  for (
+    const category of categoryOrder
+  ) {
+    const item =
+      groups[category][0];
 
     if (
-      title.includes(query)
+      item &&
+      !usedIds.has(item.id) &&
+      selected.length < BATCH_SIZE
     ) {
-      score += 900;
+      selected.push(item);
+      usedIds.add(item.id);
     }
+  }
 
+  // Fill remaining slots by priority.
+  const remaining =
+    available
+      .filter(
+        item =>
+          !usedIds.has(item.id)
+      )
+      .sort(
+        (a, b) =>
+          crawlPriority(b.url) -
+          crawlPriority(a.url)
+      );
+
+  for (
+    const item of remaining
+  ) {
     if (
-      description.includes(query)
+      selected.length >=
+      BATCH_SIZE
     ) {
-      score += 300;
+      break;
     }
 
+    // Keep Wikipedia from consuming
+    // the entire batch.
     if (
-      url.includes(query)
+      isWikipedia(item.url)
     ) {
-      score += 250;
+      continue;
     }
 
-    /* Individual words */
+    selected.push(item);
+    usedIds.add(item.id);
+  }
 
-    let titleMatches = 0;
-    let descriptionMatches = 0;
-    let contentMatches = 0;
-
-    for (const word of words) {
-
-      if (title.includes(word)) {
-        titleMatches++;
-        score += 150;
+  // If still empty/short, use Wikipedia
+  // only for leftover capacity.
+  if (
+    selected.length < BATCH_SIZE
+  ) {
+    for (
+      const item of available
+    ) {
+      if (
+        selected.length >=
+        BATCH_SIZE
+      ) {
+        break;
       }
 
-      if (description.includes(word)) {
-        descriptionMatches++;
-        score += 45;
+      if (
+        usedIds.has(item.id)
+      ) {
+        continue;
       }
 
-      if (content.includes(word)) {
-        contentMatches++;
-        score += 5;
+      selected.push(item);
+      usedIds.add(item.id);
+    }
+  }
+
+  // ---------------------------------
+  // DOMAIN LIMIT
+  // ---------------------------------
+
+  const domainCounts =
+    new Map();
+
+  const finalBatch = [];
+
+  for (
+    const item of selected
+  ) {
+    const domain =
+      getDomain(item.url);
+
+    const current =
+      domainCounts.get(domain) ||
+      0;
+
+    // Max 2 pages/domain/batch.
+    if (
+      current >= 2
+    ) {
+      continue;
+    }
+
+    domainCounts.set(
+      domain,
+      current + 1
+    );
+
+    finalBatch.push(item);
+
+    if (
+      finalBatch.length >=
+      BATCH_SIZE
+    ) {
+      break;
+    }
+  }
+
+  let index = 0;
+
+  async function worker() {
+    while (true) {
+      const currentIndex =
+        index++;
+
+      if (
+        currentIndex >=
+        finalBatch.length
+      ) {
+        return;
       }
 
-      if (url.includes(word)) {
-        score += 40;
-      }
+      const item =
+        finalBatch[currentIndex];
+
+      await supabase
+        .from("crawl_queue")
+        .update({
+          status:
+            "processing"
+        })
+        .eq(
+          "id",
+          item.id
+        );
+
+      await crawlUrl(item);
     }
+  }
 
-    /* Coverage */
+  const workers = [];
 
-    if (words.length) {
+  for (
+    let i = 0;
+    i <
+    Math.min(
+      CONCURRENCY,
+      finalBatch.length
+    );
+    i++
+  ) {
+    workers.push(
+      worker()
+    );
+  }
 
-      score +=
-        (titleMatches / words.length) *
-        600;
+  await Promise.all(
+    workers
+  );
 
-      score +=
-        (descriptionMatches / words.length) *
-        200;
+  return finalBatch.length;
+}
 
-      score +=
-        (contentMatches / words.length) *
-        100;
-    }
 
-    /* Domain authority */
+// =====================================================
+// SEARCH ENGINE
+// =====================================================
 
-    score +=
-      domainAuthority(domain);
+function scorePage(
+  page,
+  query
+) {
+  const q =
+    query.toLowerCase();
 
-    /* Category relevance */
+  const words =
+    q
+      .split(/\s+/)
+      .filter(Boolean);
 
+  const title =
+    String(
+      page.title || ""
+    ).toLowerCase();
+
+  const description =
+    String(
+      page.description || ""
+    ).toLowerCase();
+
+  const content =
+    String(
+      page.content || ""
+    ).toLowerCase();
+
+  const url =
+    String(
+      page.url || ""
+    ).toLowerCase();
+
+  let score = 0;
+
+  // Exact title
+  if (
+    title === q
+  ) {
+    score += 180;
+  }
+
+  // Phrase in title
+  if (
+    title.includes(q)
+  ) {
+    score += 100;
+  }
+
+  // Phrase in description
+  if (
+    description.includes(q)
+  ) {
+    score += 45;
+  }
+
+  // Phrase in URL
+  if (
+    url.includes(q)
+  ) {
+    score += 35;
+  }
+
+  // Word matches
+  let matched = 0;
+
+  for (
+    const word of words
+  ) {
     if (
-      query.includes("assam") &&
-      category === "assam"
+      title.includes(word)
     ) {
-      score += 300;
+      score += 25;
+      matched++;
     }
 
     if (
-      query.includes("india") &&
-      category === "india"
+      description.includes(word)
     ) {
-      score += 250;
+      score += 10;
     }
 
     if (
-      query.includes("news") &&
-      category === "news"
-    ) {
-      score += 200;
-    }
-
-    if (
-      query.includes("technology") &&
-      category === "technology"
-    ) {
-      score += 200;
-    }
-
-    if (
-      query.includes("tech") &&
-      category === "technology"
-    ) {
-      score += 150;
-    }
-
-    if (
-      query.includes("science") &&
-      category === "science"
-    ) {
-      score += 200;
-    }
-
-    /* Quality */
-
-    score +=
-      urlQuality(row.url);
-
-    if (
-      Number(row.word_count || 0) > 300
+      url.includes(word)
     ) {
       score += 8;
     }
 
     if (
-      Number(row.word_count || 0) > 1000
+      content.includes(word)
+    ) {
+      score += 3;
+    }
+  }
+
+  // Query coverage
+  if (
+    words.length &&
+    matched === words.length
+  ) {
+    score += 35;
+  }
+
+  // Category boost
+  const category =
+    getCategory(
+      page.url || ""
+    );
+
+  const queryLower =
+    q;
+
+  if (
+    queryLower.includes(
+      "assam"
+    ) &&
+    category === "assam"
+  ) {
+    score += 60;
+  }
+
+  if (
+    queryLower.includes(
+      "guwahati"
+    ) &&
+    category === "assam"
+  ) {
+    score += 45;
+  }
+
+  if (
+    queryLower.includes(
+      "india"
+    ) &&
+    category === "india"
+  ) {
+    score += 45;
+  }
+
+  if (
+    queryLower.includes(
+      "news"
+    ) &&
+    (
+      category === "news" ||
+      category === "india" ||
+      category === "assam"
+    )
+  ) {
+    score += 40;
+  }
+
+  if (
+    (
+      queryLower.includes(
+        "technology"
+      ) ||
+      queryLower.includes(
+        "tech"
+      ) ||
+      queryLower.includes(
+        "ai"
+      )
+    ) &&
+    category === "technology"
+  ) {
+    score += 45;
+  }
+
+  if (
+    queryLower.includes(
+      "science"
+    ) &&
+    category === "science"
+  ) {
+    score += 45;
+  }
+
+  // Wikipedia is useful,
+  // but should not dominate.
+  if (
+    category === "wikipedia"
+  ) {
+    score -= 25;
+  }
+
+  // Freshness
+  if (
+    page.last_crawled_at
+  ) {
+    const age =
+      Date.now() -
+      new Date(
+        page.last_crawled_at
+      ).getTime();
+
+    const days =
+      age /
+      (
+        1000 *
+        60 *
+        60 *
+        24
+      );
+
+    if (
+      days <= 1
+    ) {
+      score += 15;
+    } else if (
+      days <= 7
+    ) {
+      score += 10;
+    } else if (
+      days <= 30
     ) {
       score += 5;
     }
-
-    /* Freshness */
-
-    score +=
-      freshnessScore(row);
-
-    /* Wikipedia penalty for generic searches */
-
-    if (
-      domain === "wikipedia.org" &&
-      !title.includes(query)
-    ) {
-      score -= 250;
-    }
-
-    /* Weak match penalty */
-
-    if (
-      titleMatches === 0 &&
-      descriptionMatches === 0 &&
-      contentMatches < 2
-    ) {
-      score -= 200;
-    }
-
-    results.push({
-      ...row,
-      score
-    });
   }
 
-  results.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  return results
-    .slice(0, 20)
-    .map(row => ({
-      url: row.url,
-      title:
-        row.title ||
-        row.url,
-      description:
-        row.description ||
-        "",
-      score:
-        Math.round(row.score)
-    }));
+  return score;
 }
 
-/* =========================================================
-   HTTP SERVER
-========================================================= */
+
+async function searchPages(
+  query
+) {
+  const q =
+    cleanText(query);
+
+  if (!q) {
+    return [];
+  }
+
+  console.log(
+    `[HEXORA SEARCH] ${q}`
+  );
+
+  let data = [];
+  let ftsError = null;
+
+  // ---------------------------------
+  // FTS
+  // ---------------------------------
+
+  const fts =
+    await supabase
+      .from("pages")
+      .select(
+        "id,url,title,description,content,last_crawled_at"
+      )
+      .textSearch(
+        "search_vector",
+        q,
+        {
+          type:
+            "websearch",
+          config:
+            "simple"
+        }
+      )
+      .limit(100);
+
+  data =
+    fts.data || [];
+
+  ftsError =
+    fts.error;
+
+  // ---------------------------------
+  // Fallback
+  // ---------------------------------
+
+  if (
+    ftsError ||
+    data.length === 0
+  ) {
+    console.log(
+      "[HEXORA] Using search fallback"
+    );
+
+    const pattern =
+      `%${q}%`;
+
+    const fallback =
+      await supabase
+        .from("pages")
+        .select(
+          "id,url,title,description,content,last_crawled_at"
+        )
+        .or(
+          `title.ilike.${pattern},description.ilike.${pattern},url.ilike.${pattern}`
+        )
+        .limit(100);
+
+    if (
+      fallback.error
+    ) {
+      throw fallback.error;
+    }
+
+    data =
+      fallback.data || [];
+  }
+
+  const results =
+    data
+      .map(page => ({
+        ...page,
+        relevance_score:
+          Number(
+            scorePage(
+              page,
+              q
+            ).toFixed(2)
+          )
+      }))
+      .sort(
+        (a, b) =>
+          b.relevance_score -
+          a.relevance_score
+      )
+      .slice(
+        0,
+        20
+      )
+      .map(
+        ({
+          content,
+          ...page
+        }) =>
+          page
+      );
+
+  return results;
+}
+
+
+// =====================================================
+// MIME TYPES
+// =====================================================
+
+const MIME_TYPES = {
+  ".html":
+    "text/html; charset=utf-8",
+
+  ".js":
+    "application/javascript; charset=utf-8",
+
+  ".mjs":
+    "application/javascript; charset=utf-8",
+
+  ".css":
+    "text/css; charset=utf-8",
+
+  ".json":
+    "application/json; charset=utf-8",
+
+  ".png":
+    "image/png",
+
+  ".jpg":
+    "image/jpeg",
+
+  ".jpeg":
+    "image/jpeg",
+
+  ".gif":
+    "image/gif",
+
+  ".svg":
+    "image/svg+xml",
+
+  ".webp":
+    "image/webp",
+
+  ".ico":
+    "image/x-icon",
+
+  ".txt":
+    "text/plain; charset=utf-8",
+
+  ".woff":
+    "font/woff",
+
+  ".woff2":
+    "font/woff2"
+};
+
+
+// =====================================================
+// STATIC FILE SERVER
+// =====================================================
+
+function serveStatic(
+  reqPath,
+  res
+) {
+  try {
+    const decoded =
+      decodeURIComponent(
+        reqPath
+      );
+
+    if (
+      decoded.includes("..") ||
+      decoded.includes("\\")
+    ) {
+      return false;
+    }
+
+    const relativePath =
+      decoded === "/"
+        ? "index.html"
+        : decoded.replace(
+            /^\/+/,
+            ""
+          );
+
+    const filePath =
+      path.resolve(
+        process.cwd(),
+        relativePath
+      );
+
+    const root =
+      path.resolve(
+        process.cwd()
+      );
+
+    if (
+      !filePath.startsWith(
+        root
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      !fs.existsSync(
+        filePath
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      !fs.statSync(
+        filePath
+      ).isFile()
+    ) {
+      return false;
+    }
+
+    const ext =
+      path
+        .extname(
+          filePath
+        )
+        .toLowerCase();
+
+    res.writeHead(
+      200,
+      {
+        "Content-Type":
+          MIME_TYPES[ext] ||
+          "application/octet-stream"
+      }
+    );
+
+    fs.createReadStream(
+      filePath
+    ).pipe(res);
+
+    return true;
+
+  } catch {
+    return false;
+  }
+}
+
+
+// =====================================================
+// HTTP SERVER
+// =====================================================
 
 const server =
   http.createServer(
-    async (req, res) => {
-
+    async (
+      req,
+      res
+    ) => {
       try {
-
-        const requestUrl =
+        const url =
           new URL(
             req.url,
-            `http://${req.headers.host || "localhost"}`
+            `http://localhost:${PORT}`
           );
 
-        /* ---------- SEARCH ---------- */
+        // ---------------------------------
+        // HEALTH
+        // ---------------------------------
 
         if (
-          requestUrl.pathname === "/search"
+          req.method === "GET" &&
+          url.pathname ===
+            "/health"
         ) {
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json; charset=utf-8"
+            }
+          );
 
+          res.end(
+            JSON.stringify({
+              ok: true,
+              service:
+                "HEXORA",
+              crawler:
+                "running"
+            })
+          );
+
+          return;
+        }
+
+        // ---------------------------------
+        // SEARCH
+        // ---------------------------------
+
+        if (
+          req.method === "GET" &&
+          url.pathname ===
+            "/search"
+        ) {
           const q =
-            requestUrl.searchParams
-              .get("q")
-              ?.trim();
+            url.searchParams.get(
+              "q"
+            );
 
-          if (!q) {
-
+          if (
+            !q ||
+            !q.trim()
+          ) {
             res.writeHead(
               400,
               {
                 "Content-Type":
-                  "application/json"
+                  "application/json; charset=utf-8",
+                "Access-Control-Allow-Origin":
+                  "*"
               }
             );
 
@@ -1499,29 +1849,33 @@ const server =
             return;
           }
 
-          console.log(
-            `[HEXORA SEARCH] ${q}`
-          );
-
           const results =
-            await searchPages(q);
+            await searchPages(
+              q
+            );
 
           res.writeHead(
             200,
             {
               "Content-Type":
-                "application/json",
-              "Cache-Control":
-                "no-store",
+                "application/json; charset=utf-8",
+
               "Access-Control-Allow-Origin":
-                "*"
+                "*",
+
+              "Cache-Control":
+                "no-store"
             }
           );
 
           res.end(
             JSON.stringify({
-              query: q,
-              count: results.length,
+              query:
+                q,
+
+              count:
+                results.length,
+
               results
             })
           );
@@ -1529,93 +1883,58 @@ const server =
           return;
         }
 
-        /* ---------- HEALTH ---------- */
+        // ---------------------------------
+        // STATIC WEBSITE
+        // ---------------------------------
 
         if (
-          requestUrl.pathname === "/health"
+          req.method === "GET"
         ) {
+          const served =
+            serveStatic(
+              url.pathname,
+              res
+            );
 
-          res.writeHead(
-            200,
-            {
-              "Content-Type":
-                "application/json"
-            }
-          );
-
-          res.end(
-            JSON.stringify({
-              ok: true,
-              service: "HEXORA",
-              crawler: "running"
-            })
-          );
-
-          return;
+          if (served) {
+            return;
+          }
         }
 
-        /* ---------- ROOT ---------- */
-
-        if (
-          requestUrl.pathname === "/"
-        ) {
-
-          res.writeHead(
-            200,
-            {
-              "Content-Type":
-                "text/html; charset=utf-8"
-            }
-          );
-
-          res.end(`
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>HEXORA Search</title>
-</head>
-<body>
-  <h1>HEXORA Search Engine</h1>
-  <p>Search: <code>/search?q=your-query</code></p>
-  <p>Health: <code>/health</code></p>
-</body>
-</html>
-          `);
-
-          return;
-        }
-
-        /* ---------- 404 ---------- */
+        // ---------------------------------
+        // 404
+        // ---------------------------------
 
         res.writeHead(
           404,
           {
             "Content-Type":
-              "application/json"
+              "application/json; charset=utf-8"
           }
         );
 
         res.end(
           JSON.stringify({
-            error: "Not found"
+            error:
+              "Not found"
           })
         );
 
       } catch (error) {
-
         console.error(
-          "[HEXORA] HTTP error:",
-          error.message
+          "[HEXORA SERVER ERROR]",
+          error
         );
 
-        res.writeHead(
-          500,
-          {
-            "Content-Type":
-              "application/json"
-          }
-        );
+        if (!res.headersSent) {
+          res.writeHead(
+            500,
+            {
+              "Content-Type":
+                "application/json; charset=utf-8"
+            }
+          );
+        }
 
         res.end(
           JSON.stringify({
@@ -1627,24 +1946,33 @@ const server =
     }
   );
 
-/* =========================================================
-   START SERVER
-========================================================= */
+
+// =====================================================
+// START HTTP SERVER
+// =====================================================
 
 server.listen(
   PORT,
+  "0.0.0.0",
   () => {
-
     console.log(
-      "================================"
+      "======================================"
     );
 
     console.log(
-      "HEXORA SEARCH ENGINE"
+      "        HEXORA SEARCH ENGINE"
     );
 
     console.log(
-      `HTTP server: ${PORT}`
+      "======================================"
+    );
+
+    console.log(
+      `HTTP server running on port ${PORT}`
+    );
+
+    console.log(
+      "Homepage: /"
     );
 
     console.log(
@@ -1656,32 +1984,62 @@ server.listen(
     );
 
     console.log(
-      "================================"
+      "Crawler: ACTIVE"
+    );
+
+    console.log(
+      "Coverage: Assam + India + News + Technology + Science + General Web"
+    );
+
+    console.log(
+      "Wikipedia priority: LOW"
+    );
+
+    console.log(
+      "======================================"
     );
   }
 );
 
-/* =========================================================
-   CRAWLER WORKER
-========================================================= */
+
+// =====================================================
+// CRAWLER WORKER
+// =====================================================
 
 async function startCrawler() {
-
   console.log(
-    "HEXORA crawler worker started"
+    "[HEXORA] Crawler worker started"
   );
 
   console.log(
-    "HEXORA Smart Web Coverage enabled"
+    "[HEXORA] Smart Web Coverage enabled"
   );
 
   console.log(
-    "Assam + India + News + Technology + Science + General Web"
+    "[HEXORA] Assam + India + News + Technology + Science + General Web"
+  );
+
+  console.log(
+    "[HEXORA] Wikipedia will NOT dominate the queue"
   );
 
   while (true) {
+    try {
+      await refreshSeeds();
 
-    await crawlBatch();
+      const processed =
+        await crawlBatch();
+
+      console.log(
+        `[HEXORA] Crawl cycle completed | processed: ${processed}`
+      );
+
+    } catch (error) {
+      console.error(
+        "[HEXORA] Crawl cycle error:",
+        error.message
+      );
+    }
 
     await new Promise(
       resolve =>
@@ -1693,12 +2051,13 @@ async function startCrawler() {
   }
 }
 
-startCrawler().catch(
-  error => {
 
+startCrawler()
+  .catch(error => {
     console.error(
-      "[HEXORA] Crawler fatal error:",
+      "[HEXORA] Fatal crawler error:",
       error
     );
-  }
-);
+
+    process.exit(1);
+  });
