@@ -42,7 +42,7 @@ const CRAWL_INTERVAL_MS =
 // =====================================================
 
 function cleanText(text = "") {
-  return text
+  return String(text)
     .replace(/\s+/g, " ")
     .replace(/\u00a0/g, " ")
     .trim();
@@ -183,19 +183,19 @@ async function canFetch(url) {
         activeUserAgent &&
         line.startsWith("disallow:")
       ) {
-        const path =
+        const blockedPath =
           line
             .split(":")
             .slice(1)
             .join(":")
             .trim();
 
-        if (!path) continue;
+        if (!blockedPath) continue;
 
         const currentPath =
           new URL(url).pathname;
 
-        if (currentPath.startsWith(path)) {
+        if (currentPath.startsWith(blockedPath)) {
           return false;
         }
       }
@@ -569,13 +569,17 @@ async function searchPages(query) {
     return [];
   }
 
-
   console.log(
     `[HEXORA SEARCH] ${q}`
   );
 
+  const normalizedQuery =
+    q.toLowerCase();
 
-  // PostgreSQL full-text search
+  // ===================================================
+  // POSTGRESQL FULL TEXT SEARCH
+  // ===================================================
+
   const {
     data,
     error
@@ -595,7 +599,6 @@ async function searchPages(query) {
       )
       .limit(100);
 
-
   if (error) {
 
     console.error(
@@ -606,107 +609,279 @@ async function searchPages(query) {
     throw error;
   }
 
-
   const queryWords =
-    q
-      .toLowerCase()
+    normalizedQuery
       .split(/\s+/)
-      .filter(Boolean);
+      .filter(
+        word => word.length > 1
+      );
 
+
+  // ===================================================
+  // SCORE RESULTS
+  // ===================================================
 
   const results =
     (data || [])
       .map(page => {
 
         const title =
-          (page.title || "")
-            .toLowerCase();
+          cleanText(
+            page.title || ""
+          ).toLowerCase();
 
         const description =
-          (page.description || "")
-            .toLowerCase();
+          cleanText(
+            page.description || ""
+          ).toLowerCase();
 
         const content =
-          (page.content || "")
-            .toLowerCase();
+          cleanText(
+            page.content || ""
+          ).toLowerCase();
 
         let score = 0;
 
 
-        // ---------------------------------
-        // Exact title match
-        // ---------------------------------
+        // ---------------------------------------------
+        // 1. EXACT TITLE MATCH
+        // ---------------------------------------------
 
         if (
-          title ===
-          q.toLowerCase()
+          title === normalizedQuery
         ) {
-          score += 100;
+          score += 150;
         }
 
 
-        // ---------------------------------
-        // Query inside title
-        // ---------------------------------
+        // ---------------------------------------------
+        // 2. TITLE PHRASE MATCH
+        // ---------------------------------------------
 
         if (
           title.includes(
-            q.toLowerCase()
+            normalizedQuery
           )
         ) {
-          score += 60;
+          score += 80;
         }
 
 
-        // ---------------------------------
-        // Query inside description
-        // ---------------------------------
+        // ---------------------------------------------
+        // 3. DESCRIPTION PHRASE MATCH
+        // ---------------------------------------------
 
         if (
           description.includes(
-            q.toLowerCase()
+            normalizedQuery
           )
         ) {
-          score += 30;
+          score += 40;
         }
 
 
-        // ---------------------------------
-        // Individual word matching
-        // ---------------------------------
+        // ---------------------------------------------
+        // 4. WORD MATCHING
+        // ---------------------------------------------
+
+        let matchedWords = 0;
 
         for (
           const word of queryWords
         ) {
 
+          let matched = false;
+
           if (
             title.includes(word)
           ) {
-            score += 15;
+            score += 25;
+            matched = true;
           }
 
           if (
             description.includes(word)
           ) {
-            score += 7;
+            score += 12;
+            matched = true;
           }
 
           if (
             content.includes(word)
           ) {
-            score += 2;
+            score += 3;
+            matched = true;
+          }
+
+          if (matched) {
+            matchedWords++;
           }
         }
 
 
-        // ---------------------------------
-        // Content quality
-        // ---------------------------------
+        // ---------------------------------------------
+        // 5. QUERY COVERAGE
+        // ---------------------------------------------
+
+        if (
+          queryWords.length > 0
+        ) {
+
+          const coverage =
+            matchedWords /
+            queryWords.length;
+
+          score += coverage * 50;
+        }
+
+
+        // ---------------------------------------------
+        // 6. DOMAIN EXTRACTION
+        // ---------------------------------------------
+
+        let hostname = "";
+
+        try {
+
+          hostname =
+            new URL(
+              page.url
+            )
+              .hostname
+              .toLowerCase()
+              .replace(
+                /^www\./,
+                ""
+              );
+
+        } catch {}
+
+
+        // ---------------------------------------------
+        // 7. OFFICIAL DOMAIN RELEVANCE
+        // ---------------------------------------------
+
+        const domainKeywords = {
+
+          google: [
+            "google.com"
+          ],
+
+          youtube: [
+            "youtube.com"
+          ],
+
+          amazon: [
+            "amazon.com"
+          ],
+
+          wikipedia: [
+            "wikipedia.org"
+          ],
+
+          facebook: [
+            "facebook.com"
+          ],
+
+          instagram: [
+            "instagram.com"
+          ],
+
+          github: [
+            "github.com"
+          ],
+
+          reddit: [
+            "reddit.com"
+          ],
+
+          microsoft: [
+            "microsoft.com"
+          ],
+
+          apple: [
+            "apple.com"
+          ],
+
+          openai: [
+            "openai.com"
+          ]
+
+        };
+
+
+        for (
+          const [
+            keyword,
+            domains
+          ]
+          of Object.entries(
+            domainKeywords
+          )
+        ) {
+
+          if (
+            normalizedQuery.includes(
+              keyword
+            )
+          ) {
+
+            const isOfficial =
+              domains.some(
+                domain =>
+                  hostname === domain ||
+                  hostname.endsWith(
+                    `.${domain}`
+                  )
+              );
+
+            if (isOfficial) {
+              score += 100;
+            }
+          }
+        }
+
+
+        // ---------------------------------------------
+        // 8. DOMAIN NAME MATCH
+        // ---------------------------------------------
+
+        for (
+          const word of queryWords
+        ) {
+
+          const cleanWord =
+            word.replace(
+              /[^a-z0-9]/g,
+              ""
+            );
+
+          if (
+            cleanWord &&
+            hostname.includes(
+              cleanWord
+            )
+          ) {
+            score += 20;
+          }
+        }
+
+
+        // ---------------------------------------------
+        // 9. CONTENT QUALITY
+        // ---------------------------------------------
 
         const wordCount =
           Number(
             page.word_count || 0
           );
+
+
+        if (
+          wordCount >= 100
+        ) {
+          score += 3;
+        }
 
         if (
           wordCount >= 300
@@ -717,43 +892,67 @@ async function searchPages(query) {
         if (
           wordCount >= 1000
         ) {
-          score += 5;
+          score += 7;
         }
 
 
-        // ---------------------------------
-        // Freshness
-        // ---------------------------------
+        // ---------------------------------------------
+        // 10. FRESHNESS
+        // ---------------------------------------------
 
         if (
           page.last_crawled_at
         ) {
 
-          const age =
-            Date.now() -
+          const crawledAt =
             new Date(
               page.last_crawled_at
             ).getTime();
 
-          const days =
-            age /
-            (
-              1000 *
-              60 *
-              60 *
-              24
-            );
-
           if (
-            days <= 7
+            Number.isFinite(
+              crawledAt
+            )
           ) {
-            score += 5;
+
+            const ageDays =
+              (
+                Date.now() -
+                crawledAt
+              ) /
+              (
+                1000 *
+                60 *
+                60 *
+                24
+              );
+
+
+            if (
+              ageDays <= 1
+            ) {
+
+              score += 15;
+
+            } else if (
+              ageDays <= 3
+            ) {
+
+              score += 10;
+
+            } else if (
+              ageDays <= 7
+            ) {
+
+              score += 5;
+            }
           }
         }
 
 
         return {
           ...page,
+
           relevance_score:
             Number(
               score.toFixed(3)
@@ -762,15 +961,87 @@ async function searchPages(query) {
       });
 
 
-  // Highest relevance first
+  // ===================================================
+  // SORT BY RELEVANCE
+  // ===================================================
+
   results.sort(
-    (a, b) =>
-      b.relevance_score -
-      a.relevance_score
+    (a, b) => {
+
+      if (
+        b.relevance_score !==
+        a.relevance_score
+      ) {
+
+        return (
+          b.relevance_score -
+          a.relevance_score
+        );
+      }
+
+      return String(
+        a.title || ""
+      ).localeCompare(
+        String(
+          b.title || ""
+        )
+      );
+    }
   );
 
 
-  return results
+  // ===================================================
+  // REMOVE DUPLICATE URLS
+  // ===================================================
+
+  const seen =
+    new Set();
+
+  const uniqueResults =
+    results.filter(
+      page => {
+
+        let key =
+          page.url;
+
+        try {
+
+          const parsed =
+            new URL(
+              page.url
+            );
+
+          parsed.hash = "";
+
+          key =
+            parsed.origin +
+            parsed.pathname
+              .replace(
+                /\/+$/,
+                ""
+              );
+
+        } catch {}
+
+
+        if (
+          seen.has(key)
+        ) {
+          return false;
+        }
+
+        seen.add(key);
+
+        return true;
+      }
+    );
+
+
+  // ===================================================
+  // RETURN TOP 20
+  // ===================================================
+
+  return uniqueResults
     .slice(0, 20)
     .map(
       ({
@@ -798,24 +1069,35 @@ const server =
           );
 
 
-        // ------------------------------
-        // HEXORA Website
-        // ------------------------------
+        // =================================================
+        // HEXORA WEBSITE
+        // =================================================
 
         if (
           req.method === "GET" &&
           url.pathname === "/"
         ) {
-          const filePath = path.join(
-            process.cwd(),
-            "index.html"
-          );
 
-          if (!fs.existsSync(filePath)) {
-            res.writeHead(404, {
-              "Content-Type":
-                "text/plain; charset=utf-8"
-            });
+          const filePath =
+            path.join(
+              process.cwd(),
+              "index.html"
+            );
+
+
+          if (
+            !fs.existsSync(
+              filePath
+            )
+          ) {
+
+            res.writeHead(
+              404,
+              {
+                "Content-Type":
+                  "text/plain; charset=utf-8"
+              }
+            );
 
             res.end(
               "HEXORA website not found"
@@ -824,10 +1106,15 @@ const server =
             return;
           }
 
-          res.writeHead(200, {
-            "Content-Type":
-              "text/html; charset=utf-8"
-          });
+
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "text/html; charset=utf-8"
+            }
+          );
+
 
           fs.createReadStream(
             filePath
@@ -837,9 +1124,9 @@ const server =
         }
 
 
-        // ------------------------------
-        // Search
-        // ------------------------------
+        // =================================================
+        // SEARCH
+        // =================================================
 
         if (
           req.method === "GET" &&
@@ -893,8 +1180,10 @@ const server =
           res.end(
             JSON.stringify({
               query: q,
+
               count:
                 results.length,
+
               results
             })
           );
@@ -903,16 +1192,19 @@ const server =
         }
 
 
-        // ------------------------------
-        // Frontend static files
-        // ------------------------------
+        // =================================================
+        // FRONTEND STATIC FILES
+        // =================================================
 
-        if (req.method === "GET") {
+        if (
+          req.method === "GET"
+        ) {
 
           const requestedPath =
             decodeURIComponent(
               url.pathname
             );
+
 
           if (
             requestedPath !== "/" &&
@@ -925,6 +1217,7 @@ const server =
                 process.cwd(),
                 requestedPath
               );
+
 
             if (
               fs.existsSync(
@@ -1012,9 +1305,9 @@ const server =
         }
 
 
-        // ------------------------------
+        // =================================================
         // 404
-        // ------------------------------
+        // =================================================
 
         res.writeHead(
           404,
@@ -1024,12 +1317,14 @@ const server =
           }
         );
 
+
         res.end(
           JSON.stringify({
             error:
               "Not found"
           })
         );
+
 
       } catch (error) {
 
@@ -1039,13 +1334,17 @@ const server =
         );
 
 
-        res.writeHead(
-          500,
-          {
-            "Content-Type":
-              "application/json"
-          }
-        );
+        if (!res.headersSent) {
+
+          res.writeHead(
+            500,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+        }
 
 
         res.end(
