@@ -5,6 +5,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+// =====================================================
+// ENVIRONMENT
+// =====================================================
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,15 +40,14 @@ const CONCURRENCY =
 const CRAWL_INTERVAL_MS =
   Number(process.env.CRAWL_INTERVAL_MS || 30000);
 
-const MAX_DISCOVERED_LINKS =
-  Number(process.env.MAX_DISCOVERED_LINKS || 200);
+const MAX_DISCOVERED_LINKS = 200;
 
 
 // =====================================================
-// WORLDWIDE SEEDS
+// GLOBAL SEEDS
 // =====================================================
 
-const CRAWL_SEEDS = [
+const GLOBAL_SEEDS = [
   "https://www.wikipedia.org/",
   "https://en.wikipedia.org/",
   "https://www.bbc.com/",
@@ -68,18 +71,42 @@ const CRAWL_SEEDS = [
   "https://www.espncricinfo.com/"
 ];
 
-const SEED_REFRESH_MS =
-  15 * 60 * 1000;
+
+// =====================================================
+// TRUST / DOMAIN QUALITY
+// =====================================================
+
+const TRUSTED_DOMAINS = [
+  "nasa.gov",
+  "who.int",
+  "un.org",
+  "bbc.com",
+  "apnews.com",
+  "aljazeera.com",
+  "theguardian.com",
+  "ndtv.com",
+  "indianexpress.com",
+  "thehindu.com",
+  "hindustantimes.com",
+  "github.com",
+  "developer.mozilla.org",
+  "stackoverflow.com",
+  "wikipedia.org",
+  "imdb.com",
+  "espn.com",
+  "espncricinfo.com",
+  "reddit.com"
+];
 
 
 // =====================================================
-// BASIC HELPERS
+// HELPERS
 // =====================================================
 
 function cleanText(text = "") {
   return String(text)
-    .replace(/\s+/g, " ")
     .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -106,8 +133,8 @@ function normalizeUrl(url, baseUrl) {
 
     parsed.hash = "";
 
-    // Remove common tracking parameters
-    const trackingParams = [
+    // Remove tracking parameters
+    const removeParams = [
       "utm_source",
       "utm_medium",
       "utm_campaign",
@@ -115,83 +142,99 @@ function normalizeUrl(url, baseUrl) {
       "utm_content",
       "fbclid",
       "gclid",
-      "mc_cid",
-      "mc_eid"
+      "ref",
+      "ref_src"
     ];
 
-    for (
-      const param of trackingParams
-    ) {
-      parsed.searchParams.delete(param);
+    for (const key of removeParams) {
+      parsed.searchParams.delete(key);
     }
 
     return parsed.toString();
-
   } catch {
     return null;
   }
 }
 
 
-// =====================================================
-// URL QUALITY
-// =====================================================
+function getDomain(url) {
+  try {
+    return new URL(url)
+      .hostname
+      .replace(/^www\./, "")
+      .toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
-function urlQuality(url) {
-  const text =
-    String(url || "").toLowerCase();
 
-  let score = 0;
+function domainAuthority(url) {
+  const domain = getDomain(url);
 
-  const goodTerms = [
-    "news",
-    "article",
-    "story",
-    "latest",
-    "technology",
-    "science",
-    "business",
-    "sports",
-    "world",
-    "india",
-    "assam",
-    "guwahati",
-    "health",
-    "education",
-    "research",
-    "tutorial",
-    "guide"
-  ];
+  if (!domain) return 0;
 
-  const badTerms = [
-    "login",
-    "signin",
-    "signup",
-    "register",
-    "account",
-    "cart",
-    "checkout",
-    "privacy",
-    "terms",
-    "cookie",
-    "advertise",
-    "javascript:",
-    "mailto:"
-  ];
-
-  for (
-    const term of goodTerms
-  ) {
-    if (text.includes(term)) {
-      score += 20;
+  for (const trusted of TRUSTED_DOMAINS) {
+    if (
+      domain === trusted ||
+      domain.endsWith("." + trusted)
+    ) {
+      return 10;
     }
   }
 
-  for (
-    const term of badTerms
-  ) {
-    if (text.includes(term)) {
-      score -= 80;
+  return 0;
+}
+
+
+function urlQuality(url) {
+  const lower = url.toLowerCase();
+
+  let score = 0;
+
+  const good = [
+    "/news/",
+    "/article/",
+    "/articles/",
+    "/wiki/",
+    "/science/",
+    "/technology/",
+    "/sports/",
+    "/business/",
+    "/world/",
+    "/india/",
+    "/assam/",
+    "/guwahati/",
+    "/learn/",
+    "/docs/",
+    "/blog/"
+  ];
+
+  const bad = [
+    "/login",
+    "/signup",
+    "/register",
+    "/account",
+    "/privacy",
+    "/terms",
+    "/cookie",
+    "/search?",
+    "/tag/",
+    "/author/",
+    "/wp-admin",
+    "/feed",
+    "/comments"
+  ];
+
+  for (const part of good) {
+    if (lower.includes(part)) {
+      score += 5;
+    }
+  }
+
+  for (const part of bad) {
+    if (lower.includes(part)) {
+      score -= 5;
     }
   }
 
@@ -199,100 +242,102 @@ function urlQuality(url) {
 }
 
 
+function isProbablyWebPage(url) {
+  const lower = url.toLowerCase();
+
+  const badExtensions = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".mp4",
+    ".mp3",
+    ".pdf",
+    ".zip",
+    ".rar",
+    ".exe",
+    ".apk",
+    ".css",
+    ".js",
+    ".xml"
+  ];
+
+  return !badExtensions.some(
+    ext => lower.includes(ext)
+  );
+}
+
+
 // =====================================================
 // HTML EXTRACTION
 // =====================================================
 
-function extractPage(
-  html,
-  pageUrl
-) {
-  const $ =
-    cheerio.load(html);
+function extractPage(html, pageUrl) {
+  const $ = cheerio.load(html);
 
   $(
-    "script, style, noscript, iframe, svg, canvas"
+    "script,style,noscript,iframe,svg,canvas,template"
   ).remove();
 
-  const title =
-    cleanText(
-      $("title").first().text()
-    );
+  const title = cleanText(
+    $("title").first().text()
+  );
 
-  const description =
-    cleanText(
-      $(
-        'meta[name="description"]'
-      ).attr("content") || ""
-    );
-
-  const ogDescription =
-    cleanText(
-      $(
-        'meta[property="og:description"]'
-      ).attr("content") || ""
-    );
-
-  const finalDescription =
-    description ||
-    ogDescription;
+  const description = cleanText(
+    $('meta[name="description"]').attr("content") ||
+    $('meta[property="og:description"]').attr("content") ||
+    ""
+  );
 
   const canonical =
     normalizeUrl(
-      $(
-        'link[rel="canonical"]'
-      ).attr("href") ||
-        pageUrl,
+      $('link[rel="canonical"]').attr("href") ||
+      pageUrl,
       pageUrl
-    );
+    ) || pageUrl;
 
-  const content =
-    cleanText(
-      $("body").text()
-    );
-
-  const links =
-    new Set();
-
-  $("a[href]").each(
-    (_, element) => {
-
-      const href =
-        $(element).attr("href");
-
-      if (!href) {
-        return;
-      }
-
-      const normalized =
-        normalizeUrl(
-          href,
-          pageUrl
-        );
-
-      if (normalized) {
-        links.add(normalized);
-      }
-    }
+  const content = cleanText(
+    $("body").text()
   );
 
-  const wordCount =
-    content
-      ? content.split(/\s+/).length
-      : 0;
+  const links = new Set();
+
+  $("a[href]").each((_, element) => {
+    const href = $(element).attr("href");
+
+    if (!href) return;
+
+    const normalized =
+      normalizeUrl(href, pageUrl);
+
+    if (
+      normalized &&
+      isProbablyWebPage(normalized)
+    ) {
+      links.add(normalized);
+    }
+  });
+
+  const limitedLinks =
+    [...links].slice(
+      0,
+      MAX_DISCOVERED_LINKS
+    );
+
+  const wordCount = content
+    ? content.split(/\s+/).length
+    : 0;
 
   return {
     title,
-    description:
-      finalDescription,
+    description,
     canonical,
     content,
-    links: [
-      ...links
-    ],
+    links: limitedLinks,
     wordCount,
-    contentHash:
-      hashContent(content)
+    contentHash: hashContent(content)
   };
 }
 
@@ -302,29 +347,22 @@ function extractPage(
 // =====================================================
 
 async function canFetch(url) {
-
   try {
-
-    const parsed =
-      new URL(url);
+    const parsed = new URL(url);
 
     const robotsUrl =
       `${parsed.origin}/robots.txt`;
 
-    const response =
-      await fetch(
-        robotsUrl,
-        {
-          headers: {
-            "User-Agent":
-              USER_AGENT
-          },
-          signal:
-            AbortSignal.timeout(
-              10000
-            )
-        }
-      );
+    const response = await fetch(
+      robotsUrl,
+      {
+        headers: {
+          "User-Agent": USER_AGENT
+        },
+        signal:
+          AbortSignal.timeout(10000)
+      }
+    );
 
     if (!response.ok) {
       return true;
@@ -336,46 +374,39 @@ async function canFetch(url) {
     const lines =
       robots
         .split(/\r?\n/)
-        .map(
-          line =>
-            line
-              .trim()
-              .toLowerCase()
+        .map(line =>
+          line.trim()
         );
 
-    let activeUserAgent =
-      false;
+    let applies = false;
 
-    for (
-      const line of lines
-    ) {
+    for (const rawLine of lines) {
+      const line =
+        rawLine.toLowerCase();
 
       if (
         line.startsWith(
           "user-agent:"
         )
       ) {
-
-        const value =
+        const agent =
           line
             .split(":")
             .slice(1)
             .join(":")
             .trim();
 
-        activeUserAgent =
-          value === "*" ||
-          value ===
-            "hexora-bot";
+        applies =
+          agent === "*" ||
+          agent === "hexora-bot";
       }
 
       if (
-        activeUserAgent &&
+        applies &&
         line.startsWith(
           "disallow:"
         )
       ) {
-
         const blockedPath =
           line
             .split(":")
@@ -388,8 +419,7 @@ async function canFetch(url) {
         }
 
         const currentPath =
-          new URL(url)
-            .pathname;
+          new URL(url).pathname;
 
         if (
           currentPath.startsWith(
@@ -402,7 +432,6 @@ async function canFetch(url) {
     }
 
     return true;
-
   } catch {
     return true;
   }
@@ -410,25 +439,19 @@ async function canFetch(url) {
 
 
 // =====================================================
-// FETCH PAGE
+// FETCH
 // =====================================================
 
 async function fetchPage(url) {
-
   return fetch(
     url,
     {
       headers: {
-        "User-Agent":
-          USER_AGENT,
-
+        "User-Agent": USER_AGENT,
         "Accept":
           "text/html,application/xhtml+xml"
       },
-
-      redirect:
-        "follow",
-
+      redirect: "follow",
       signal:
         AbortSignal.timeout(
           TIMEOUT_MS
@@ -439,42 +462,26 @@ async function fetchPage(url) {
 
 
 // =====================================================
-// CRAWL FAILURE
+// FAILURE
 // =====================================================
 
 async function markFailure(
   id,
   error
 ) {
-
   try {
-
     await supabase
       .from("crawl_queue")
       .update({
-        status:
-          "pending",
-
+        status: "pending",
         last_error:
           String(error)
-            .slice(
-              0,
-              1000
-            ),
-
+            .slice(0, 1000),
         last_crawled_at:
-          new Date()
-            .toISOString()
+          new Date().toISOString()
       })
-      .eq(
-        "id",
-        id
-      );
-
-  } catch (
-    dbError
-  ) {
-
+      .eq("id", id);
+  } catch (dbError) {
     console.error(
       "[HEXORA] Queue error:",
       dbError.message
@@ -487,28 +494,18 @@ async function markFailure(
 // CRAWL URL
 // =====================================================
 
-async function crawlUrl(
-  item
-) {
-
-  const url =
-    item.url;
+async function crawlUrl(item) {
+  const url = item.url;
 
   console.log(
     `[HEXORA] Crawling: ${url}`
   );
 
   try {
-
     const allowed =
       await canFetch(url);
 
     if (!allowed) {
-
-      console.log(
-        `[HEXORA] robots.txt blocked: ${url}`
-      );
-
       await markFailure(
         item.id,
         "Blocked by robots.txt"
@@ -521,7 +518,6 @@ async function crawlUrl(
       await fetchPage(url);
 
     if (!response.ok) {
-
       await markFailure(
         item.id,
         `HTTP ${response.status}`
@@ -540,7 +536,6 @@ async function crawlUrl(
         "text/html"
       )
     ) {
-
       await markFailure(
         item.id,
         "Non-HTML content"
@@ -549,14 +544,16 @@ async function crawlUrl(
       return;
     }
 
+    const finalUrl =
+      response.url || url;
+
     const html =
       await response.text();
 
     if (
       !html ||
-      html.length < 50
+      html.length < 100
     ) {
-
       await markFailure(
         item.id,
         "Empty HTML"
@@ -568,20 +565,18 @@ async function crawlUrl(
     const page =
       extractPage(
         html,
-        url
+        finalUrl
       );
 
     const now =
-      new Date()
-        .toISOString();
+      new Date().toISOString();
 
     const pageData = {
-
-      url,
+      url: finalUrl,
 
       title:
         page.title ||
-        url,
+        finalUrl,
 
       description:
         page.description ||
@@ -593,7 +588,7 @@ async function crawlUrl(
 
       canonical:
         page.canonical ||
-        url,
+        finalUrl,
 
       content_hash:
         page.contentHash,
@@ -608,7 +603,6 @@ async function crawlUrl(
         now
     };
 
-
     const {
       error: pageError
     } =
@@ -617,8 +611,7 @@ async function crawlUrl(
         .upsert(
           pageData,
           {
-            onConflict:
-              "url"
+            onConflict: "url"
           }
         );
 
@@ -627,50 +620,20 @@ async function crawlUrl(
     }
 
 
-    // =================================================
-    // DISCOVER LINKS
-    // =================================================
-
-    const discovered =
-      page.links
-        .filter(
-          link =>
-            urlQuality(link) > -80
-        )
-        .sort(
-          (
-            a,
-            b
-          ) =>
-            urlQuality(b) -
-            urlQuality(a)
-        )
-        .slice(
-          0,
-          MAX_DISCOVERED_LINKS
-        );
-
-
+    // Add discovered links
     for (
-      const link of discovered
+      const link of page.links
     ) {
-
       await supabase
         .from("crawl_queue")
         .upsert(
           {
-            url:
-              link,
-
-            status:
-              "pending"
+            url: link,
+            status: "pending"
           },
           {
-            onConflict:
-              "url",
-
-            ignoreDuplicates:
-              true
+            onConflict: "url",
+            ignoreDuplicates: true
           }
         );
     }
@@ -679,16 +642,9 @@ async function crawlUrl(
     await supabase
       .from("crawl_queue")
       .update({
-
-        status:
-          "done",
-
-        last_error:
-          null,
-
-        last_crawled_at:
-          now
-
+        status: "done",
+        last_error: null,
+        last_crawled_at: now
       })
       .eq(
         "id",
@@ -697,13 +653,10 @@ async function crawlUrl(
 
 
     console.log(
-      `[HEXORA] Crawled successfully: ${url} | links: ${discovered.length}`
+      `[HEXORA] Success: ${finalUrl} | links: ${page.links.length}`
     );
 
-  } catch (
-    error
-  ) {
-
+  } catch (error) {
     console.error(
       `[HEXORA] Crawl failed: ${url}`,
       error.message
@@ -718,268 +671,32 @@ async function crawlUrl(
 
 
 // =====================================================
-// CRAWL PRIORITY
-// =====================================================
-
-function crawlPriority(
-  item
-) {
-
-  const url =
-    String(
-      item.url || ""
-    ).toLowerCase();
-
-  let score =
-    urlQuality(url);
-
-  try {
-
-    const parsed =
-      new URL(url);
-
-    const hostname =
-      parsed.hostname
-        .toLowerCase()
-        .replace(
-          /^www\./,
-          ""
-        );
-
-    // Important worldwide sources
-    const trustedDomains = [
-      "wikipedia.org",
-      "bbc.com",
-      "apnews.com",
-      "aljazeera.com",
-      "theguardian.com",
-      "ndtv.com",
-      "indianexpress.com",
-      "thehindu.com",
-      "hindustantimes.com",
-      "nasa.gov",
-      "who.int",
-      "un.org",
-      "github.com",
-      "developer.mozilla.org",
-      "stackoverflow.com",
-      "reddit.com",
-      "imdb.com",
-      "espn.com",
-      "espncricinfo.com"
-    ];
-
-    for (
-      const domain of
-        trustedDomains
-    ) {
-
-      if (
-        hostname === domain ||
-        hostname.endsWith(
-          `.${domain}`
-        )
-      ) {
-        score += 150;
-        break;
-      }
-    }
-
-    // Article/news paths
-    const pathText =
-      parsed.pathname
-        .toLowerCase();
-
-    const articleTerms = [
-      "/news/",
-      "/article/",
-      "/articles/",
-      "/story/",
-      "/stories/",
-      "/latest/",
-      "/world/",
-      "/technology/",
-      "/science/",
-      "/business/",
-      "/sports/",
-      "/health/",
-      "/education/"
-    ];
-
-    for (
-      const term of
-        articleTerms
-    ) {
-
-      if (
-        pathText.includes(term)
-      ) {
-        score += 80;
-      }
-    }
-
-    // Generic navigation pages lower priority
-    const weakTerms = [
-      "/login",
-      "/signin",
-      "/signup",
-      "/account",
-      "/privacy",
-      "/terms",
-      "/contact",
-      "/about"
-    ];
-
-    for (
-      const term of
-        weakTerms
-    ) {
-
-      if (
-        pathText.includes(term)
-      ) {
-        score -= 200;
-      }
-    }
-
-  } catch {}
-
-  return score;
-}
-
-
-// =====================================================
 // REFRESH GLOBAL SEEDS
 // =====================================================
 
-async function refreshCrawlSeeds() {
-
+async function refreshSeeds() {
   try {
-
-    const {
-      data,
-      error
-    } =
+    for (
+      const url of GLOBAL_SEEDS
+    ) {
       await supabase
         .from("crawl_queue")
-        .select(
-          "id,url,status,last_crawled_at"
-        )
-        .in(
-          "url",
-          CRAWL_SEEDS
+        .upsert(
+          {
+            url,
+            status: "pending"
+          },
+          {
+            onConflict: "url",
+            ignoreDuplicates: true
+          }
         );
-
-    if (error) {
-
-      console.error(
-        "[HEXORA] Seed lookup error:",
-        error.message
-      );
-
-      return;
     }
 
-    const existing =
-      new Map(
-        (data || [])
-          .map(
-            row =>
-              [
-                row.url,
-                row
-              ]
-          )
-      );
-
-
-    for (
-      const seed of
-        CRAWL_SEEDS
-    ) {
-
-      const row =
-        existing.get(seed);
-
-      if (!row) {
-
-        await supabase
-          .from("crawl_queue")
-          .upsert(
-            {
-              url:
-                seed,
-
-              status:
-                "pending"
-            },
-            {
-              onConflict:
-                "url",
-
-              ignoreDuplicates:
-                true
-            }
-          );
-
-        console.log(
-          `[HEXORA] Added global seed: ${seed}`
-        );
-
-        continue;
-      }
-
-
-      if (
-        row.status ===
-        "processing"
-      ) {
-        continue;
-      }
-
-
-      const lastCrawled =
-        row.last_crawled_at
-          ? new Date(
-              row.last_crawled_at
-            ).getTime()
-          : 0;
-
-      const age =
-        Date.now() -
-        lastCrawled;
-
-
-      if (
-        row.status === "done" &&
-        age >=
-          SEED_REFRESH_MS
-      ) {
-
-        await supabase
-          .from("crawl_queue")
-          .update({
-            status:
-              "pending",
-
-            last_error:
-              null
-          })
-          .eq(
-            "id",
-            row.id
-          );
-
-        console.log(
-          `[HEXORA] Refreshed seed: ${seed}`
-        );
-      }
-    }
-
-  } catch (
-    error
-  ) {
-
+    console.log(
+      `[HEXORA] Global seeds checked: ${GLOBAL_SEEDS.length}`
+    );
+  } catch (error) {
     console.error(
       "[HEXORA] Seed refresh error:",
       error.message
@@ -989,13 +706,63 @@ async function refreshCrawlSeeds() {
 
 
 // =====================================================
+// CRAWL PRIORITY
+// =====================================================
+
+function crawlPriority(item) {
+  const url = item.url || "";
+
+  let score = 0;
+
+  score +=
+    domainAuthority(url);
+
+  score +=
+    urlQuality(url);
+
+  const lower =
+    url.toLowerCase();
+
+  if (
+    lower.includes("/news")
+  ) {
+    score += 5;
+  }
+
+  if (
+    lower.includes("/article")
+  ) {
+    score += 5;
+  }
+
+  if (
+    lower.includes("/world")
+  ) {
+    score += 3;
+  }
+
+  if (
+    lower.includes("/india")
+  ) {
+    score += 3;
+  }
+
+  return score;
+}
+
+
+// =====================================================
 // CRAWL BATCH
 // =====================================================
 
 async function crawlBatch() {
+  await refreshSeeds();
 
-  await refreshCrawlSeeds();
-
+  const fetchLimit =
+    Math.max(
+      BATCH_SIZE * 5,
+      50
+    );
 
   const {
     data,
@@ -1011,27 +778,19 @@ async function crawlBatch() {
       .order(
         "created_at",
         {
-          ascending:
-            true
+          ascending: true
         }
       )
-      .limit(
-        Math.max(
-          BATCH_SIZE * 5,
-          50
-        )
-      );
+      .limit(fetchLimit);
 
   if (error) {
     throw error;
   }
 
-
   if (
     !data ||
     data.length === 0
   ) {
-
     console.log(
       "[HEXORA] No pending URLs."
     );
@@ -1039,14 +798,10 @@ async function crawlBatch() {
     return 0;
   }
 
-
-  const prioritized =
-    [...data]
+  const selected =
+    data
       .sort(
-        (
-          a,
-          b
-        ) =>
+        (a, b) =>
           crawlPriority(b) -
           crawlPriority(a)
       )
@@ -1055,88 +810,58 @@ async function crawlBatch() {
         BATCH_SIZE
       );
 
-
-  console.log(
-    "[HEXORA] Priority crawl:"
-  );
-
-  for (
-    const item of
-      prioritized
-  ) {
-
-    console.log(
-      `${crawlPriority(item)} | ${item.url}`
-    );
-  }
-
-
   let index = 0;
 
-
   async function worker() {
-
     while (true) {
-
       const current =
         index++;
 
       if (
         current >=
-        prioritized.length
+        selected.length
       ) {
         return;
       }
 
       const item =
-        prioritized[current];
-
+        selected[current];
 
       await supabase
         .from("crawl_queue")
         .update({
-          status:
-            "processing"
+          status: "processing"
         })
         .eq(
           "id",
           item.id
         );
 
-
-      await crawlUrl(
-        item
-      );
+      await crawlUrl(item);
     }
   }
 
-
-  const workers =
-    [];
-
+  const workers = [];
 
   for (
     let i = 0;
     i <
     Math.min(
       CONCURRENCY,
-      prioritized.length
+      selected.length
     );
     i++
   ) {
-
     workers.push(
       worker()
     );
   }
 
-
   await Promise.all(
     workers
   );
 
-
-  return prioritized.length;
+  return selected.length;
 }
 
 
@@ -1144,119 +869,45 @@ async function crawlBatch() {
 // SEARCH HELPERS
 // =====================================================
 
-function getQueryWords(
-  query
-) {
-
-  return cleanText(query)
-    .toLowerCase()
-    .split(/\s+/)
-    .map(
-      word =>
-        word.replace(
-          /[^\p{L}\p{N}.-]/gu,
-          ""
-        )
-    )
-    .filter(
-      word =>
-        word.length > 1
-    );
+function normalizeSearchText(text) {
+  return cleanText(
+    text
+      .toLowerCase()
+      .replace(/[“”‘’]/g, '"')
+  );
 }
 
 
 function countOccurrences(
   text,
-  word
+  term
 ) {
-
-  if (
-    !text ||
-    !word
-  ) {
-    return 0;
-  }
+  if (!term) return 0;
 
   let count = 0;
-  let position = 0;
+  let pos = 0;
 
   while (true) {
-
-    const index =
+    const found =
       text.indexOf(
-        word,
-        position
+        term,
+        pos
       );
 
-    if (
-      index === -1
-    ) {
+    if (found === -1) {
       break;
     }
 
     count++;
-
-    position =
-      index +
-      word.length;
+    pos =
+      found +
+      Math.max(
+        term.length,
+        1
+      );
   }
 
   return count;
-}
-
-
-function domainAuthority(
-  hostname
-) {
-
-  const trusted = {
-
-    "wikipedia.org": 80,
-    "bbc.com": 85,
-    "apnews.com": 85,
-    "aljazeera.com": 82,
-    "theguardian.com": 82,
-
-    "ndtv.com": 80,
-    "indianexpress.com": 80,
-    "thehindu.com": 82,
-    "hindustantimes.com": 78,
-
-    "nasa.gov": 90,
-    "who.int": 90,
-    "un.org": 90,
-
-    "github.com": 85,
-    "developer.mozilla.org": 90,
-    "stackoverflow.com": 82,
-
-    "imdb.com": 80,
-    "espn.com": 82,
-    "espncricinfo.com": 82
-  };
-
-
-  for (
-    const [
-      domain,
-      score
-    ]
-    of Object.entries(
-      trusted
-    )
-  ) {
-
-    if (
-      hostname === domain ||
-      hostname.endsWith(
-        `.${domain}`
-      )
-    ) {
-      return score;
-    }
-  }
-
-  return 0;
 }
 
 
@@ -1264,10 +915,7 @@ function domainAuthority(
 // SEARCH ENGINE
 // =====================================================
 
-async function searchPages(
-  query
-) {
-
+async function searchPages(query) {
   const q =
     cleanText(query);
 
@@ -1275,28 +923,31 @@ async function searchPages(
     return [];
   }
 
-
   console.log(
     `[HEXORA SEARCH] ${q}`
   );
 
-
-  const normalizedQuery =
-    q.toLowerCase();
+  const normalizedQ =
+    normalizeSearchText(q);
 
   const queryWords =
-    getQueryWords(q);
+    normalizedQ
+      .split(/\s+/)
+      .filter(
+        word =>
+          word.length >= 2
+      );
 
 
-  // ===================================================
-  // PRIMARY FULL TEXT SEARCH
-  // ===================================================
+  // -----------------------------------------
+  // 1. PostgreSQL full text search
+  // -----------------------------------------
+
+  let candidates = [];
 
   const {
-    data:
-      ftsData,
-    error:
-      ftsError
+    data: ftsData,
+    error: ftsError
   } =
     await supabase
       .from("pages")
@@ -1307,42 +958,36 @@ async function searchPages(
         "search_vector",
         q,
         {
-          type:
-            "websearch",
-
-          config:
-            "simple"
+          type: "websearch",
+          config: "simple"
         }
       )
-      .limit(250);
+      .limit(200);
 
-
-  if (ftsError) {
-
-    console.error(
-      "[HEXORA FTS ERROR]",
-      ftsError
+  if (!ftsError) {
+    candidates.push(
+      ...(ftsData || [])
     );
-
-    throw ftsError;
+  } else {
+    console.error(
+      "[HEXORA FTS]",
+      ftsError.message
+    );
   }
 
 
-  // ===================================================
-  // FALLBACK TITLE / DESCRIPTION / URL SEARCH
-  // ===================================================
-
-  let fallbackData =
-    [];
-
+  // -----------------------------------------
+  // 2. Exact / partial title search
+  // -----------------------------------------
 
   for (
-    const word of
-      queryWords.slice(
-        0,
-        8
-      )
+    const word of queryWords.slice(
+      0,
+      8
+    )
   ) {
+    const pattern =
+      `%${word}%`;
 
     const {
       data,
@@ -1353,47 +998,77 @@ async function searchPages(
         .select(
           "id,url,title,description,content,word_count,last_crawled_at"
         )
-        .or(
-          `title.ilike.%${word}%,description.ilike.%${word}%,url.ilike.%${word}%`
+        .ilike(
+          "title",
+          pattern
         )
         .limit(100);
-
 
     if (
       !error &&
       data
     ) {
-
-      fallbackData =
-        fallbackData.concat(
-          data
-        );
+      candidates.push(
+        ...data
+      );
     }
   }
 
 
-  // ===================================================
-  // MERGE CANDIDATES
-  // ===================================================
-
-  const candidateMap =
-    new Map();
-
+  // -----------------------------------------
+  // 3. Description search
+  // -----------------------------------------
 
   for (
-    const page of
-      [
-        ...(ftsData || []),
-        ...fallbackData
-      ]
+    const word of queryWords.slice(
+      0,
+      5
+    )
   ) {
+    const pattern =
+      `%${word}%`;
 
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("pages")
+        .select(
+          "id,url,title,description,content,word_count,last_crawled_at"
+        )
+        .ilike(
+          "description",
+          pattern
+        )
+        .limit(100);
+
+    if (
+      !error &&
+      data
+    ) {
+      candidates.push(
+        ...data
+      );
+    }
+  }
+
+
+  // -----------------------------------------
+  // Remove duplicates
+  // -----------------------------------------
+
+  const unique =
+    new Map();
+
+  for (
+    const page of candidates
+  ) {
     if (
       page &&
       page.url
     ) {
-
-      candidateMap.set(
+      unique.set(
         page.url,
         page
       );
@@ -1401,501 +1076,325 @@ async function searchPages(
   }
 
 
-  const candidates =
-    [
-      ...candidateMap.values()
-    ];
-
-
-  // ===================================================
-  // RANK
-  // ===================================================
+  // -----------------------------------------
+  // Ranking
+  // -----------------------------------------
 
   const results =
-    candidates.map(
-      page => {
-
+    [...unique.values()]
+      .map(page => {
         const title =
-          cleanText(
+          normalizeSearchText(
             page.title || ""
-          ).toLowerCase();
+          );
 
         const description =
-          cleanText(
+          normalizeSearchText(
             page.description || ""
-          ).toLowerCase();
+          );
 
         const content =
-          cleanText(
+          normalizeSearchText(
             page.content || ""
-          ).toLowerCase();
+          );
 
-        const urlText =
-          String(
+        const url =
+          normalizeSearchText(
             page.url || ""
-          ).toLowerCase();
+          );
+
+        let score = 0;
 
 
-        let hostname = "";
-
-        try {
-
-          hostname =
-            new URL(
-              page.url
-            )
-              .hostname
-              .toLowerCase()
-              .replace(
-                /^www\./,
-                ""
-              );
-
-        } catch {}
-
-
-        let score =
-          0;
-
-
-        // =================================================
-        // EXACT QUERY
-        // =================================================
+        // =================================
+        // EXACT TITLE
+        // =================================
 
         if (
-          title ===
-          normalizedQuery
+          title === normalizedQ
         ) {
           score += 1000;
         }
 
 
-        // =================================================
+        // =================================
         // TITLE PHRASE
-        // =================================================
+        // =================================
 
         if (
           title.includes(
-            normalizedQuery
+            normalizedQ
           )
         ) {
-          score += 500;
+          score += 600;
         }
 
 
-        // =================================================
+        // =================================
         // DESCRIPTION PHRASE
-        // =================================================
+        // =================================
 
         if (
           description.includes(
-            normalizedQuery
+            normalizedQ
+          )
+        ) {
+          score += 250;
+        }
+
+
+        // =================================
+        // URL PHRASE
+        // =================================
+
+        if (
+          url.includes(
+            normalizedQ
           )
         ) {
           score += 220;
         }
 
 
-        // =================================================
-        // URL PHRASE
-        // =================================================
-
-        if (
-          urlText.includes(
-            normalizedQuery
-          )
-        ) {
-          score += 180;
-        }
-
+        // =================================
+        // EACH QUERY WORD
+        // =================================
 
         let titleMatches = 0;
         let descriptionMatches = 0;
         let contentMatches = 0;
 
-
-        // =================================================
-        // WORD RELEVANCE
-        // =================================================
-
         for (
-          const word of
-            queryWords
+          const word of queryWords
         ) {
-
-          const titleCount =
+          const t =
             countOccurrences(
               title,
               word
             );
 
-          const descriptionCount =
+          const d =
             countOccurrences(
               description,
               word
             );
 
-          const contentCount =
+          const c =
             countOccurrences(
               content,
               word
             );
 
-          const urlCount =
-            countOccurrences(
-              urlText,
-              word
-            );
-
-
-          if (
-            titleCount > 0
-          ) {
-
+          if (t > 0) {
             titleMatches++;
-
             score +=
               Math.min(
-                titleCount,
+                t,
                 5
-              ) * 90;
+              ) * 100;
           }
 
-
-          if (
-            descriptionCount > 0
-          ) {
-
+          if (d > 0) {
             descriptionMatches++;
-
             score +=
               Math.min(
-                descriptionCount,
+                d,
                 5
               ) * 35;
           }
 
-
-          if (
-            contentCount > 0
-          ) {
-
+          if (c > 0) {
             contentMatches++;
-
             score +=
               Math.min(
-                contentCount,
-                20
-              ) * 2;
+                c,
+                10
+              ) * 4;
           }
 
-
           if (
-            urlCount > 0
+            url.includes(word)
           ) {
-
-            score +=
-              Math.min(
-                urlCount,
-                3
-              ) * 25;
+            score += 40;
           }
         }
 
 
-        // =================================================
+        // =================================
         // QUERY COVERAGE
-        // =================================================
+        // =================================
 
         if (
           queryWords.length > 0
         ) {
+          const titleCoverage =
+            titleMatches /
+            queryWords.length;
+
+          const descriptionCoverage =
+            descriptionMatches /
+            queryWords.length;
+
+          const contentCoverage =
+            contentMatches /
+            queryWords.length;
 
           score +=
-            (
-              titleMatches /
-              queryWords.length
-            ) * 300;
+            titleCoverage * 500;
 
           score +=
-            (
-              descriptionMatches /
-              queryWords.length
-            ) * 120;
+            descriptionCoverage * 180;
 
           score +=
-            (
-              contentMatches /
-              queryWords.length
-            ) * 80;
+            contentCoverage * 100;
         }
 
 
-        // =================================================
-        // DOMAIN AUTHORITY
-        // =================================================
+        // =================================
+        // DOMAIN QUALITY
+        // =================================
 
         score +=
           domainAuthority(
-            hostname
+            page.url
           );
 
 
-        // =================================================
+        // =================================
+        // URL QUALITY
+        // =================================
+
+        score +=
+          urlQuality(
+            page.url
+          );
+
+
+        // =================================
         // CONTENT QUALITY
-        // =================================================
+        // =================================
 
         const wordCount =
           Number(
             page.word_count || 0
           );
 
-
         if (
-          wordCount >= 100
+          wordCount >= 300
         ) {
           score += 5;
         }
 
         if (
-          wordCount >= 300
+          wordCount >= 1000
         ) {
-          score += 10;
-        }
-
-        if (
-          wordCount >= 800
-        ) {
-          score += 15;
-        }
-
-        if (
-          wordCount >= 1500
-        ) {
-          score += 10;
+          score += 8;
         }
 
 
-        // =================================================
+        // =================================
         // FRESHNESS
-        // =================================================
+        // =================================
 
         if (
           page.last_crawled_at
         ) {
-
-          const crawledAt =
+          const age =
+            Date.now() -
             new Date(
               page.last_crawled_at
             ).getTime();
 
+          const days =
+            age /
+            (
+              1000 *
+              60 *
+              60 *
+              24
+            );
+
           if (
-            Number.isFinite(
-              crawledAt
-            )
+            days <= 1
           ) {
-
-            const ageDays =
-              (
-                Date.now() -
-                crawledAt
-              ) /
-              (
-                1000 *
-                60 *
-                60 *
-                24
-              );
-
-
-            if (
-              ageDays <= 1
-            ) {
-
-              score += 50;
-
-            } else if (
-              ageDays <= 3
-            ) {
-
-              score += 35;
-
-            } else if (
-              ageDays <= 7
-            ) {
-
-              score += 20;
-
-            } else if (
-              ageDays <= 30
-            ) {
-
-              score += 8;
-            }
+            score += 10;
+          } else if (
+            days <= 7
+          ) {
+            score += 6;
+          } else if (
+            days <= 30
+          ) {
+            score += 3;
           }
         }
 
 
-        // =================================================
-        // GENERIC PAGE PENALTY
-        // =================================================
-
-        if (
-          queryWords.length === 1 &&
-          titleMatches === 0 &&
-          descriptionMatches === 0
-        ) {
-
-          score -= 120;
-        }
-
-
-        // =================================================
-        // WIKIPEDIA GENERIC PAGE PENALTY
-        // =================================================
-
-        if (
-          hostname ===
-            "wikipedia.org" ||
-          hostname.endsWith(
-            ".wikipedia.org"
-          )
-        ) {
-
-          if (
-            !title.includes(
-              normalizedQuery
-            ) &&
-            titleMatches === 0
-          ) {
-            score -= 250;
-          }
-        }
-
-
-        // =================================================
-        // VERY LOW RELEVANCE PENALTY
-        // =================================================
+        // =================================
+        // PENALTY FOR WEAK MATCH
+        // =================================
 
         if (
           titleMatches === 0 &&
           descriptionMatches === 0 &&
-          contentMatches === 0
+          !url.includes(
+            normalizedQ
+          )
         ) {
+          score -= 250;
+        }
 
-          score -= 500;
+
+        // Wikipedia generic-page penalty
+        // when query isn't actually in title.
+        if (
+          getDomain(page.url)
+            .includes(
+              "wikipedia.org"
+            ) &&
+          !title.includes(
+            normalizedQ
+          ) &&
+          !description.includes(
+            normalizedQ
+          )
+        ) {
+          score -= 180;
         }
 
 
         return {
-
           ...page,
-
           relevance_score:
             Number(
-              score.toFixed(3)
+              score.toFixed(2)
             )
         };
-      }
-    );
+      });
 
 
-  // ===================================================
+  // =========================================
   // SORT
-  // ===================================================
+  // =========================================
 
   results.sort(
-    (
-      a,
-      b
-    ) => {
-
-      if (
-        b.relevance_score !==
-        a.relevance_score
-      ) {
-
-        return (
-          b.relevance_score -
-          a.relevance_score
-        );
-      }
-
-
-      return String(
-        a.title || ""
-      ).localeCompare(
-        String(
-          b.title || ""
-        )
-      );
-    }
+    (a, b) =>
+      b.relevance_score -
+      a.relevance_score
   );
 
 
-  // ===================================================
-  // DEDUPLICATE
-  // ===================================================
+  // =========================================
+  // FINAL RESULTS
+  // =========================================
 
-  const seen =
-    new Set();
-
-
-  const uniqueResults =
-    results.filter(
-      page => {
-
-        let key =
-          page.url;
-
-        try {
-
-          const parsed =
-            new URL(
-              page.url
-            );
-
-          parsed.hash = "";
-
-          key =
-            parsed.origin +
-            parsed.pathname
-              .replace(
-                /\/+$/,
-                ""
-              );
-
-        } catch {}
-
-
-        if (
-          seen.has(key)
-        ) {
-          return false;
-        }
-
-        seen.add(key);
-
-        return true;
-      }
-    );
-
-
-  // ===================================================
-  // RETURN
-  // ===================================================
-
-  return uniqueResults
-    .slice(
-      0,
-      20
-    )
+  return results
+    .slice(0, 20)
     .map(
       ({
         content,
         ...page
-      }) =>
-        page
+      }) => page
     );
 }
 
@@ -1906,13 +1405,8 @@ async function searchPages(
 
 const server =
   http.createServer(
-    async (
-      req,
-      res
-    ) => {
-
+    async (req, res) => {
       try {
-
         const url =
           new URL(
             req.url,
@@ -1920,28 +1414,25 @@ const server =
           );
 
 
-        // =================================================
+        // =================================
         // HOME
-        // =================================================
+        // =================================
 
         if (
           req.method === "GET" &&
           url.pathname === "/"
         ) {
-
           const filePath =
             path.join(
               process.cwd(),
               "index.html"
             );
 
-
           if (
             !fs.existsSync(
               filePath
             )
           ) {
-
             res.writeHead(
               404,
               {
@@ -1957,7 +1448,6 @@ const server =
             return;
           }
 
-
           res.writeHead(
             200,
             {
@@ -1965,7 +1455,6 @@ const server =
                 "text/html; charset=utf-8"
             }
           );
-
 
           fs.createReadStream(
             filePath
@@ -1975,28 +1464,25 @@ const server =
         }
 
 
-        // =================================================
+        // =================================
         // SEARCH
-        // =================================================
+        // =================================
 
         if (
           req.method === "GET" &&
           url.pathname === "/search"
         ) {
-
           const q =
             url.searchParams.get(
               "q"
             );
 
-
           if (!q) {
-
             res.writeHead(
               400,
               {
                 "Content-Type":
-                  "application/json; charset=utf-8"
+                  "application/json"
               }
             );
 
@@ -2010,33 +1496,24 @@ const server =
             return;
           }
 
-
           const results =
-            await searchPages(
-              q
-            );
-
+            await searchPages(q);
 
           res.writeHead(
             200,
             {
               "Content-Type":
-                "application/json; charset=utf-8",
-
+                "application/json",
               "Access-Control-Allow-Origin":
                 "*"
             }
           );
 
-
           res.end(
             JSON.stringify({
-              query:
-                q,
-
+              query: q,
               count:
                 results.length,
-
               results
             })
           );
@@ -2045,19 +1522,17 @@ const server =
         }
 
 
-        // =================================================
+        // =================================
         // STATIC FILES
-        // =================================================
+        // =================================
 
         if (
           req.method === "GET"
         ) {
-
           const requestedPath =
             decodeURIComponent(
               url.pathname
             );
-
 
           if (
             requestedPath !== "/" &&
@@ -2068,13 +1543,11 @@ const server =
               "\\"
             )
           ) {
-
             const staticPath =
               path.join(
                 process.cwd(),
                 requestedPath
               );
-
 
             if (
               fs.existsSync(
@@ -2084,7 +1557,6 @@ const server =
                 staticPath
               ).isFile()
             ) {
-
               const ext =
                 path
                   .extname(
@@ -2092,55 +1564,38 @@ const server =
                   )
                   .toLowerCase();
 
-
               const mimeTypes = {
-
                 ".html":
                   "text/html; charset=utf-8",
-
                 ".js":
                   "application/javascript; charset=utf-8",
-
                 ".mjs":
                   "application/javascript; charset=utf-8",
-
                 ".css":
                   "text/css; charset=utf-8",
-
                 ".json":
                   "application/json; charset=utf-8",
-
                 ".png":
                   "image/png",
-
                 ".jpg":
                   "image/jpeg",
-
                 ".jpeg":
                   "image/jpeg",
-
                 ".gif":
                   "image/gif",
-
                 ".svg":
                   "image/svg+xml",
-
                 ".webp":
                   "image/webp",
-
                 ".ico":
                   "image/x-icon",
-
                 ".txt":
                   "text/plain; charset=utf-8",
-
                 ".woff":
                   "font/woff",
-
                 ".woff2":
                   "font/woff2"
               };
-
 
               res.writeHead(
                 200,
@@ -2150,7 +1605,6 @@ const server =
                     "application/octet-stream"
                 }
               );
-
 
               fs.createReadStream(
                 staticPath
@@ -2162,18 +1616,17 @@ const server =
         }
 
 
-        // =================================================
+        // =================================
         // 404
-        // =================================================
+        // =================================
 
         res.writeHead(
           404,
           {
             "Content-Type":
-              "application/json; charset=utf-8"
+              "application/json"
           }
         );
-
 
         res.end(
           JSON.stringify({
@@ -2182,30 +1635,21 @@ const server =
           })
         );
 
-
-      } catch (
-        error
-      ) {
-
+      } catch (error) {
         console.error(
           "[HEXORA SERVER ERROR]",
           error
         );
 
-
-        if (
-          !res.headersSent
-        ) {
-
+        if (!res.headersSent) {
           res.writeHead(
             500,
             {
               "Content-Type":
-                "application/json; charset=utf-8"
+                "application/json"
             }
           );
         }
-
 
         res.end(
           JSON.stringify({
@@ -2226,7 +1670,6 @@ server.listen(
   PORT,
   "0.0.0.0",
   () => {
-
     console.log(
       "================================"
     );
@@ -2244,14 +1687,6 @@ server.listen(
     );
 
     console.log(
-      "Worldwide crawler: ENABLED"
-    );
-
-    console.log(
-      "Intelligent ranking: ENABLED"
-    );
-
-    console.log(
       "================================"
     );
   }
@@ -2263,15 +1698,14 @@ server.listen(
 // =====================================================
 
 async function startCrawler() {
-
   console.log(
     "HEXORA crawler worker started"
   );
 
+  await refreshSeeds();
+
   while (true) {
-
     try {
-
       const processed =
         await crawlBatch();
 
@@ -2279,16 +1713,12 @@ async function startCrawler() {
         `[HEXORA] Crawl cycle completed | processed: ${processed}`
       );
 
-    } catch (
-      error
-    ) {
-
+    } catch (error) {
       console.error(
         "[HEXORA] Crawl cycle error:",
         error.message
       );
     }
-
 
     await new Promise(
       resolve =>
@@ -2302,14 +1732,11 @@ async function startCrawler() {
 
 
 startCrawler()
-  .catch(
-    error => {
+  .catch(error => {
+    console.error(
+      "[HEXORA] Fatal crawler error:",
+      error
+    );
 
-      console.error(
-        "[HEXORA] Fatal crawler error:",
-        error
-      );
-
-      process.exit(1);
-    }
-  );
+    process.exit(1);
+  });
