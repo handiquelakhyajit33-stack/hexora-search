@@ -576,8 +576,22 @@ async function searchPages(query) {
   const normalizedQuery =
     q.toLowerCase();
 
+  const queryWords =
+    normalizedQuery
+      .split(/\s+/)
+      .map(word =>
+        word.replace(
+          /[^\p{L}\p{N}.-]/gu,
+          ""
+        )
+      )
+      .filter(
+        word => word.length > 1
+      );
+
+
   // ===================================================
-  // POSTGRESQL FULL TEXT SEARCH
+  // POSTGRES FULL TEXT SEARCH
   // ===================================================
 
   const {
@@ -599,6 +613,7 @@ async function searchPages(query) {
       )
       .limit(100);
 
+
   if (error) {
 
     console.error(
@@ -608,13 +623,6 @@ async function searchPages(query) {
 
     throw error;
   }
-
-  const queryWords =
-    normalizedQuery
-      .split(/\s+/)
-      .filter(
-        word => word.length > 1
-      );
 
 
   // ===================================================
@@ -640,104 +648,6 @@ async function searchPages(query) {
             page.content || ""
           ).toLowerCase();
 
-        let score = 0;
-
-
-        // ---------------------------------------------
-        // 1. EXACT TITLE MATCH
-        // ---------------------------------------------
-
-        if (
-          title === normalizedQuery
-        ) {
-          score += 150;
-        }
-
-
-        // ---------------------------------------------
-        // 2. TITLE PHRASE MATCH
-        // ---------------------------------------------
-
-        if (
-          title.includes(
-            normalizedQuery
-          )
-        ) {
-          score += 80;
-        }
-
-
-        // ---------------------------------------------
-        // 3. DESCRIPTION PHRASE MATCH
-        // ---------------------------------------------
-
-        if (
-          description.includes(
-            normalizedQuery
-          )
-        ) {
-          score += 40;
-        }
-
-
-        // ---------------------------------------------
-        // 4. WORD MATCHING
-        // ---------------------------------------------
-
-        let matchedWords = 0;
-
-        for (
-          const word of queryWords
-        ) {
-
-          let matched = false;
-
-          if (
-            title.includes(word)
-          ) {
-            score += 25;
-            matched = true;
-          }
-
-          if (
-            description.includes(word)
-          ) {
-            score += 12;
-            matched = true;
-          }
-
-          if (
-            content.includes(word)
-          ) {
-            score += 3;
-            matched = true;
-          }
-
-          if (matched) {
-            matchedWords++;
-          }
-        }
-
-
-        // ---------------------------------------------
-        // 5. QUERY COVERAGE
-        // ---------------------------------------------
-
-        if (
-          queryWords.length > 0
-        ) {
-
-          const coverage =
-            matchedWords /
-            queryWords.length;
-
-          score += coverage * 50;
-        }
-
-
-        // ---------------------------------------------
-        // 6. DOMAIN EXTRACTION
-        // ---------------------------------------------
 
         let hostname = "";
 
@@ -757,12 +667,165 @@ async function searchPages(query) {
         } catch {}
 
 
-        // ---------------------------------------------
-        // 7. OFFICIAL DOMAIN RELEVANCE
-        // ---------------------------------------------
+        let score = 0;
 
-        const domainKeywords = {
+        let titleMatches = 0;
+        let descriptionMatches = 0;
+        let contentMatches = 0;
 
+
+        // =================================================
+        // EXACT TITLE
+        // =================================================
+
+        if (
+          title === normalizedQuery
+        ) {
+          score += 250;
+        }
+
+
+        // =================================================
+        // EXACT TITLE PHRASE
+        // =================================================
+
+        if (
+          title.includes(
+            normalizedQuery
+          )
+        ) {
+          score += 120;
+        }
+
+
+        // =================================================
+        // DESCRIPTION PHRASE
+        // =================================================
+
+        if (
+          description.includes(
+            normalizedQuery
+          )
+        ) {
+          score += 60;
+        }
+
+
+        // =================================================
+        // WORD-LEVEL RELEVANCE
+        // =================================================
+
+        for (
+          const word of queryWords
+        ) {
+
+          const inTitle =
+            title.includes(word);
+
+          const inDescription =
+            description.includes(word);
+
+          const inContent =
+            content.includes(word);
+
+
+          if (inTitle) {
+            titleMatches++;
+            score += 35;
+          }
+
+          if (inDescription) {
+            descriptionMatches++;
+            score += 15;
+          }
+
+          if (inContent) {
+            contentMatches++;
+            score += 3;
+          }
+        }
+
+
+        // =================================================
+        // QUERY COVERAGE
+        // =================================================
+
+        if (
+          queryWords.length > 0
+        ) {
+
+          const titleCoverage =
+            titleMatches /
+            queryWords.length;
+
+          const descriptionCoverage =
+            descriptionMatches /
+            queryWords.length;
+
+          const contentCoverage =
+            contentMatches /
+            queryWords.length;
+
+
+          score +=
+            titleCoverage * 100;
+
+          score +=
+            descriptionCoverage * 40;
+
+          score +=
+            contentCoverage * 20;
+        }
+
+
+        // =================================================
+        // IMPORTANT:
+        // GENERIC PAGE PENALTY
+        //
+        // This prevents pages such as
+        // "1983" or "Deaths in 2026"
+        // from ranking highly for a generic
+        // query such as "Assam" merely because
+        // the word exists somewhere in content.
+        // =================================================
+
+        if (
+          queryWords.length === 1 &&
+          titleMatches === 0 &&
+          descriptionMatches === 0
+        ) {
+          score -= 45;
+        }
+
+
+        // =================================================
+        // URL RELEVANCE
+        // =================================================
+
+        const urlText =
+          String(
+            page.url || ""
+          )
+            .toLowerCase();
+
+
+        for (
+          const word of queryWords
+        ) {
+
+          if (
+            urlText.includes(word)
+          ) {
+            score += 15;
+          }
+        }
+
+
+        // =================================================
+        // OFFICIAL DOMAIN MATCH
+        // =================================================
+
+        const officialDomains = {
           google: [
             "google.com"
           ],
@@ -777,14 +840,6 @@ async function searchPages(query) {
 
           wikipedia: [
             "wikipedia.org"
-          ],
-
-          facebook: [
-            "facebook.com"
-          ],
-
-          instagram: [
-            "instagram.com"
           ],
 
           github: [
@@ -805,8 +860,15 @@ async function searchPages(query) {
 
           openai: [
             "openai.com"
-          ]
+          ],
 
+          facebook: [
+            "facebook.com"
+          ],
+
+          instagram: [
+            "instagram.com"
+          ]
         };
 
 
@@ -816,7 +878,7 @@ async function searchPages(query) {
             domains
           ]
           of Object.entries(
-            domainKeywords
+            officialDomains
           )
         ) {
 
@@ -826,7 +888,7 @@ async function searchPages(query) {
             )
           ) {
 
-            const isOfficial =
+            const official =
               domains.some(
                 domain =>
                   hostname === domain ||
@@ -835,16 +897,16 @@ async function searchPages(query) {
                   )
               );
 
-            if (isOfficial) {
-              score += 100;
+            if (official) {
+              score += 150;
             }
           }
         }
 
 
-        // ---------------------------------------------
-        // 8. DOMAIN NAME MATCH
-        // ---------------------------------------------
+        // =================================================
+        // DOMAIN NAME MATCH
+        // =================================================
 
         for (
           const word of queryWords
@@ -862,14 +924,40 @@ async function searchPages(query) {
               cleanWord
             )
           ) {
-            score += 20;
+            score += 30;
           }
         }
 
 
-        // ---------------------------------------------
-        // 9. CONTENT QUALITY
-        // ---------------------------------------------
+        // =================================================
+        // WIKIPEDIA GENERIC PAGE PENALTY
+        //
+        // Wikipedia remains searchable.
+        // It is only pushed down when the query
+        // does not actually match the page title.
+        // =================================================
+
+        if (
+          hostname === "wikipedia.org" ||
+          hostname.endsWith(
+            ".wikipedia.org"
+          )
+        ) {
+
+          if (
+            titleMatches === 0 &&
+            !title.includes(
+              normalizedQuery
+            )
+          ) {
+            score -= 35;
+          }
+        }
+
+
+        // =================================================
+        // CONTENT QUALITY
+        // =================================================
 
         const wordCount =
           Number(
@@ -896,9 +984,9 @@ async function searchPages(query) {
         }
 
 
-        // ---------------------------------------------
-        // 10. FRESHNESS
-        // ---------------------------------------------
+        // =================================================
+        // FRESHNESS
+        // =================================================
 
         if (
           page.last_crawled_at
@@ -908,6 +996,7 @@ async function searchPages(query) {
             new Date(
               page.last_crawled_at
             ).getTime();
+
 
           if (
             Number.isFinite(
@@ -932,19 +1021,20 @@ async function searchPages(query) {
               ageDays <= 1
             ) {
 
-              score += 15;
+              score += 20;
 
             } else if (
               ageDays <= 3
             ) {
 
-              score += 10;
+              score += 12;
 
             } else if (
               ageDays <= 7
             ) {
 
-              score += 5;
+              score += 6;
+
             }
           }
         }
@@ -962,7 +1052,7 @@ async function searchPages(query) {
 
 
   // ===================================================
-  // SORT BY RELEVANCE
+  // SORT
   // ===================================================
 
   results.sort(
@@ -979,6 +1069,7 @@ async function searchPages(query) {
         );
       }
 
+
       return String(
         a.title || ""
       ).localeCompare(
@@ -991,7 +1082,7 @@ async function searchPages(query) {
 
 
   // ===================================================
-  // REMOVE DUPLICATE URLS
+  // REMOVE DUPLICATE URLs
   // ===================================================
 
   const seen =
@@ -1145,7 +1236,7 @@ const server =
               400,
               {
                 "Content-Type":
-                  "application/json"
+                  "application/json; charset=utf-8"
               }
             );
 
@@ -1170,7 +1261,8 @@ const server =
             200,
             {
               "Content-Type":
-                "application/json",
+                "application/json; charset=utf-8",
+
               "Access-Control-Allow-Origin":
                 "*"
             }
@@ -1313,7 +1405,7 @@ const server =
           404,
           {
             "Content-Type":
-              "application/json"
+              "application/json; charset=utf-8"
           }
         );
 
@@ -1340,7 +1432,7 @@ const server =
             500,
             {
               "Content-Type":
-                "application/json"
+                "application/json; charset=utf-8"
             }
           );
 
