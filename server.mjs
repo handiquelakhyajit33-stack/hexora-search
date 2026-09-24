@@ -75,7 +75,7 @@ async function searchPages(query, options = {}) {
   }
 
   const ranked = data
-    .map(page => ({
+    .map((page) => ({
       ...page,
       relevance_score: Number(
         scorePage(page, q).toFixed(2)
