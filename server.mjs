@@ -2,6 +2,8 @@ import http from "node:http";
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
@@ -545,6 +547,7 @@ async function crawlBatch() {
     );
   }
 
+
   await Promise.all(
     workers
   );
@@ -796,30 +799,39 @@ const server =
 
 
         // ------------------------------
-        // Health
+        // HEXORA Website
         // ------------------------------
 
         if (
           req.method === "GET" &&
           url.pathname === "/"
         ) {
+          const filePath = path.join(
+            process.cwd(),
+            "index.html"
+          );
 
-          res.writeHead(
-            200,
-            {
+          if (!fs.existsSync(filePath)) {
+            res.writeHead(404, {
               "Content-Type":
-                "application/json"
-            }
-          );
+                "text/plain; charset=utf-8"
+            });
 
-          res.end(
-            JSON.stringify({
-              status: "ok",
-              engine: "HEXORA",
-              crawler: "active",
-              search: "active"
-            })
-          );
+            res.end(
+              "HEXORA website not found"
+            );
+
+            return;
+          }
+
+          res.writeHead(200, {
+            "Content-Type":
+              "text/html; charset=utf-8"
+          });
+
+          fs.createReadStream(
+            filePath
+          ).pipe(res);
 
           return;
         }
@@ -838,6 +850,7 @@ const server =
             url.searchParams.get(
               "q"
             );
+
 
           if (!q) {
 
@@ -891,6 +904,115 @@ const server =
 
 
         // ------------------------------
+        // Frontend static files
+        // ------------------------------
+
+        if (req.method === "GET") {
+
+          const requestedPath =
+            decodeURIComponent(
+              url.pathname
+            );
+
+          if (
+            requestedPath !== "/" &&
+            !requestedPath.includes("..") &&
+            !requestedPath.includes("\\")
+          ) {
+
+            const staticPath =
+              path.join(
+                process.cwd(),
+                requestedPath
+              );
+
+            if (
+              fs.existsSync(
+                staticPath
+              ) &&
+              fs.statSync(
+                staticPath
+              ).isFile()
+            ) {
+
+              const ext =
+                path
+                  .extname(
+                    staticPath
+                  )
+                  .toLowerCase();
+
+
+              const mimeTypes = {
+
+                ".html":
+                  "text/html; charset=utf-8",
+
+                ".js":
+                  "application/javascript; charset=utf-8",
+
+                ".mjs":
+                  "application/javascript; charset=utf-8",
+
+                ".css":
+                  "text/css; charset=utf-8",
+
+                ".json":
+                  "application/json; charset=utf-8",
+
+                ".png":
+                  "image/png",
+
+                ".jpg":
+                  "image/jpeg",
+
+                ".jpeg":
+                  "image/jpeg",
+
+                ".gif":
+                  "image/gif",
+
+                ".svg":
+                  "image/svg+xml",
+
+                ".webp":
+                  "image/webp",
+
+                ".ico":
+                  "image/x-icon",
+
+                ".txt":
+                  "text/plain; charset=utf-8",
+
+                ".woff":
+                  "font/woff",
+
+                ".woff2":
+                  "font/woff2"
+              };
+
+
+              res.writeHead(
+                200,
+                {
+                  "Content-Type":
+                    mimeTypes[ext] ||
+                    "application/octet-stream"
+                }
+              );
+
+
+              fs.createReadStream(
+                staticPath
+              ).pipe(res);
+
+              return;
+            }
+          }
+        }
+
+
+        // ------------------------------
         // 404
         // ------------------------------
 
@@ -904,7 +1026,8 @@ const server =
 
         res.end(
           JSON.stringify({
-            error: "Not found"
+            error:
+              "Not found"
           })
         );
 
@@ -915,6 +1038,7 @@ const server =
           error
         );
 
+
         res.writeHead(
           500,
           {
@@ -922,6 +1046,7 @@ const server =
               "application/json"
           }
         );
+
 
         res.end(
           JSON.stringify({
