@@ -1,1048 +1,1220 @@
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { createClient } from "@supabase/supabase-js";
+const app =
+  document.getElementById("app");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const PORT = Number(process.env.PORT || 3000);
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
-  process.env.SUPABASE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error("Missing SUPABASE_URL or Supabase key");
-}
-
-const supabase = createClient(
-  SUPABASE_URL || "",
-  SUPABASE_KEY || ""
-);
-
-/* -------------------------------------------------------
-   BASIC HELPERS
-------------------------------------------------------- */
-
-function cleanQuery(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 300);
-}
-
-function normalizeText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFKC")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function tokenize(value) {
-  return normalizeText(value)
-    .split(" ")
-    .map(x => x.trim())
-    .filter(Boolean);
-}
-
-function uniqueTokens(value) {
-  return [...new Set(tokenize(value))];
-}
-
-function countWholeWordOccurrences(text, word) {
-  const source = normalizeText(text);
-  const target = normalizeText(word);
-
-  if (!source || !target) return 0;
-
-  return source
-    .split(" ")
-    .filter(part => part === target)
-    .length;
-}
-
-function hasWholeWord(text, word) {
-  return countWholeWordOccurrences(text, word) > 0;
-}
-
-function hasExactPhrase(text, phrase) {
-  const source = normalizeText(text);
-  const target = normalizeText(phrase);
-
-  if (!source || !target) return false;
-
-  return source.includes(target);
-}
-
-function calculateProximityScore(page, query) {
-  const words = uniqueTokens(query);
-
-  if (words.length <= 1) return 0;
-
-  const title = tokenize(page.title);
-  const description = tokenize(page.description);
-
-  let score = 0;
-
-  for (let i = 0; i < words.length - 1; i++) {
-    const a = words[i];
-    const b = words[i + 1];
-
-    const titleA = title.indexOf(a);
-    const titleB = title.indexOf(b);
-
-    if (titleA !== -1 && titleB !== -1) {
-      const distance = Math.abs(titleA - titleB);
-
-      if (distance === 1) score += 80;
-      else if (distance <= 3) score += 35;
-      else score += 10;
-    }
-
-    const descA = description.indexOf(a);
-    const descB = description.indexOf(b);
-
-    if (descA !== -1 && descB !== -1) {
-      const distance = Math.abs(descA - descB);
-
-      if (distance === 1) score += 20;
-      else if (distance <= 5) score += 8;
-    }
-  }
-
-  return score;
-}
-
-function calculateAuthorityBonus(page) {
-  let score = 0;
-
-  const url = String(page.url || "").toLowerCase();
-
-  const authority = Number(page.authority_score || 0);
-  const popularity = Number(page.popularity_score || 0);
-
-  if (Number.isFinite(authority)) {
-    score += Math.min(authority, 100) * 0.8;
-  }
-
-  if (Number.isFinite(popularity)) {
-    score += Math.min(popularity, 100) * 0.4;
-  }
-
-  if (url.startsWith("https://")) {
-    score += 2;
-  }
-
-  if (
-    url.includes(".gov.") ||
-    url.includes(".gov/") ||
-    url.includes(".edu.") ||
-    url.includes(".edu/")
-  ) {
-    score += 5;
-  }
-
-  return score;
-}
-
-function calculateFreshnessBonus(dateValue) {
-  if (!dateValue) return 0;
-
-  const time = new Date(dateValue).getTime();
-
-  if (!Number.isFinite(time)) return 0;
-
-  const ageDays =
-    (Date.now() - time) / (1000 * 60 * 60 * 24);
-
-  if (ageDays < 1) return 30;
-  if (ageDays < 3) return 20;
-  if (ageDays < 7) return 12;
-  if (ageDays < 30) return 6;
-
-  return 0;
-}
-
-function isShortQuery(query) {
-  const words = uniqueTokens(query);
-
-  return (
-    words.length === 1 &&
-    words[0].length <= 2
+const params =
+  new URLSearchParams(
+    window.location.search
   );
-}
 
-function hasStrictShortQueryMatch(page, query) {
-  const word = normalizeText(query);
+let currentQuery =
+  params.get("q") || "";
 
-  if (!word) return false;
+let currentMode =
+  params.get("mode") || "web";
 
-  return (
-    hasWholeWord(page.title, word) ||
-    hasWholeWord(page.description, word) ||
-    hasWholeWord(page.url, word)
-  );
-}
+const allowedModes = [
+  "web",
+  "images",
+  "news",
+  "videos",
+  "maps"
+];
 
-function detectMode(mode) {
-  const value = String(mode || "web").toLowerCase();
-
-  const allowed = [
-    "web",
-    "images",
-    "news",
-    "videos",
-    "maps"
-  ];
-
-  return allowed.includes(value)
-    ? value
-    : "web";
+if (
+  !allowedModes.includes(
+    currentMode
+  )
+) {
+  currentMode = "web";
 }
 
 /* -------------------------------------------------------
-   WEB RANKING
+   PAGE
 ------------------------------------------------------- */
 
-function calculateScore(page, query) {
-  const words = uniqueTokens(query);
+app.innerHTML = `
+<div class="hexora-app">
 
-  const title = page.title || "";
-  const description = page.description || "";
-  const content = page.content || "";
-  const url = page.url || "";
+  <header class="topbar">
 
-  let score = 0;
+    <div class="brand">
+      <a href="/" class="logo">
+        HEXORA
+      </a>
+    </div>
 
-  let matchedWords = 0;
+    <nav class="nav">
+      <a href="?mode=web">Web</a>
+      <a href="?mode=images">Images</a>
+      <a href="?mode=news">News</a>
+      <a href="?mode=videos">Videos</a>
+      <a href="?mode=maps">Maps</a>
+    </nav>
 
-  for (const word of words) {
-    let matched = false;
+  </header>
 
-    const titleCount = countWholeWordOccurrences(
-      title,
-      word
+  <main>
+
+    <section class="search-section">
+
+      <div class="search-box">
+
+        <input
+          id="searchInput"
+          type="search"
+          autocomplete="off"
+          placeholder="Search HEXORA..."
+        />
+
+        <button
+          id="clearBtn"
+          type="button"
+          aria-label="Clear"
+        >
+          ×
+        </button>
+
+        <button
+          id="searchBtn"
+          type="button"
+        >
+          Search
+        </button>
+
+      </div>
+
+      <div class="search-tabs">
+
+        <button
+          class="search-tab"
+          data-mode="web"
+        >
+          Web
+        </button>
+
+        <button
+          class="search-tab"
+          data-mode="images"
+        >
+          Images
+        </button>
+
+        <button
+          class="search-tab"
+          data-mode="news"
+        >
+          News
+        </button>
+
+        <button
+          class="search-tab"
+          data-mode="videos"
+        >
+          Videos
+        </button>
+
+        <button
+          class="search-tab"
+          data-mode="maps"
+        >
+          Maps
+        </button>
+
+      </div>
+
+    </section>
+
+    <section
+      id="status"
+      class="status"
+    ></section>
+
+    <section
+      id="results"
+      class="results"
+    ></section>
+
+  </main>
+
+</div>
+`;
+
+/* -------------------------------------------------------
+   ELEMENTS
+------------------------------------------------------- */
+
+const searchInput =
+  document.getElementById(
+    "searchInput"
+  );
+
+const searchBtn =
+  document.getElementById(
+    "searchBtn"
+  );
+
+const clearBtn =
+  document.getElementById(
+    "clearBtn"
+  );
+
+const results =
+  document.getElementById(
+    "results"
+  );
+
+const status =
+  document.getElementById(
+    "status"
+  );
+
+const tabs =
+  document.querySelectorAll(
+    ".search-tab"
+  );
+
+/* -------------------------------------------------------
+   STYLE
+------------------------------------------------------- */
+
+const style =
+  document.createElement(
+    "style"
+  );
+
+style.textContent = `
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+  background: #fff;
+  color: #202124;
+}
+
+.hexora-app {
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 28px;
+  border-bottom: 1px solid #eee;
+}
+
+.logo {
+  text-decoration: none;
+  color: #111;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.nav {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.nav a {
+  color: #555;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.nav a:hover {
+  color: #111;
+}
+
+main {
+  width: min(1100px, 94%);
+  margin: 0 auto;
+}
+
+.search-section {
+  padding-top: 25px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid #dfe1e5;
+  border-radius: 30px;
+  padding: 6px 8px 6px 18px;
+  box-shadow:
+    0 1px 4px rgba(0,0,0,.08);
+}
+
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  font-size: 17px;
+  background: transparent;
+  padding: 10px 0;
+}
+
+.search-box button {
+  border: 0;
+  cursor: pointer;
+}
+
+#clearBtn {
+  background: transparent;
+  font-size: 25px;
+  color: #777;
+}
+
+#searchBtn {
+  border-radius: 22px;
+  padding: 10px 18px;
+  background: #111;
+  color: #fff;
+}
+
+.search-tabs {
+  display: flex;
+  gap: 22px;
+  overflow-x: auto;
+  padding: 18px 5px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.search-tab {
+  background: transparent;
+  border: 0;
+  padding: 10px 2px;
+  color: #666;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.search-tab.active {
+  color: #111;
+  border-bottom: 3px solid #111;
+  font-weight: 700;
+}
+
+.status {
+  padding: 18px 4px 5px;
+  color: #666;
+  font-size: 14px;
+}
+
+.results {
+  padding: 10px 4px 50px;
+}
+
+.web-result {
+  padding: 18px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.web-result h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.web-result h2 a {
+  color: #1a0dab;
+  text-decoration: none;
+}
+
+.web-result h2 a:hover {
+  text-decoration: underline;
+}
+
+.result-url {
+  color: #188038;
+  font-size: 13px;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.result-description {
+  color: #4d5156;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.result-meta {
+  margin-top: 8px;
+  color: #777;
+  font-size: 12px;
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns:
+    repeat(4, minmax(0, 1fr));
+  gap: 15px;
+  padding-top: 10px;
+}
+
+.image-card {
+  border: 1px solid #eee;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.image-card img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  display: block;
+}
+
+.image-card-body {
+  padding: 10px;
+}
+
+.image-card-title {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.image-card a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.news-result {
+  padding: 16px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.news-result h2 {
+  margin: 0 0 7px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.news-result h2 a {
+  color: #1a0dab;
+  text-decoration: none;
+}
+
+.news-source {
+  color: #188038;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.news-date {
+  color: #777;
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+
+.video-result {
+  padding: 17px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.video-result h2 {
+  margin: 0 0 7px;
+  font-size: 19px;
+}
+
+.video-result h2 a {
+  color: #1a0dab;
+  text-decoration: none;
+}
+
+.map-result {
+  padding: 17px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.map-result h2 {
+  margin: 0 0 7px;
+  font-size: 19px;
+}
+
+.map-result h2 a {
+  color: #1a0dab;
+  text-decoration: none;
+}
+
+.empty {
+  padding: 45px 10px;
+  text-align: center;
+  color: #666;
+}
+
+.error {
+  padding: 25px 0;
+  color: #b00020;
+}
+
+@media (max-width: 700px) {
+
+  .topbar {
+    padding: 15px;
+    align-items: flex-start;
+    gap: 15px;
+    flex-direction: column;
+  }
+
+  .nav {
+    gap: 15px;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  main {
+    width: 94%;
+  }
+
+  .search-box {
+    padding-left: 14px;
+  }
+
+  #searchBtn {
+    padding: 9px 13px;
+  }
+
+  .search-tabs {
+    gap: 18px;
+  }
+
+  .image-grid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+
+  .image-card img {
+    height: 145px;
+  }
+
+  .web-result h2,
+  .news-result h2,
+  .video-result h2,
+  .map-result h2 {
+    font-size: 17px;
+  }
+}
+`;
+
+document.head.appendChild(style);
+
+/* -------------------------------------------------------
+   HELPERS
+------------------------------------------------------- */
+
+function setActiveTab(
+  mode
+) {
+  tabs.forEach(tab => {
+    tab.classList.toggle(
+      "active",
+      tab.dataset.mode === mode
+    );
+  });
+}
+
+function updateUrl(
+  query,
+  mode
+) {
+  const url =
+    new URL(
+      window.location.href
     );
 
-    const descriptionCount =
-      countWholeWordOccurrences(
-        description,
-        word
-      );
-
-    const urlCount =
-      countWholeWordOccurrences(
-        url,
-        word
-      );
-
-    const contentCount =
-      countWholeWordOccurrences(
-        content,
-        word
-      );
-
-    if (titleCount > 0) {
-      matched = true;
-
-      score += 80;
-      score += Math.min(titleCount, 5) * 5;
-    }
-
-    if (descriptionCount > 0) {
-      matched = true;
-
-      score += 30;
-      score += Math.min(descriptionCount, 3) * 3;
-    }
-
-    if (urlCount > 0) {
-      matched = true;
-
-      score += 12;
-      score += Math.min(urlCount, 2);
-    }
-
-    if (contentCount > 0) {
-      matched = true;
-
-      score += 3;
-      score += Math.min(contentCount, 50);
-    }
-
-    if (matched) {
-      matchedWords++;
-    }
+  if (query) {
+    url.searchParams.set(
+      "q",
+      query
+    );
+  } else {
+    url.searchParams.delete(
+      "q"
+    );
   }
 
-  const queryPhrase = normalizeText(query);
+  url.searchParams.set(
+    "mode",
+    mode
+  );
 
-  if (hasExactPhrase(title, queryPhrase)) {
-    score += 180;
-  }
+  window.history.replaceState(
+    {},
+    "",
+    url
+  );
+}
 
-  if (hasExactPhrase(description, queryPhrase)) {
-    score += 70;
-  }
+function escapeHtml(
+  value
+) {
+  return String(
+    value || ""
+  )
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
+}
 
-  if (hasExactPhrase(url, queryPhrase)) {
-    score += 25;
-  }
+function formatDate(
+  value
+) {
+  if (!value) return "";
+
+  const date =
+    new Date(value);
 
   if (
-    normalizeText(title) === queryPhrase &&
-    queryPhrase
-  ) {
-    score += 400;
-  }
-
-  if (
-    normalizeText(title).startsWith(queryPhrase) &&
-    queryPhrase
-  ) {
-    score += 120;
-  }
-
-  if (
-    words.length > 1 &&
-    words.every(word =>
-      hasWholeWord(title, word)
+    !Number.isFinite(
+      date.getTime()
     )
   ) {
-    score += 180;
+    return "";
   }
 
-  const coverage =
-    words.length > 0
-      ? matchedWords / words.length
-      : 0;
-
-  score += coverage * 100;
-
-  score += calculateProximityScore(
-    page,
-    query
+  return date.toLocaleDateString(
+    undefined,
+    {
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    }
   );
-
-  if (
-    words.length === 1 &&
-    matchedWords === 1 &&
-    !hasWholeWord(title, words[0]) &&
-    !hasWholeWord(description, words[0]) &&
-    !hasWholeWord(url, words[0])
-  ) {
-    score -= 100;
-  }
-
-  if (
-    words.length > 1 &&
-    coverage < 1
-  ) {
-    score -= (1 - coverage) * 100;
-  }
-
-  score += calculateFreshnessBonus(
-    page.published_at ||
-    page.updated_at ||
-    page.last_crawled_at
-  );
-
-  score += calculateAuthorityBonus(page);
-
-  return {
-    score,
-    matchedWords,
-    coverage
-  };
 }
 
 /* -------------------------------------------------------
-   WEB SEARCH
+   WEB RENDERER
 ------------------------------------------------------- */
 
-async function searchWeb(
-  query,
-  pageNumber = 1,
-  limit = 20,
-  mode = "web"
+function renderWeb(
+  items
 ) {
-  query = cleanQuery(query);
-  mode = detectMode(mode);
-
-  if (!query) {
-    return {
-      ok: true,
-      mode,
-      query,
-      total: 0,
-      page: pageNumber,
-      limit,
-      results: []
-    };
+  if (!items.length) {
+    return `
+      <div class="empty">
+        No relevant web results found.
+      </div>
+    `;
   }
 
-  let rows = [];
+  return items.map(item => {
 
-  const { data, error } = await supabase
-    .from("pages")
-    .select(`
-      id,
-      url,
-      title,
-      description,
-      content,
-      author,
-      image_url,
-      published_at,
-      last_crawled_at,
-      updated_at,
-      authority_score,
-      popularity_score
-    `)
-    .textSearch(
-      "search_vector",
-      query,
-      {
-        type: "websearch",
-        config: "simple"
-      }
-    )
-    .limit(500);
+    const title =
+      escapeHtml(
+        item.title ||
+        "Untitled"
+      );
 
-  if (!error && Array.isArray(data)) {
-    rows = data;
+    const description =
+      escapeHtml(
+        item.description ||
+        ""
+      );
+
+    const url =
+      escapeHtml(
+        item.url || ""
+      );
+
+    return `
+      <article class="web-result">
+
+        <h2>
+          <a
+            href="${url}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ${title}
+          </a>
+        </h2>
+
+        <div class="result-url">
+          ${url}
+        </div>
+
+        <div class="result-description">
+          ${description}
+        </div>
+
+        ${
+          item.published_at
+            ? `
+              <div class="result-meta">
+                ${escapeHtml(
+                  formatDate(
+                    item.published_at
+                  )
+                )}
+              </div>
+            `
+            : ""
+        }
+
+      </article>
+    `;
+  }).join("");
+}
+
+/* -------------------------------------------------------
+   IMAGE RENDERER
+------------------------------------------------------- */
+
+function renderImages(
+  items
+) {
+  if (!items.length) {
+    return `
+      <div class="empty">
+        No indexed images found for this search.
+      </div>
+    `;
   }
 
-  if (!rows.length) {
-    const safe = query
-      .replace(/[%_]/g, " ")
+  return `
+    <div class="image-grid">
+
+      ${items.map(item => {
+
+        const image =
+          escapeHtml(
+            item.image_url
+          );
+
+        const title =
+          escapeHtml(
+            item.title ||
+            "Image"
+          );
+
+        const url =
+          escapeHtml(
+            item.url || "#"
+          );
+
+        return `
+          <article
+            class="image-card"
+          >
+
+            <a
+              href="${url}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+
+              <img
+                src="${image}"
+                alt="${title}"
+                loading="lazy"
+                onerror="this.parentElement.parentElement.style.display='none'"
+              />
+
+              <div
+                class="image-card-body"
+              >
+                <div
+                  class="image-card-title"
+                >
+                  ${title}
+                </div>
+              </div>
+
+            </a>
+
+          </article>
+        `;
+      }).join("")}
+
+    </div>
+  `;
+}
+
+/* -------------------------------------------------------
+   NEWS RENDERER
+------------------------------------------------------- */
+
+function renderNews(
+  items
+) {
+  if (!items.length) {
+    return `
+      <div class="empty">
+        No relevant news found.
+      </div>
+    `;
+  }
+
+  return items.map(item => {
+
+    const title =
+      escapeHtml(
+        item.title ||
+        "News"
+      );
+
+    const description =
+      escapeHtml(
+        item.description ||
+        ""
+      );
+
+    const url =
+      escapeHtml(
+        item.url || ""
+      );
+
+    const source =
+      escapeHtml(
+        item.source_name ||
+        item.source_domain ||
+        ""
+      );
+
+    const date =
+      escapeHtml(
+        formatDate(
+          item.published_at
+        )
+      );
+
+    return `
+      <article
+        class="news-result"
+      >
+
+        <h2>
+          <a
+            href="${url}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ${title}
+          </a>
+        </h2>
+
+        ${
+          source
+            ? `
+              <div class="news-source">
+                ${source}
+              </div>
+            `
+            : ""
+        }
+
+        ${
+          date
+            ? `
+              <div class="news-date">
+                ${date}
+              </div>
+            `
+            : ""
+        }
+
+        <div
+          class="result-description"
+        >
+          ${description}
+        </div>
+
+      </article>
+    `;
+  }).join("");
+}
+
+/* -------------------------------------------------------
+   VIDEO RENDERER
+------------------------------------------------------- */
+
+function renderVideos(
+  items
+) {
+  if (!items.length) {
+    return `
+      <div class="empty">
+        No indexed video results found.
+      </div>
+    `;
+  }
+
+  return items.map(item => {
+
+    const title =
+      escapeHtml(
+        item.title ||
+        "Video"
+      );
+
+    const description =
+      escapeHtml(
+        item.description ||
+        ""
+      );
+
+    const url =
+      escapeHtml(
+        item.url || ""
+      );
+
+    return `
+      <article
+        class="video-result"
+      >
+
+        <h2>
+          <a
+            href="${url}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ${title}
+          </a>
+        </h2>
+
+        <div class="result-url">
+          ${url}
+        </div>
+
+        <div
+          class="result-description"
+        >
+          ${description}
+        </div>
+
+      </article>
+    `;
+  }).join("");
+}
+
+/* -------------------------------------------------------
+   MAP RENDERER
+------------------------------------------------------- */
+
+function renderMaps(
+  items
+) {
+  if (!items.length) {
+    return `
+      <div class="empty">
+        No indexed place/location results found.
+      </div>
+    `;
+  }
+
+  return items.map(item => {
+
+    const title =
+      escapeHtml(
+        item.title ||
+        "Place"
+      );
+
+    const description =
+      escapeHtml(
+        item.description ||
+        ""
+      );
+
+    const url =
+      escapeHtml(
+        item.url || ""
+      );
+
+    return `
+      <article
+        class="map-result"
+      >
+
+        <h2>
+          <a
+            href="${url}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ${title}
+          </a>
+        </h2>
+
+        <div class="result-url">
+          ${url}
+        </div>
+
+        <div
+          class="result-description"
+        >
+          ${description}
+        </div>
+
+      </article>
+    `;
+  }).join("");
+}
+
+/* -------------------------------------------------------
+   SEARCH
+------------------------------------------------------- */
+
+async function doSearch(
+  query,
+  mode = currentMode
+) {
+  query =
+    String(query || "")
       .trim();
 
-    const { data: fallbackData } =
-      await supabase
-        .from("pages")
-        .select(`
-          id,
-          url,
-          title,
-          description,
-          content,
-          author,
-          image_url,
-          published_at,
-          last_crawled_at,
-          updated_at,
-          authority_score,
-          popularity_score
-        `)
-        .or(
-          `title.ilike.%${safe}%,description.ilike.%${safe}%,url.ilike.%${safe}%,content.ilike.%${safe}%`
-        )
-        .limit(500);
+  mode =
+    allowedModes.includes(mode)
+      ? mode
+      : "web";
 
-    if (Array.isArray(fallbackData)) {
-      rows = fallbackData;
-    }
-  }
+  currentQuery = query;
+  currentMode = mode;
 
-  const seen = new Set();
+  searchInput.value =
+    query;
 
-  rows = rows.filter(row => {
-    const key =
-      String(row.url || "").trim() ||
-      String(row.id || "");
+  setActiveTab(mode);
 
-    if (seen.has(key)) return false;
-
-    seen.add(key);
-
-    return true;
-  });
-
-  /* Short query protection.
-     Example:
-     AI must not match Aiuto only.
-  */
-
-  if (isShortQuery(query)) {
-    rows = rows.filter(row =>
-      hasStrictShortQueryMatch(
-        row,
-        query
-      )
-    );
-  }
-
-  /* IMAGE MODE */
-
-  if (mode === "images") {
-    rows = rows.filter(row =>
-      Boolean(
-        String(row.image_url || "").trim()
-      )
-    );
-  }
-
-  /* VIDEO MODE */
-
-  if (mode === "videos") {
-    rows = rows.filter(row => {
-      const text = normalizeText(
-        `${row.title || ""} ${
-          row.description || ""
-        } ${row.url || ""} ${
-          row.content || ""
-        }`
-      );
-
-      const url = String(
-        row.url || ""
-      ).toLowerCase();
-
-      return (
-        url.includes("youtube.com") ||
-        url.includes("youtu.be") ||
-        url.includes("vimeo.com") ||
-        text.includes(" video ") ||
-        text.startsWith("video ") ||
-        text.endsWith(" video")
-      );
-    });
-  }
-
-  /* MAP / PLACE MODE */
-
-  if (mode === "maps") {
-    rows = rows.filter(row => {
-      const text = normalizeText(
-        `${row.title || ""} ${
-          row.description || ""
-        } ${row.url || ""}`
-      );
-
-      return (
-        text.includes("map") ||
-        text.includes("maps") ||
-        text.includes("location") ||
-        text.includes("place") ||
-        text.includes("address") ||
-        text.includes("district") ||
-        text.includes("city") ||
-        text.includes("town") ||
-        text.includes("village")
-      );
-    });
-  }
-
-  const ranked = rows
-    .map(row => {
-      const ranking =
-        calculateScore(row, query);
-
-      return {
-        ...row,
-        ...ranking
-      };
-    })
-    .filter(row => row.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-
-      return String(
-        a.title || ""
-      ).localeCompare(
-        String(b.title || "")
-      );
-    });
-
-  const total = ranked.length;
-
-  const start =
-    (pageNumber - 1) * limit;
-
-  const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
-
-  return {
-    ok: true,
-    mode,
+  updateUrl(
     query,
-    total,
-    page: pageNumber,
-    limit,
-    results: results.map(row => ({
-      id: row.id,
-      url: row.url,
-      title: row.title,
-      description: row.description,
-      author: row.author,
-      image_url: row.image_url,
-      published_at: row.published_at,
-      last_crawled_at:
-        row.last_crawled_at,
-      score: Math.round(row.score * 100) / 100,
-      matched_words: row.matchedWords,
-      coverage: row.coverage
-    }))
-  };
-}
-
-/* -------------------------------------------------------
-   NEWS SEARCH
-------------------------------------------------------- */
-
-function calculateNewsScore(item, query) {
-  const words = uniqueTokens(query);
-
-  const title = item.title || "";
-  const description =
-    item.description || "";
-  const source =
-    item.source_name || "";
-
-  let score = 0;
-  let matched = 0;
-
-  for (const word of words) {
-    let found = false;
-
-    if (hasWholeWord(title, word)) {
-      score += 120;
-      found = true;
-    }
-
-    if (
-      hasWholeWord(
-        description,
-        word
-      )
-    ) {
-      score += 35;
-      found = true;
-    }
-
-    if (
-      hasWholeWord(
-        source,
-        word
-      )
-    ) {
-      score += 20;
-      found = true;
-    }
-
-    if (found) matched++;
-  }
-
-  const phrase =
-    normalizeText(query);
-
-  if (
-    hasExactPhrase(
-      title,
-      phrase
-    )
-  ) {
-    score += 220;
-  }
-
-  if (
-    normalizeText(title) === phrase
-  ) {
-    score += 300;
-  }
-
-  score +=
-    calculateFreshnessBonus(
-      item.published_at ||
-      item.fetched_at
-    );
-
-  const coverage =
-    words.length
-      ? matched / words.length
-      : 0;
-
-  score += coverage * 100;
-
-  return {
-    score,
-    coverage,
-    matchedWords: matched
-  };
-}
-
-async function searchNews(
-  query,
-  pageNumber = 1,
-  limit = 20
-) {
-  query = cleanQuery(query);
-
-  let rows = [];
-
-  const { data, error } =
-    await supabase
-      .from("news")
-      .select(`
-        id,
-        title,
-        description,
-        url,
-        source_name,
-        source_domain,
-        published_at,
-        image_url,
-        fetched_at
-      `)
-      .order(
-        "published_at",
-        {
-          ascending: false,
-          nullsFirst: false
-        }
-      )
-      .limit(500);
-
-  if (!error && Array.isArray(data)) {
-    rows = data;
-  }
-
-  const queryWords =
-    uniqueTokens(query);
-
-  if (queryWords.length) {
-    rows = rows.filter(item => {
-      const text = normalizeText(
-        `${item.title || ""} ${
-          item.description || ""
-        } ${item.source_name || ""}`
-      );
-
-      return queryWords.some(word =>
-        hasWholeWord(text, word)
-      );
-    });
-  }
-
-  const ranked = rows
-    .map(item => ({
-      ...item,
-      ...calculateNewsScore(
-        item,
-        query
-      )
-    }))
-    .sort((a, b) =>
-      b.score - a.score
-    );
-
-  const total = ranked.length;
-
-  const start =
-    (pageNumber - 1) * limit;
-
-  const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
-
-  return {
-    ok: true,
-    mode: "news",
-    query,
-    total,
-    page: pageNumber,
-    limit,
-    results
-  };
-}
-
-/* -------------------------------------------------------
-   HTTP SERVER
-------------------------------------------------------- */
-
-function jsonResponse(
-  res,
-  status,
-  data
-) {
-  const body =
-    JSON.stringify(data);
-
-  res.writeHead(
-    status,
-    {
-      "Content-Type":
-        "application/json; charset=utf-8",
-      "Cache-Control":
-        "no-store"
-    }
+    mode
   );
 
-  res.end(body);
-}
-
-function sendFile(
-  res,
-  filePath
-) {
-  if (!fs.existsSync(filePath)) {
-    res.writeHead(404);
-    res.end("Not Found");
+  if (!query) {
+    status.textContent = "";
+    results.innerHTML = `
+      <div class="empty">
+        Type something to search HEXORA.
+      </div>
+    `;
     return;
   }
 
-  const ext =
-    path.extname(filePath)
-      .toLowerCase();
+  status.textContent =
+    `Searching ${mode}...`;
 
-  const types = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".ico": "image/x-icon"
-  };
+  results.innerHTML = "";
 
-  res.writeHead(
-    200,
-    {
-      "Content-Type":
-        types[ext] ||
-        "application/octet-stream"
+  try {
+
+    const response =
+      await fetch(
+        `/api/search?q=${encodeURIComponent(
+          query
+        )}&mode=${encodeURIComponent(
+          mode
+        )}&page=1&limit=30`
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
     }
-  );
 
-  fs.createReadStream(
-    filePath
-  ).pipe(res);
+    const data =
+      await response.json();
+
+    if (!data.ok) {
+      throw new Error(
+        data.error ||
+        "Search failed"
+      );
+    }
+
+    const items =
+      Array.isArray(
+        data.results
+      )
+        ? data.results
+        : [];
+
+    status.textContent =
+      `${data.total || items.length} results for "${query}"`;
+
+    if (mode === "web") {
+      results.innerHTML =
+        renderWeb(items);
+    }
+
+    else if (
+      mode === "images"
+    ) {
+      results.innerHTML =
+        renderImages(items);
+    }
+
+    else if (
+      mode === "news"
+    ) {
+      results.innerHTML =
+        renderNews(items);
+    }
+
+    else if (
+      mode === "videos"
+    ) {
+      results.innerHTML =
+        renderVideos(items);
+    }
+
+    else if (
+      mode === "maps"
+    ) {
+      results.innerHTML =
+        renderMaps(items);
+    }
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA search error:",
+      error
+    );
+
+    status.textContent = "";
+
+    results.innerHTML = `
+      <div class="error">
+        HEXORA search service error.
+        Please try again.
+      </div>
+    `;
+  }
 }
 
-const server =
-  http.createServer(
-    async (req, res) => {
-      try {
-        const requestUrl =
-          new URL(
-            req.url,
-            `http://${req.headers.host || "localhost"}`
-          );
+/* -------------------------------------------------------
+   EVENTS
+------------------------------------------------------- */
 
-        const pathname =
-          requestUrl.pathname;
+searchBtn.addEventListener(
+  "click",
+  () => {
+    doSearch(
+      searchInput.value,
+      currentMode
+    );
+  }
+);
 
-        /* HEALTH */
+searchInput.addEventListener(
+  "keydown",
+  event => {
+    if (
+      event.key ===
+      "Enter"
+    ) {
+      event.preventDefault();
 
-        if (
-          pathname ===
-            "/api/health" ||
-          pathname === "/health"
-        ) {
-          return jsonResponse(
-            res,
-            200,
-            {
-              ok: true,
-              service: "HEXORA",
-              index: "Supabase",
-              status: "online"
-            }
-          );
-        }
+      doSearch(
+        searchInput.value,
+        currentMode
+      );
+    }
+  }
+);
 
-        /* SEARCH */
+clearBtn.addEventListener(
+  "click",
+  () => {
+    searchInput.value = "";
+    currentQuery = "";
 
-        if (
-          pathname ===
-            "/api/search" ||
-          pathname === "/search"
-        ) {
-          const query =
-            requestUrl.searchParams.get(
-              "q"
-            ) || "";
+    updateUrl(
+      "",
+      currentMode
+    );
 
-          const mode =
-            requestUrl.searchParams.get(
-              "mode"
-            ) || "web";
+    status.textContent = "";
 
-          const page =
-            Math.max(
-              1,
-              Number(
-                requestUrl.searchParams.get(
-                  "page"
-                ) || 1
-              )
-            );
+    results.innerHTML = `
+      <div class="empty">
+        Type something to search HEXORA.
+      </div>
+    `;
 
-          const limit =
-            Math.min(
-              50,
-              Math.max(
-                1,
-                Number(
-                  requestUrl.searchParams.get(
-                    "limit"
-                  ) || 20
-                )
-              )
-            );
+    searchInput.focus();
+  }
+);
 
-          if (
-            detectMode(mode) ===
-            "news"
-          ) {
-            const result =
-              await searchNews(
-                query,
-                page,
-                limit
-              );
+tabs.forEach(tab => {
 
-            return jsonResponse(
-              res,
-              200,
-              result
-            );
-          }
+  tab.addEventListener(
+    "click",
+    () => {
 
-          const result =
-            await searchWeb(
-              query,
-              page,
-              limit,
-              mode
-            );
+      const mode =
+        tab.dataset.mode;
 
-          return jsonResponse(
-            res,
-            200,
-            result
-          );
-        }
+      const query =
+        searchInput.value.trim();
 
-        /* NEWS */
+      currentMode = mode;
 
-        if (
-          pathname ===
-            "/api/news" ||
-          pathname === "/news"
-        ) {
-          const result =
-            await searchNews(
-              "",
-              1,
-              30
-            );
+      setActiveTab(mode);
 
-          return jsonResponse(
-            res,
-            200,
-            result
-          );
-        }
-
-        /* STATIC FILES */
-
-        let filePath;
-
-        if (pathname === "/") {
-          filePath =
-            path.join(
-              __dirname,
-              "index.html"
-            );
-        } else {
-          const requested =
-            decodeURIComponent(
-              pathname
-            );
-
-          filePath =
-            path.join(
-              __dirname,
-              requested
-            );
-        }
-
-        if (
-          fs.existsSync(
-            filePath
-          ) &&
-          fs.statSync(
-            filePath
-          ).isFile()
-        ) {
-          return sendFile(
-            res,
-            filePath
-          );
-        }
-
-        /* SPA FALLBACK */
-
-        const indexFile =
-          path.join(
-            __dirname,
-            "index.html"
-          );
-
-        if (
-          fs.existsSync(indexFile)
-        ) {
-          return sendFile(
-            res,
-            indexFile
-          );
-        }
-
-        res.writeHead(404);
-        res.end("Not Found");
-      } catch (error) {
-        console.error(
-          "Server error:",
-          error
+      if (query) {
+        doSearch(
+          query,
+          mode
+        );
+      } else {
+        updateUrl(
+          "",
+          mode
         );
 
-        return jsonResponse(
-          res,
-          500,
-          {
-            ok: false,
-            error:
-              "HEXORA server error"
-          }
-        );
+        status.textContent =
+          `HEXORA ${mode} search`;
+
+        results.innerHTML = `
+          <div class="empty">
+            Search in ${mode}.
+          </div>
+        `;
       }
     }
   );
 
-server.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `HEXORA search server running on port ${PORT}`
-    );
-  }
+});
+
+/* -------------------------------------------------------
+   INITIAL LOAD
+------------------------------------------------------- */
+
+setActiveTab(
+  currentMode
 );
+
+if (currentQuery) {
+  doSearch(
+    currentQuery,
+    currentMode
+  );
+} else {
+  results.innerHTML = `
+    <div class="empty">
+      Search the web with HEXORA.
+    </div>
+  `;
+}
