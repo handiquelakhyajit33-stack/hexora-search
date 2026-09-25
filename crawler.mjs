@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 
 const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
-  "HEXORA-Bot/1.0 (+search engine crawler)";
+  "HEXORA-Bot/1.0 (+https://hexora-search.com/crawler)";
 
 const REQUEST_TIMEOUT =
   Number(process.env.CRAWL_TIMEOUT_MS || 15000);
@@ -14,38 +14,100 @@ const MAX_CONTENT =
   Number(process.env.CRAWL_MAX_CONTENT || 100000);
 
 const MAX_LINKS =
-  Number(process.env.CRAWL_MAX_LINKS || 100);
+  Number(process.env.CRAWL_MAX_LINKS || 300);
 
 const MAX_IMAGES =
-  Number(process.env.CRAWL_MAX_IMAGES || 50);
+  Number(process.env.CRAWL_MAX_IMAGES || 100);
 
 const MAX_VIDEOS =
-  Number(process.env.CRAWL_MAX_VIDEOS || 30);
+  Number(process.env.CRAWL_MAX_VIDEOS || 50);
 
 const MAX_PLACES =
   Number(process.env.CRAWL_MAX_PLACES || 20);
 
-const ALLOWED_SCHEMES =
-  new Set(["http:", "https:"]);
+const CANDIDATE_LIMIT =
+  Number(process.env.CRAWL_CANDIDATE_LIMIT || 250);
 
+const RETRY_LIMIT =
+  Number(process.env.CRAWL_RETRY_LIMIT || 5);
 
-/* =========================================
-   URL NORMALIZATION
-========================================= */
+const ROBOTS_CACHE_MS =
+  Number(process.env.CRAWL_ROBOTS_CACHE_MS || 3600000);
 
-export function normalizeUrl(input, base = null) {
+const FETCH_HEADERS = {
+  "User-Agent": USER_AGENT,
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "*",
+};
+
+const domainLastCrawled = new Map();
+const robotsCache = new Map();
+
+/* ---------------------------------------------------------
+   BASIC HELPERS
+--------------------------------------------------------- */
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cleanText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/\u00a0/g, " ")
+    .trim();
+}
+
+function truncate(value, max) {
+  const text = cleanText(value);
+  if (text.length <= max) return text;
+  return text.slice(0, max);
+}
+
+function getDomain(url) {
   try {
-    const url = base
-      ? new URL(input, base)
-      : new URL(input);
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
-    if (!ALLOWED_SCHEMES.has(url.protocol)) {
+function getOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeUrl(rawUrl, baseUrl = null) {
+  try {
+    if (!rawUrl) return null;
+
+    let value = String(rawUrl).trim();
+
+    if (
+      value.startsWith("#") ||
+      value.startsWith("javascript:") ||
+      value.startsWith("mailto:") ||
+      value.startsWith("tel:") ||
+      value.startsWith("data:")
+    ) {
       return null;
     }
 
-    url.hash = "";
+    const absolute = baseUrl
+      ? new URL(value, baseUrl)
+      : new URL(value);
 
-    const removeParams = [
+    if (!["http:", "https:"].includes(absolute.protocol)) {
+      return null;
+    }
+
+    absolute.hash = "";
+
+    const trackingParams = [
       "utm_source",
       "utm_medium",
       "utm_campaign",
@@ -53,260 +115,547 @@ export function normalizeUrl(input, base = null) {
       "utm_content",
       "fbclid",
       "gclid",
+      "dclid",
       "mc_cid",
-      "mc_eid"
+      "mc_eid",
+      "_ga",
     ];
 
-    for (const param of removeParams) {
-      url.searchParams.delete(param);
+    for (const param of trackingParams) {
+      absolute.searchParams.delete(param);
     }
+
+    // Remove trailing slash except for domain root.
+    let result = absolute.toString();
 
     if (
-      url.pathname.length > 1 &&
-      url.pathname.endsWith("/")
+      absolute.pathname !== "/" &&
+      result.endsWith("/")
     ) {
-      url.pathname =
-        url.pathname.slice(0, -1);
+      result = result.slice(0, -1);
     }
 
-    url.hostname =
-      url.hostname.toLowerCase();
-
-    return url.toString();
-
+    return result;
   } catch {
     return null;
   }
 }
 
-
-/* =========================================
-   ROBOTS.TXT
-========================================= */
-
-const robotsCache = new Map();
-
-async function canCrawl(url) {
+function isProbablyHtmlUrl(url) {
   try {
-    const target = new URL(url);
-    const origin = target.origin;
+    const u = new URL(url);
+    const path = u.pathname.toLowerCase();
 
-    const cached = robotsCache.get(origin);
+    const blockedExtensions = [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".webp",
+      ".svg",
+      ".ico",
+      ".mp4",
+      ".webm",
+      ".mov",
+      ".avi",
+      ".mp3",
+      ".wav",
+      ".pdf",
+      ".zip",
+      ".rar",
+      ".7z",
+      ".tar",
+      ".gz",
+      ".css",
+      ".js",
+      ".xml",
+      ".json",
+      ".woff",
+      ".woff2",
+      ".ttf",
+      ".eot",
+      ".exe",
+      ".dmg",
+      ".iso",
+    ];
 
-    if (
-      cached &&
-      cached.expires > Date.now()
-    ) {
-      return cached.allowed;
-    }
-
-    const robotsUrl =
-      `${origin}/robots.txt`;
-
-    const controller =
-      new AbortController();
-
-    const timer =
-      setTimeout(
-        () => controller.abort(),
-        8000
-      );
-
-    let response;
-
-    try {
-      response = await fetch(
-        robotsUrl,
-        {
-          headers: {
-            "User-Agent": USER_AGENT
-          },
-          signal: controller.signal
-        }
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!response.ok) {
-      robotsCache.set(
-        origin,
-        {
-          allowed: true,
-          expires: Date.now() + 3600000
-        }
-      );
-
-      return true;
-    }
-
-    const text =
-      await response.text();
-
-    const rules =
-      parseRobots(text);
-
-    const allowed =
-      isPathAllowed(
-        target.pathname,
-        rules
-      );
-
-    robotsCache.set(
-      origin,
-      {
-        allowed,
-        expires: Date.now() + 3600000
-      }
+    return !blockedExtensions.some((ext) =>
+      path.endsWith(ext)
     );
-
-    return allowed;
-
   } catch {
     return false;
   }
 }
 
+/* ---------------------------------------------------------
+   ROBOTS.TXT
+--------------------------------------------------------- */
 
 function parseRobots(text) {
-  const lines =
-    text.split(/\r?\n/);
+  const groups = [];
+  let current = null;
 
-  let active = false;
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.split("#")[0].trim())
+    .filter(Boolean);
 
-  const disallow = [];
-  const allow = [];
+  for (const line of lines) {
+    const index = line.indexOf(":");
 
-  for (const raw of lines) {
-    const line =
-      raw
-        .split("#")[0]
-        .trim();
+    if (index === -1) continue;
 
-    if (!line) continue;
+    const key = line
+      .slice(0, index)
+      .trim()
+      .toLowerCase();
 
-    const separator =
-      line.indexOf(":");
-
-    if (separator === -1) continue;
-
-    const key =
-      line
-        .slice(0, separator)
-        .trim()
-        .toLowerCase();
-
-    const value =
-      line
-        .slice(separator + 1)
-        .trim();
+    const value = line
+      .slice(index + 1)
+      .trim();
 
     if (key === "user-agent") {
-      active =
-        value === "*" ||
-        value.toLowerCase() ===
-          "hexora-bot";
+      current = {
+        agents: [value.toLowerCase()],
+        rules: [],
+      };
 
+      groups.push(current);
       continue;
     }
 
-    if (!active) continue;
-
     if (
-      key === "disallow" &&
-      value
+      current &&
+      (key === "allow" || key === "disallow")
     ) {
-      disallow.push(value);
-    }
-
-    if (
-      key === "allow" &&
-      value
-    ) {
-      allow.push(value);
+      current.rules.push({
+        type: key,
+        path: value,
+      });
     }
   }
 
-  return {
-    disallow,
-    allow
-  };
+  return groups;
 }
 
+function robotsRuleMatches(rulePath, targetPath) {
+  if (!rulePath) return false;
 
-function isPathAllowed(
-  pathname,
-  rules
-) {
-  let bestLength = -1;
-  let bestAllow = true;
+  if (rulePath === "/") return true;
 
-  for (const rule of rules.disallow) {
-    if (pathname.startsWith(rule)) {
-      if (rule.length > bestLength) {
-        bestLength = rule.length;
-        bestAllow = false;
-      }
-    }
+  if (rulePath.endsWith("$")) {
+    return targetPath === rulePath.slice(0, -1);
   }
 
-  for (const rule of rules.allow) {
-    if (pathname.startsWith(rule)) {
-      if (rule.length >= bestLength) {
-        bestLength = rule.length;
-        bestAllow = true;
-      }
-    }
-  }
-
-  return bestAllow;
+  return targetPath.startsWith(rulePath);
 }
 
-
-/* =========================================
-   FETCH PAGE
-========================================= */
-
-export async function fetchPage(url) {
-  const controller =
-    new AbortController();
-
-  const timer =
-    setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT
-    );
-
+async function canCrawl(url) {
   try {
-    const response =
-      await fetch(
-        url,
-        {
-          redirect: "follow",
-          headers: {
-            "User-Agent": USER_AGENT,
-            "Accept":
-              "text/html,application/xhtml+xml",
-            "Accept-Language":
-              "en-US,en;q=0.8"
-          },
-          signal:
-            controller.signal
-        }
+    const origin = getOrigin(url);
+
+    if (!origin) return false;
+
+    const now = Date.now();
+
+    const cached = robotsCache.get(origin);
+
+    let robots;
+
+    if (
+      cached &&
+      now - cached.time < ROBOTS_CACHE_MS
+    ) {
+      robots = cached.groups;
+    } else {
+      const controller = new AbortController();
+
+      const timeout = setTimeout(
+        () => controller.abort(),
+        10000
       );
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        finalUrl: response.url
-      };
+      try {
+        const response = await fetch(
+          `${origin}/robots.txt`,
+          {
+            headers: {
+              "User-Agent": USER_AGENT,
+            },
+            signal: controller.signal,
+          }
+        );
+
+        clearTimeout(timeout);
+
+        if (response.status === 404) {
+          robots = [];
+        } else if (response.ok) {
+          robots = parseRobots(
+            await response.text()
+          );
+        } else {
+          // If robots cannot be fetched, be conservative.
+          return false;
+        }
+
+        robotsCache.set(origin, {
+          time: now,
+          groups: robots,
+        });
+      } catch {
+        clearTimeout(timeout);
+
+        // Temporary robots failure:
+        // do not crawl this URL now.
+        return false;
+      }
     }
+
+    if (!robots.length) return true;
+
+    const urlObject = new URL(url);
+    const targetPath =
+      `${urlObject.pathname}${urlObject.search}`;
+
+    const matchingGroups = robots.filter((group) =>
+      group.agents.some(
+        (agent) =>
+          agent === "*" ||
+          agent === "hexora-bot" ||
+          agent === "hexora"
+      )
+    );
+
+    if (!matchingGroups.length) return true;
+
+    let matchedRule = null;
+
+    for (const group of matchingGroups) {
+      for (const rule of group.rules) {
+        if (
+          robotsRuleMatches(
+            rule.path,
+            targetPath
+          )
+        ) {
+          if (
+            !matchedRule ||
+            rule.path.length >
+              matchedRule.path.length
+          ) {
+            matchedRule = rule;
+          }
+        }
+      }
+    }
+
+    if (!matchedRule) return true;
+
+    return matchedRule.type === "allow";
+  } catch {
+    return false;
+  }
+}
+
+/* ---------------------------------------------------------
+   DOMAIN FAIRNESS
+--------------------------------------------------------- */
+
+/*
+  IMPORTANT:
+  There is NO Assam/India priority here.
+
+  Every domain starts from the same neutral priority.
+
+  Fairness is achieved by:
+  - one/few URLs per domain per batch
+  - queue candidate sampling
+  - retry penalties
+  - freshness
+  - avoiding giant-domain starvation
+*/
+
+function calculatePriority(url, row = {}) {
+  let priority = 100;
+
+  const attempts = Number(row.attempts || 0);
+
+  // Freshly discovered pages get a small boost.
+  if (!row.last_crawled_at) {
+    priority += 15;
+  }
+
+  // Failed URLs slowly lose priority.
+  priority -= attempts * 10;
+
+  // Keep everything inside a sane range.
+  return Math.max(1, Math.min(500, priority));
+}
+
+function selectFairBatch(rows, batchSize) {
+  const selected = [];
+  const domainCounts = new Map();
+
+  // First pass:
+  // Prefer different domains.
+  for (const row of rows) {
+    if (selected.length >= batchSize) break;
+
+    const domain = getDomain(row.url);
+
+    if (!domain) continue;
+
+    const count =
+      domainCounts.get(domain) || 0;
+
+    if (count >= 1) continue;
+
+    selected.push(row);
+    domainCounts.set(domain, 1);
+  }
+
+  // Second pass:
+  // If there are not enough different domains,
+  // allow a second URL from domains.
+  if (selected.length < batchSize) {
+    for (const row of rows) {
+      if (selected.length >= batchSize) break;
+
+      if (
+        selected.some(
+          (item) => item.id === row.id
+        )
+      ) {
+        continue;
+      }
+
+      const domain = getDomain(row.url);
+
+      if (!domain) continue;
+
+      const count =
+        domainCounts.get(domain) || 0;
+
+      if (count >= 2) continue;
+
+      selected.push(row);
+      domainCounts.set(
+        domain,
+        count + 1
+      );
+    }
+  }
+
+  // Final fallback.
+  if (selected.length < batchSize) {
+    for (const row of rows) {
+      if (selected.length >= batchSize) break;
+
+      if (
+        selected.some(
+          (item) => item.id === row.id
+        )
+      ) {
+        continue;
+      }
+
+      selected.push(row);
+    }
+  }
+
+  return selected;
+}
+
+/* ---------------------------------------------------------
+   QUEUE
+--------------------------------------------------------- */
+
+async function queueUrls(
+  supabase,
+  urls,
+  discoveredFrom = null
+) {
+  const rows = [];
+
+  const unique = new Set();
+
+  for (const raw of urls) {
+    const normalized =
+      normalizeUrl(
+        raw,
+        discoveredFrom
+      );
+
+    if (!normalized) continue;
+
+    if (!isProbablyHtmlUrl(normalized)) {
+      continue;
+    }
+
+    if (unique.has(normalized)) continue;
+
+    unique.add(normalized);
+
+    rows.push({
+      url: normalized,
+      status: "pending",
+      priority: 100,
+      attempts: 0,
+      discovered_from:
+        discoveredFrom || null,
+      next_crawl_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  if (!rows.length) return 0;
+
+  // Insert only new URLs.
+  // Existing URLs are never deleted.
+  const { error } = await supabase
+    .from("crawl_queue")
+    .upsert(rows, {
+      onConflict: "url",
+      ignoreDuplicates: true,
+    });
+
+  if (error) {
+    throw error;
+  }
+
+  return rows.length;
+}
+
+async function claimQueue(
+  supabase,
+  batchSize
+) {
+  const now = new Date().toISOString();
+
+  /*
+    Get a reasonably large candidate pool.
+    We then apply domain fairness locally.
+  */
+  const { data, error } = await supabase
+    .from("crawl_queue")
+    .select(
+      "id,url,status,priority,attempts,created_at,next_crawl_at,discovered_from"
+    )
+    .eq("status", "pending")
+    .or(
+      `next_crawl_at.is.null,next_crawl_at.lte.${now}`
+    )
+    .order("priority", {
+      ascending: false,
+    })
+    .order("created_at", {
+      ascending: true,
+    })
+    .limit(
+      Math.max(
+        CANDIDATE_LIMIT,
+        batchSize * 10
+      )
+    );
+
+  if (error) throw error;
+
+  if (!data || !data.length) {
+    return [];
+  }
+
+  const selected = selectFairBatch(
+    data,
+    batchSize
+  );
+
+  const claimed = [];
+
+  for (const row of selected) {
+    const { data: updated, error: updateError } =
+      await supabase
+        .from("crawl_queue")
+        .update({
+          status: "processing",
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq("id", row.id)
+        .eq("status", "pending")
+        .select(
+          "id,url,status,priority,attempts,created_at,next_crawl_at,discovered_from"
+        )
+        .maybeSingle();
+
+    if (updateError) {
+      console.error(
+        "Queue claim failed:",
+        row.url,
+        updateError
+      );
+      continue;
+    }
+
+    if (updated) {
+      claimed.push(updated);
+    }
+  }
+
+  return claimed;
+}
+
+/* ---------------------------------------------------------
+   FETCH
+--------------------------------------------------------- */
+
+async function fetchHtml(url) {
+  const domain = getDomain(url);
+
+  const previous =
+    domainLastCrawled.get(domain) || 0;
+
+  const elapsed =
+    Date.now() - previous;
+
+  if (elapsed < DOMAIN_DELAY) {
+    await sleep(
+      DOMAIN_DELAY - elapsed
+    );
+  }
+
+  domainLastCrawled.set(
+    domain,
+    Date.now()
+  );
+
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT
+  );
+
+  try {
+    const response = await fetch(url, {
+      headers: FETCH_HEADERS,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    const finalUrl =
+      response.url || url;
 
     const contentType =
       response.headers.get(
         "content-type"
       ) || "";
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
+    }
 
     if (
       !contentType.includes("text/html") &&
@@ -314,1563 +663,1179 @@ export async function fetchPage(url) {
         "application/xhtml+xml"
       )
     ) {
-      return {
-        ok: false,
-        status: response.status,
-        finalUrl: response.url,
-        reason: "not-html"
-      };
+      throw new Error(
+        `Not HTML: ${contentType}`
+      );
     }
 
-    const html =
-      await response.text();
+    const html = await response.text();
 
     return {
-      ok: true,
-      status: response.status,
-      finalUrl: response.url,
-      html
+      html,
+      finalUrl,
+      contentType,
     };
-
-  } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      finalUrl: url,
-      reason:
-        error?.name === "AbortError"
-          ? "timeout"
-          : String(
-              error?.message || error
-            )
-    };
-
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timeout);
   }
 }
 
+/* ---------------------------------------------------------
+   LANGUAGE
+--------------------------------------------------------- */
 
-/* =========================================
-   IMAGE HELPERS
-========================================= */
+function detectLanguage($, html) {
+  const htmlLang = cleanText(
+    $("html").attr("lang")
+  );
 
-function getAbsoluteImageUrl(
-  value,
-  pageUrl
-) {
-  if (!value) return null;
+  if (htmlLang) {
+    return htmlLang
+      .toLowerCase()
+      .split("-")[0];
+  }
 
-  const cleaned =
-    String(value)
-      .trim()
-      .split(",")[0]
-      .trim()
-      .split(/\s+/)[0];
+  const metaLang = cleanText(
+    $('meta[http-equiv="content-language"]').attr(
+      "content"
+    )
+  );
 
-  if (!cleaned) return null;
+  if (metaLang) {
+    return metaLang
+      .toLowerCase()
+      .split("-")[0];
+  }
 
-  return normalizeUrl(
-    cleaned,
-    pageUrl
+  const text = cleanText(
+    $("body").text()
+  ).slice(0, 5000);
+
+  // Basic Assamese detection.
+  if (/[\u0980-\u09FF]/.test(text)) {
+    return "as";
+  }
+
+  // Devanagari.
+  if (/[\u0900-\u097F]/.test(text)) {
+    return "hi";
+  }
+
+  // Bengali.
+  if (/[\u0980-\u09FF]/.test(text)) {
+    return "bn";
+  }
+
+  return "unknown";
+}
+
+/* ---------------------------------------------------------
+   DATE
+--------------------------------------------------------- */
+
+function extractPublishedDate($) {
+  const selectors = [
+    'meta[property="article:published_time"]',
+    'meta[name="article:published_time"]',
+    'meta[name="date"]',
+    'meta[name="publish-date"]',
+    'meta[itemprop="datePublished"]',
+    "time[datetime]",
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector).first();
+
+    if (!element.length) continue;
+
+    const value =
+      element.attr("content") ||
+      element.attr("datetime") ||
+      element.text();
+
+    if (!value) continue;
+
+    const date = new Date(value);
+
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------
+   AUTHOR
+--------------------------------------------------------- */
+
+function extractAuthor($) {
+  const selectors = [
+    'meta[name="author"]',
+    'meta[property="article:author"]',
+    '[rel="author"]',
+    '[itemprop="author"]',
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector).first();
+
+    if (!element.length) continue;
+
+    const value =
+      element.attr("content") ||
+      element.attr("name") ||
+      element.text();
+
+    if (cleanText(value)) {
+      return truncate(value, 500);
+    }
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------
+   DESCRIPTION
+--------------------------------------------------------- */
+
+function extractDescription($) {
+  const selectors = [
+    'meta[name="description"]',
+    'meta[property="og:description"]',
+    'meta[name="twitter:description"]',
+  ];
+
+  for (const selector of selectors) {
+    const value = $(selector)
+      .first()
+      .attr("content");
+
+    if (cleanText(value)) {
+      return truncate(value, 2000);
+    }
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------
+   MAIN CONTENT
+--------------------------------------------------------- */
+
+function extractContent($) {
+  const clone = $("body").clone();
+
+  clone.find(
+    "script,style,noscript,template,svg,canvas,iframe,form,nav,footer,header"
+  ).remove();
+
+  const preferred = clone
+    .find(
+      "article,main,[role='main'],.article,.post,.entry-content"
+    )
+    .first();
+
+  let text;
+
+  if (preferred.length) {
+    text = preferred.text();
+  } else {
+    text = clone.text();
+  }
+
+  return truncate(
+    text,
+    MAX_CONTENT
   );
 }
 
+/* ---------------------------------------------------------
+   JSON-LD
+--------------------------------------------------------- */
+
+function extractJsonLd($) {
+  const objects = [];
+
+  $('script[type="application/ld+json"]').each(
+    (_, element) => {
+      const raw = $(element).html();
+
+      if (!raw) return;
+
+      try {
+        const parsed = JSON.parse(raw);
+
+        if (Array.isArray(parsed)) {
+          objects.push(...parsed);
+        } else {
+          objects.push(parsed);
+        }
+      } catch {
+        // Ignore malformed JSON-LD.
+      }
+    }
+  );
+
+  return objects;
+}
+
+function flattenJsonLd(value) {
+  const output = [];
+
+  function visit(item) {
+    if (!item) return;
+
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        visit(child);
+      }
+      return;
+    }
+
+    if (
+      typeof item === "object"
+    ) {
+      output.push(item);
+
+      if (Array.isArray(item["@graph"])) {
+        visit(item["@graph"]);
+      }
+    }
+  }
+
+  visit(value);
+
+  return output;
+}
+
+/* ---------------------------------------------------------
+   IMAGES
+--------------------------------------------------------- */
 
 function extractImages(
   $,
-  pageUrl
+  pageUrl,
+  jsonLd
 ) {
   const results = [];
   const seen = new Set();
 
   function addImage(
-    imageUrl,
-    alt = "",
-    title = ""
+    rawUrl,
+    alt = null,
+    title = null
   ) {
-    const normalized =
-      getAbsoluteImageUrl(
-        imageUrl,
+    const imageUrl =
+      normalizeUrl(
+        rawUrl,
         pageUrl
       );
 
-    if (!normalized) return;
+    if (!imageUrl) return;
 
-    if (seen.has(normalized)) return;
+    if (seen.has(imageUrl)) return;
 
-    if (
-      results.length >= MAX_IMAGES
-    ) {
-      return;
-    }
-
-    seen.add(normalized);
+    seen.add(imageUrl);
 
     results.push({
-      image_url: normalized,
+      page_url: pageUrl,
+      image_url: imageUrl,
       alt_text:
-        String(alt || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 500),
+        cleanText(alt) || null,
       title:
-        String(title || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 500)
+        cleanText(title) || null,
+      source_domain:
+        getDomain(pageUrl),
+      updated_at:
+        new Date().toISOString(),
     });
   }
 
-  /*
-   * OpenGraph image
-   */
   addImage(
-    $('meta[property="og:image"]')
-      .attr("content"),
-    $('meta[property="og:image:alt"]')
-      .attr("content") || ""
+    $('meta[property="og:image"]').attr(
+      "content"
+    ),
+    $('meta[property="og:image:alt"]').attr(
+      "content"
+    ),
+    $("title").first().text()
   );
 
-  /*
-   * Twitter image
-   */
   addImage(
-    $('meta[name="twitter:image"]')
-      .attr("content"),
-    ""
+    $('meta[name="twitter:image"]').attr(
+      "content"
+    ),
+    $('meta[name="twitter:image:alt"]').attr(
+      "content"
+    ),
+    $("title").first().text()
   );
 
-  /*
-   * Normal img tags
-   */
-  $("img").each(
-    (_, element) => {
-      if (
-        results.length >= MAX_IMAGES
-      ) {
-        return;
+  $("img").each((_, img) => {
+    if (results.length >= MAX_IMAGES) {
+      return false;
+    }
+
+    const $img = $(img);
+
+    const raw =
+      $img.attr("src") ||
+      $img.attr("data-src") ||
+      $img.attr("data-lazy-src") ||
+      $img.attr("data-original");
+
+    const srcset =
+      $img.attr("srcset") ||
+      $img.attr("data-srcset");
+
+    let selected = raw;
+
+    if (!selected && srcset) {
+      const first =
+        srcset
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)[0];
+
+      if (first) {
+        selected =
+          first.split(/\s+/)[0];
       }
+    }
 
-      const image =
-        $(element);
+    addImage(
+      selected,
+      $img.attr("alt"),
+      $img.attr("title")
+    );
+  });
 
-      const src =
-        image.attr("src") ||
-        image.attr("data-src") ||
-        image.attr("data-lazy-src");
+  for (const item of flattenJsonLd(jsonLd)) {
+    if (results.length >= MAX_IMAGES) break;
 
-      const srcset =
-        image.attr("srcset") ||
-        image.attr("data-srcset");
+    const image = item.image;
 
-      const selected =
-        src ||
-        (
-          srcset
-            ? srcset
-                .split(",")
-                .pop()
-                .trim()
-                .split(/\s+/)[0]
-            : null
-        );
-
+    if (typeof image === "string") {
       addImage(
-        selected,
-        image.attr("alt") || "",
-        image.attr("title") || ""
+        image,
+        item.caption,
+        item.name
+      );
+    } else if (
+      Array.isArray(image)
+    ) {
+      for (const img of image) {
+        if (results.length >= MAX_IMAGES) break;
+
+        if (typeof img === "string") {
+          addImage(
+            img,
+            item.caption,
+            item.name
+          );
+        } else if (
+          img &&
+          typeof img === "object"
+        ) {
+          addImage(
+            img.url ||
+              img.contentUrl,
+            img.caption,
+            img.name || item.name
+          );
+        }
+      }
+    } else if (
+      image &&
+      typeof image === "object"
+    ) {
+      addImage(
+        image.url ||
+          image.contentUrl,
+        image.caption,
+        image.name || item.name
       );
     }
-  );
+  }
 
   return results;
 }
 
-
-/* =========================================
-   VIDEO HELPERS
-========================================= */
-
-function normalizeVideoUrl(
-  value,
-  pageUrl
-) {
-  if (!value) return null;
-
-  let url;
-
-  try {
-    url =
-      new URL(
-        value,
-        pageUrl
-      );
-  } catch {
-    return null;
-  }
-
-  if (
-    !ALLOWED_SCHEMES.has(
-      url.protocol
-    )
-  ) {
-    return null;
-  }
-
-  url.hash = "";
-
-  const host =
-    url.hostname
-      .toLowerCase();
-
-  /*
-   * YouTube
-   */
-  if (
-    host === "youtube.com" ||
-    host === "www.youtube.com"
-  ) {
-    const id =
-      url.searchParams.get("v");
-
-    if (id) {
-      return `https://www.youtube.com/watch?v=${id}`;
-    }
-  }
-
-  /*
-   * YouTube short URL
-   */
-  if (
-    host === "youtu.be"
-  ) {
-    const id =
-      url.pathname
-        .replace(/^\/+/, "")
-        .split("/")[0];
-
-    if (id) {
-      return `https://www.youtube.com/watch?v=${id}`;
-    }
-  }
-
-  /*
-   * Vimeo
-   */
-  if (
-    host === "vimeo.com" ||
-    host === "www.vimeo.com"
-  ) {
-    return url.toString();
-  }
-
-  return url.toString();
-}
-
+/* ---------------------------------------------------------
+   VIDEOS
+--------------------------------------------------------- */
 
 function extractVideos(
   $,
-  pageUrl
+  pageUrl,
+  jsonLd
 ) {
   const results = [];
   const seen = new Set();
 
   function addVideo(
-    videoUrl,
-    title = "",
-    description = "",
-    thumbnailUrl = null
+    rawUrl,
+    title = null,
+    description = null,
+    thumbnail = null
   ) {
+    const videoUrl =
+      normalizeUrl(
+        rawUrl,
+        pageUrl
+      );
+
+    if (!videoUrl) return;
+
+    if (seen.has(videoUrl)) return;
+
+    seen.add(videoUrl);
+
+    results.push({
+      page_url: pageUrl,
+      video_url: videoUrl,
+      title:
+        cleanText(title) || null,
+      description:
+        cleanText(description) || null,
+      source_domain:
+        getDomain(pageUrl),
+      thumbnail_url:
+        normalizeUrl(
+          thumbnail,
+          pageUrl
+        ),
+      updated_at:
+        new Date().toISOString(),
+    });
+  }
+
+  $("video").each((_, video) => {
+    if (results.length >= MAX_VIDEOS) {
+      return false;
+    }
+
+    const $video = $(video);
+
+    addVideo(
+      $video.attr("src"),
+      $video.attr("title") ||
+        $("title").first().text(),
+      null,
+      $video.attr("poster")
+    );
+
+    $video.find("source").each(
+      (_, source) => {
+        if (results.length >= MAX_VIDEOS) {
+          return false;
+        }
+
+        addVideo(
+          $(source).attr("src"),
+          $video.attr("title"),
+          null,
+          $video.attr("poster")
+        );
+      }
+    );
+  });
+
+  $("iframe").each((_, iframe) => {
+    if (results.length >= MAX_VIDEOS) {
+      return false;
+    }
+
+    const src = $(iframe).attr("src");
+
+    if (!src) return;
+
+    if (
+      /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com/i.test(
+        src
+      )
+    ) {
+      addVideo(
+        src,
+        $("title").first().text()
+      );
+    }
+  });
+
+  for (const item of flattenJsonLd(jsonLd)) {
+    if (results.length >= MAX_VIDEOS) break;
+
+    const type = String(
+      item["@type"] || ""
+    ).toLowerCase();
+
+    if (
+      type.includes("videoobject")
+    ) {
+      addVideo(
+        item.contentUrl ||
+          item.embedUrl ||
+          item.url,
+        item.name,
+        item.description,
+        item.thumbnailUrl
+      );
+    }
+  }
+
+  return results;
+}
+
+/* ---------------------------------------------------------
+   PLACES
+--------------------------------------------------------- */
+
+function extractPlaces(
+  pageUrl,
+  jsonLd
+) {
+  const results = [];
+  const seen = new Set();
+
+  const placeTypes = new Set([
+    "place",
+    "localbusiness",
+    "restaurant",
+    "hotel",
+    "store",
+    "organization",
+    "airport",
+    "hospital",
+    "school",
+    "university",
+    "touristattraction",
+    "museum",
+    "park",
+    "landmarksorhistoricalbuildings",
+  ]);
+
+  for (const item of flattenJsonLd(jsonLd)) {
+    const types = Array.isArray(
+      item["@type"]
+    )
+      ? item["@type"]
+      : [item["@type"]];
+
+    const isPlace = types.some(
+      (type) =>
+        placeTypes.has(
+          String(type || "").toLowerCase()
+        )
+    );
+
+    if (!isPlace) continue;
+
+    const name =
+      cleanText(item.name) || null;
+
+    const address =
+      item.address;
+
+    let street = null;
+    let city = null;
+    let district = null;
+    let state = null;
+    let country = null;
+
+    if (
+      typeof address === "string"
+    ) {
+      street = cleanText(address);
+    } else if (
+      address &&
+      typeof address === "object"
+    ) {
+      street =
+        cleanText(
+          address.streetAddress
+        ) || null;
+
+      city =
+        cleanText(
+          address.addressLocality
+        ) || null;
+
+      state =
+        cleanText(
+          address.addressRegion
+        ) || null;
+
+      country =
+        cleanText(
+          typeof address.addressCountry ===
+            "object"
+            ? address.addressCountry.name
+            : address.addressCountry
+        ) || null;
+    }
+
+    const geo =
+      item.geo || {};
+
+    const latitude =
+      Number(
+        geo.latitude ??
+          geo.lat
+      );
+
+    const longitude =
+      Number(
+        geo.longitude ??
+          geo.lng
+      );
+
+    const validLatitude =
+      Number.isFinite(latitude)
+        ? latitude
+        : null;
+
+    const validLongitude =
+      Number.isFinite(longitude)
+        ? longitude
+        : null;
+
+    const key = [
+      pageUrl,
+      name,
+      validLatitude,
+      validLongitude,
+    ].join("|");
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+
+    results.push({
+      page_url: pageUrl,
+      name,
+      address: street,
+      city,
+      district,
+      state,
+      country,
+      latitude: validLatitude,
+      longitude: validLongitude,
+      source_domain:
+        getDomain(pageUrl),
+      updated_at:
+        new Date().toISOString(),
+    });
+
+    if (results.length >= MAX_PLACES) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+/* ---------------------------------------------------------
+   LINK EXTRACTION
+--------------------------------------------------------- */
+
+function extractLinks(
+  $,
+  pageUrl
+) {
+  const links = [];
+  const seen = new Set();
+
+  $("a[href]").each((_, element) => {
+    if (links.length >= MAX_LINKS) {
+      return false;
+    }
+
+    const href =
+      $(element).attr("href");
+
     const normalized =
-      normalizeVideoUrl(
-        videoUrl,
+      normalizeUrl(
+        href,
         pageUrl
       );
 
     if (!normalized) return;
 
-    if (seen.has(normalized)) return;
-
     if (
-      results.length >= MAX_VIDEOS
+      !isProbablyHtmlUrl(
+        normalized
+      )
     ) {
       return;
     }
 
-    const host =
-      new URL(normalized)
-        .hostname
-        .toLowerCase();
-
-    const isKnownVideo =
-      host.includes("youtube.") ||
-      host === "youtu.be" ||
-      host.includes("vimeo.") ||
-      normalized
-        .toLowerCase()
-        .includes(".mp4") ||
-      normalized
-        .toLowerCase()
-        .includes(".webm") ||
-      normalized
-        .toLowerCase()
-        .includes("/video/");
-
-    if (!isKnownVideo) {
+    if (seen.has(normalized)) {
       return;
     }
 
     seen.add(normalized);
 
-    results.push({
-      video_url: normalized,
-      title:
-        String(title || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 500),
-      description:
-        String(description || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 1000),
-      thumbnail_url:
-        thumbnailUrl
-          ? getAbsoluteImageUrl(
-              thumbnailUrl,
-              pageUrl
-            )
-          : null
-    });
-  }
+    links.push(normalized);
+  });
 
-  /*
-   * iframe videos
-   */
-  $("iframe[src]").each(
-    (_, element) => {
-      const iframe =
-        $(element);
-
-      addVideo(
-        iframe.attr("src"),
-        iframe.attr("title") || ""
-      );
-    }
-  );
-
-  /*
-   * video tags
-   */
-  $("video").each(
-    (_, element) => {
-      const video =
-        $(element);
-
-      const poster =
-        video.attr("poster") || null;
-
-      video.find("source[src]").each(
-        (_, source) => {
-          addVideo(
-            $(source).attr("src"),
-            video.attr("title") || "",
-            "",
-            poster
-          );
-        }
-      );
-
-      if (video.attr("src")) {
-        addVideo(
-          video.attr("src"),
-          video.attr("title") || "",
-          "",
-          poster
-        );
-      }
-    }
-  );
-
-  /*
-   * Normal links to video pages
-   */
-  $("a[href]").each(
-    (_, element) => {
-      const link =
-        $(element);
-
-      const href =
-        link.attr("href");
-
-      if (!href) return;
-
-      const text =
-        link.text()
-          .replace(/\s+/g, " ")
-          .trim();
-
-      addVideo(
-        href,
-        text
-      );
-    }
-  );
-
-  /*
-   * JSON-LD VideoObject
-   */
-  $("script[type='application/ld+json']").each(
-    (_, element) => {
-      const raw =
-        $(element).html();
-
-      if (!raw) return;
-
-      try {
-        const json =
-          JSON.parse(raw);
-
-        const objects =
-          Array.isArray(json)
-            ? json
-            : [json];
-
-        for (const item of objects) {
-          if (!item) continue;
-
-          const candidates = [
-            item,
-            ...(Array.isArray(item["@graph"])
-              ? item["@graph"]
-              : [])
-          ];
-
-          for (const obj of candidates) {
-            const type =
-              obj?.["@type"];
-
-            const isVideo =
-              type === "VideoObject" ||
-              (
-                Array.isArray(type) &&
-                type.includes("VideoObject")
-              );
-
-            if (!isVideo) continue;
-
-            addVideo(
-              obj.contentUrl ||
-              obj.embedUrl ||
-              obj.url,
-              obj.name || "",
-              obj.description || "",
-              obj.thumbnailUrl || null
-            );
-          }
-        }
-
-      } catch {
-        // invalid JSON-LD ignored
-      }
-    }
-  );
-
-  return results;
+  return links;
 }
 
+/* ---------------------------------------------------------
+   PAGE SAVE
+--------------------------------------------------------- */
 
-/* =========================================
-   PLACE HELPERS
-========================================= */
-
-function getTypeList(type) {
-  if (Array.isArray(type)) {
-    return type;
-  }
-
-  if (type) {
-    return [type];
-  }
-
-  return [];
-}
-
-
-function extractPlaces(
-  $,
-  pageUrl
+async function savePage(
+  supabase,
+  page
 ) {
-  const results = [];
-
-  function addPlace(obj) {
-    if (
-      !obj ||
-      results.length >= MAX_PLACES
-    ) {
-      return;
-    }
-
-    const types =
-      getTypeList(
-        obj["@type"]
-      );
-
-    const placeTypes = [
-      "Place",
-      "LocalBusiness",
-      "Restaurant",
-      "Hotel",
-      "Store",
-      "Organization"
-    ];
-
-    const valid =
-      types.some(
-        type =>
-          placeTypes.includes(type)
-      );
-
-    if (!valid) return;
-
-    const address =
-      obj.address || {};
-
-    const geo =
-      obj.geo || {};
-
-    const latitude =
-      Number(
-        geo.latitude
-      );
-
-    const longitude =
-      Number(
-        geo.longitude
-      );
-
-    const name =
-      String(
-        obj.name || ""
-      )
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 500);
-
-    const addressText =
-      typeof address === "string"
-        ? address
-        : [
-            address.streetAddress,
-            address.addressLocality,
-            address.addressRegion,
-            address.postalCode,
-            address.addressCountry
-          ]
-            .filter(Boolean)
-            .join(", ");
-
-    if (
-      !name &&
-      !addressText &&
-      !Number.isFinite(latitude) &&
-      !Number.isFinite(longitude)
-    ) {
-      return;
-    }
-
-    results.push({
-      name,
-      address:
-        String(addressText || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 1000),
-
-      city:
-        String(
-          address.addressLocality || ""
-        ).slice(0, 200),
-
-      district:
-        String(
-          address.addressRegion || ""
-        ).slice(0, 200),
-
-      state:
-        String(
-          address.addressRegion || ""
-        ).slice(0, 200),
-
-      country:
-        String(
-          address.addressCountry || ""
-        ).slice(0, 100),
-
-      latitude:
-        Number.isFinite(latitude)
-          ? latitude
-          : null,
-
-      longitude:
-        Number.isFinite(longitude)
-          ? longitude
-          : null
-    });
-  }
-
-  /*
-   * JSON-LD structured data
-   */
-  $("script[type='application/ld+json']").each(
-    (_, element) => {
-      const raw =
-        $(element).html();
-
-      if (!raw) return;
-
-      try {
-        const json =
-          JSON.parse(raw);
-
-        const objects =
-          Array.isArray(json)
-            ? json
-            : [json];
-
-        for (const item of objects) {
-          if (!item) continue;
-
-          const candidates = [
-            item,
-            ...(Array.isArray(item["@graph"])
-              ? item["@graph"]
-              : [])
-          ];
-
-          for (const obj of candidates) {
-            addPlace(obj);
-          }
-        }
-
-      } catch {
-        // invalid JSON-LD ignored
-      }
-    }
-  );
-
-  /*
-   * Deduplicate places.
-   */
-  const unique = [];
-  const seen = new Set();
-
-  for (const place of results) {
-    const key =
-      [
-        place.name,
-        place.address,
-        place.latitude,
-        place.longitude
-      ].join("|");
-
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    unique.push(place);
-  }
-
-  return unique.slice(
-    0,
-    MAX_PLACES
-  );
-}
-
-
-/* =========================================
-   PARSE HTML
-========================================= */
-
-export function parsePage(
-  html,
-  pageUrl
-) {
-  const $ =
-    cheerio.load(
-      html,
-      {
-        decodeEntities: true
-      }
-    );
-
-  /*
-   * Extract rich data BEFORE
-   * removing elements.
-   */
-  const images =
-    extractImages(
-      $,
-      pageUrl
-    );
-
-  const videos =
-    extractVideos(
-      $,
-      pageUrl
-    );
-
-  const places =
-    extractPlaces(
-      $,
-      pageUrl
-    );
-
-  const title =
-    $("title")
-      .first()
-      .text()
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 500);
-
-  const description =
-    $('meta[name="description"]')
-      .attr("content") ||
-    $('meta[property="og:description"]')
-      .attr("content") ||
-    "";
-
-  const canonical =
-    $('link[rel="canonical"]')
-      .attr("href");
-
-  const finalCanonical =
-    canonical
-      ? normalizeUrl(
-          canonical,
-          pageUrl
-        )
-      : pageUrl;
-
-  const author =
-    $('meta[name="author"]')
-      .attr("content") ||
-    "";
-
-  const published =
-    $('meta[property="article:published_time"]')
-      .attr("content") ||
-    $('meta[name="date"]')
-      .attr("content") ||
-    $('meta[itemprop="datePublished"]')
-      .attr("content") ||
-    null;
-
-  const lang =
-    $("html")
-      .attr("lang") ||
-    detectLanguage(
-      $("body").text()
-    );
-
-  /*
-   * Remove non-text elements
-   * only after media extraction.
-   */
-  $(
-    "script,style,noscript,template,svg,canvas,iframe,video"
-  ).remove();
-
-  const bodyText =
-    $("body")
-      .text()
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const content =
-    bodyText.slice(
-      0,
-      MAX_CONTENT
-    );
-
-  /*
-   * Extract links.
-   */
-  const links =
-    new Set();
-
-  $("a[href]").each(
-    (_, element) => {
-      if (
-        links.size >= MAX_LINKS
-      ) {
-        return;
-      }
-
-      const href =
-        $(element)
-          .attr("href");
-
-      const normalized =
-        normalizeUrl(
-          href,
-          pageUrl
-        );
-
-      if (normalized) {
-        links.add(normalized);
-      }
-    }
-  );
-
-  return {
-    url:
-      finalCanonical,
-
-    title:
-      title || finalCanonical,
-
-    description:
-      String(description)
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 1000),
-
-    content,
-
-    language:
-      String(lang)
-        .toLowerCase()
-        .slice(0, 20),
-
-    author:
-      String(author)
-        .slice(0, 300),
-
-    image_url:
-      images[0]?.image_url || null,
-
-    published_at:
-      published,
-
-    links:
-      [...links],
-
-    images,
-
-    videos,
-
-    places
+  const payload = {
+    url: page.url,
+    title: page.title,
+    description: page.description,
+    content: page.content,
+    author: page.author,
+    image_url: page.image_url,
+    published_at: page.published_at,
+    language: page.language,
+    updated_at:
+      new Date().toISOString(),
   };
-}
 
+  const { error } = await supabase
+    .from("pages")
+    .upsert(payload, {
+      onConflict: "url",
+    });
 
-/* =========================================
-   LANGUAGE DETECTION
-========================================= */
-
-function detectLanguage(text) {
-  const sample =
-    String(text || "")
-      .slice(0, 5000);
-
-  if (/[\u0C00-\u0C7F]/.test(sample)) {
-    return "as";
-  }
-
-  if (/[\u0900-\u097F]/.test(sample)) {
-    return "hi";
-  }
-
-  if (/[\u0980-\u09FF]/.test(sample)) {
-    return "bn";
-  }
-
-  if (/[\u4E00-\u9FFF]/.test(sample)) {
-    return "zh";
-  }
-
-  if (/[\u3040-\u30FF]/.test(sample)) {
-    return "ja";
-  }
-
-  if (/[\uAC00-\uD7AF]/.test(sample)) {
-    return "ko";
-  }
-
-  if (/[\u0B80-\u0BFF]/.test(sample)) {
-    return "ta";
-  }
-
-  if (/[\u0A80-\u0AFF]/.test(sample)) {
-    return "gu";
-  }
-
-  if (/[\u0A00-\u0A7F]/.test(sample)) {
-    return "pa";
-  }
-
-  return "en";
-}
-
-
-/* =========================================
-   DOMAIN RATE LIMIT
-========================================= */
-
-const lastVisit =
-  new Map();
-
-async function respectDomainDelay(url) {
-  try {
-    const hostname =
-      new URL(url).hostname;
-
-    const previous =
-      lastVisit.get(hostname) || 0;
-
-    const wait =
-      DOMAIN_DELAY -
-      (Date.now() - previous);
-
-    if (wait > 0) {
-      await new Promise(
-        resolve =>
-          setTimeout(
-            resolve,
-            wait
-          )
-      );
-    }
-
-    lastVisit.set(
-      hostname,
-      Date.now()
-    );
-
-  } catch {
-    // ignore
+  if (error) {
+    throw error;
   }
 }
 
-
-/* =========================================
-   SAVE MEDIA DATA
-========================================= */
+/* ---------------------------------------------------------
+   MEDIA SAVE
+--------------------------------------------------------- */
 
 async function saveImages(
   supabase,
-  pageUrl,
   images
 ) {
-  if (!images?.length) return;
+  if (!images.length) return;
 
-  try {
-    const domain =
-      new URL(pageUrl)
-        .hostname
-        .toLowerCase();
+  const { error } = await supabase
+    .from("images")
+    .upsert(images, {
+      onConflict:
+        "page_url,image_url",
+      ignoreDuplicates: true,
+    });
 
-    const rows =
-      images.map(
-        image => ({
-          page_url:
-            pageUrl,
-
-          image_url:
-            image.image_url,
-
-          alt_text:
-            image.alt_text || null,
-
-          title:
-            image.title || null,
-
-          source_domain:
-            domain,
-
-          updated_at:
-            new Date().toISOString()
-        })
-      );
-
-    const { error } =
-      await supabase
-        .from("images")
-        .upsert(
-          rows,
-          {
-            onConflict:
-              "page_url,image_url"
-          }
-        );
-
-    if (error) {
-      console.error(
-        "Images save error:",
-        error.message
-      );
-    }
-
-  } catch (error) {
-    console.error(
-      "Images processing error:",
-      error?.message || error
-    );
+  if (error) {
+    throw error;
   }
 }
-
 
 async function saveVideos(
   supabase,
-  pageUrl,
   videos
 ) {
-  if (!videos?.length) return;
+  if (!videos.length) return;
 
-  try {
-    const domain =
-      new URL(pageUrl)
-        .hostname
-        .toLowerCase();
+  const { error } = await supabase
+    .from("videos")
+    .upsert(videos, {
+      onConflict:
+        "page_url,video_url",
+      ignoreDuplicates: true,
+    });
 
-    const rows =
-      videos.map(
-        video => ({
-          page_url:
-            pageUrl,
-
-          video_url:
-            video.video_url,
-
-          title:
-            video.title || null,
-
-          description:
-            video.description || null,
-
-          source_domain:
-            domain,
-
-          thumbnail_url:
-            video.thumbnail_url || null,
-
-          updated_at:
-            new Date().toISOString()
-        })
-      );
-
-    const { error } =
-      await supabase
-        .from("videos")
-        .upsert(
-          rows,
-          {
-            onConflict:
-              "page_url,video_url"
-          }
-        );
-
-    if (error) {
-      console.error(
-        "Videos save error:",
-        error.message
-      );
-    }
-
-  } catch (error) {
-    console.error(
-      "Videos processing error:",
-      error?.message || error
-    );
+  if (error) {
+    throw error;
   }
 }
-
 
 async function savePlaces(
   supabase,
-  pageUrl,
   places
 ) {
-  if (!places?.length) return;
+  if (!places.length) return;
 
-  try {
-    const domain =
-      new URL(pageUrl)
-        .hostname
-        .toLowerCase();
+  const { error } = await supabase
+    .from("places")
+    .upsert(places, {
+      onConflict:
+        "page_url,name,latitude,longitude",
+      ignoreDuplicates: true,
+    });
 
-    const rows =
-      places.map(
-        place => ({
-          page_url:
-            pageUrl,
-
-          name:
-            place.name || null,
-
-          address:
-            place.address || null,
-
-          city:
-            place.city || null,
-
-          district:
-            place.district || null,
-
-          state:
-            place.state || null,
-
-          country:
-            place.country || null,
-
-          latitude:
-            place.latitude,
-
-          longitude:
-            place.longitude,
-
-          source_domain:
-            domain,
-
-          updated_at:
-            new Date().toISOString()
-        })
-      );
-
-    const { error } =
-      await supabase
-        .from("places")
-        .upsert(
-          rows,
-          {
-            onConflict:
-              "page_url,name,latitude,longitude"
-          }
-        );
-
-    if (error) {
-      console.error(
-        "Places save error:",
-        error.message
-      );
-    }
-
-  } catch (error) {
-    console.error(
-      "Places processing error:",
-      error?.message || error
-    );
+  if (error) {
+    throw error;
   }
 }
 
+/* ---------------------------------------------------------
+   QUEUE SUCCESS
+--------------------------------------------------------- */
 
-/* =========================================
-   CRAWL ONE URL
-========================================= */
-
-export async function crawlUrl(
+async function markQueueDone(
   supabase,
-  url
+  row,
+  finalUrl
 ) {
-  const normalized =
-    normalizeUrl(url);
+  const now =
+    new Date().toISOString();
 
-  if (!normalized) {
-    return {
-      ok: false,
-      reason: "invalid-url"
-    };
-  }
-
-  const allowed =
-    await canCrawl(
-      normalized
-    );
-
-  if (!allowed) {
-    return {
-      ok: false,
-      reason:
-        "robots-disallowed"
-    };
-  }
-
-  await respectDomainDelay(
-    normalized
-  );
-
-  const fetched =
-    await fetchPage(
-      normalized
-    );
-
-  if (!fetched.ok) {
-    return {
-      ok: false,
-      reason:
-        fetched.reason ||
-        `HTTP ${fetched.status}`
-    };
-  }
-
-  const parsed =
-    parsePage(
-      fetched.html,
-      fetched.finalUrl
-    );
-
-  /*
-   * Save main page.
-   */
-  const record = {
-    url:
-      parsed.url,
-
-    title:
-      parsed.title,
-
-    description:
-      parsed.description,
-
-    content:
-      parsed.content,
-
-    language:
-      parsed.language,
-
-    author:
-      parsed.author,
-
-    image_url:
-      parsed.image_url,
-
-    published_at:
-      parsed.published_at,
-
-    last_crawled_at:
-      new Date().toISOString(),
-
-    updated_at:
-      new Date().toISOString()
-  };
-
-  const { error } =
-    await supabase
-      .from("pages")
-      .upsert(
-        record,
-        {
-          onConflict: "url"
-        }
-      );
+  const { error } = await supabase
+    .from("crawl_queue")
+    .update({
+      status: "done",
+      attempts: Number(
+        row.attempts || 0
+      ),
+      last_error: null,
+      last_crawled_at: now,
+      next_crawl_at: now,
+      updated_at: now,
+    })
+    .eq("id", row.id);
 
   if (error) {
     throw error;
   }
 
-  /*
-   * IMPORTANT:
-   * Media errors never stop the page crawl.
-   */
-  await saveImages(
-    supabase,
-    parsed.url,
-    parsed.images
-  );
-
-  await saveVideos(
-    supabase,
-    parsed.url,
-    parsed.videos
-  );
-
-  await savePlaces(
-    supabase,
-    parsed.url,
-    parsed.places
-  );
-
-  /*
-   * Add discovered links.
-   */
+  // If the server redirected the URL,
+  // make sure the final URL can also be crawled.
   if (
-    parsed.links.length
+    finalUrl &&
+    finalUrl !== row.url
   ) {
-    const queueRows =
-      parsed.links.map(
-        link => ({
-          url: link,
-          status: "pending",
-          discovered_from:
-            parsed.url,
-          priority:
-            calculatePriority(
-              link,
-              parsed.url
-            )
-        })
+    const normalized =
+      normalizeUrl(finalUrl);
+
+    if (normalized) {
+      await queueUrls(
+        supabase,
+        [normalized],
+        row.url
       );
-
-    for (
-      let i = 0;
-      i < queueRows.length;
-      i += 100
-    ) {
-      const chunk =
-        queueRows.slice(
-          i,
-          i + 100
-        );
-
-      const result =
-        await supabase
-          .from("crawl_queue")
-          .upsert(
-            chunk,
-            {
-              onConflict: "url",
-              ignoreDuplicates: true
-            }
-          );
-
-      if (result.error) {
-        console.error(
-          "Queue insert:",
-          result.error.message
-        );
-      }
     }
   }
-
-  return {
-    ok: true,
-
-    url:
-      parsed.url,
-
-    title:
-      parsed.title,
-
-    links:
-      parsed.links.length,
-
-    images:
-      parsed.images.length,
-
-    videos:
-      parsed.videos.length,
-
-    places:
-      parsed.places.length,
-
-    language:
-      parsed.language
-  };
 }
 
+/* ---------------------------------------------------------
+   QUEUE FAILURE
+--------------------------------------------------------- */
 
-/* =========================================
-   PRIORITY
-========================================= */
-
-function calculatePriority(
-  url,
-  sourceUrl
+async function markQueueFailed(
+  supabase,
+  row,
+  error
 ) {
-  let priority = 1;
+  const attempts =
+    Number(row.attempts || 0) + 1;
+
+  const message = truncate(
+    error?.message ||
+      String(error),
+    1000
+  );
+
+  const permanent =
+    attempts >= RETRY_LIMIT;
+
+  const backoffMinutes =
+    Math.min(
+      24 * 60,
+      Math.pow(2, attempts) * 2
+    );
+
+  const nextCrawl = new Date(
+    Date.now() +
+      backoffMinutes * 60 * 1000
+  ).toISOString();
+
+  const { error: updateError } =
+    await supabase
+      .from("crawl_queue")
+      .update({
+        status: permanent
+          ? "failed"
+          : "pending",
+        attempts,
+        last_error: message,
+        next_crawl_at:
+          permanent
+            ? null
+            : nextCrawl,
+        updated_at:
+          new Date().toISOString(),
+      })
+      .eq("id", row.id);
+
+  if (updateError) {
+    throw updateError;
+  }
+}
+
+/* ---------------------------------------------------------
+   CRAWL ONE URL
+--------------------------------------------------------- */
+
+export async function crawlOne(
+  supabase,
+  row
+) {
+  const url = row.url;
 
   try {
-    const target =
-      new URL(url);
-
-    const source =
-      new URL(sourceUrl);
-
-    if (
-      target.hostname ===
-      source.hostname
-    ) {
-      priority += 2;
+    if (!isProbablyHtmlUrl(url)) {
+      throw new Error(
+        "Unsupported URL"
+      );
     }
 
-    if (
-      target.hostname.endsWith(".gov") ||
-      target.hostname.includes(".gov.") ||
-      target.hostname.endsWith(".edu") ||
-      target.hostname.includes(".edu.")
-    ) {
-      priority += 3;
+    const allowed =
+      await canCrawl(url);
+
+    if (!allowed) {
+      throw new Error(
+        "Blocked by robots.txt or robots.txt unavailable"
+      );
     }
 
-    if (
-      target.protocol === "https:"
-    ) {
-      priority += 1;
+    const result =
+      await fetchHtml(url);
+
+    const finalUrl =
+      normalizeUrl(
+        result.finalUrl
+      ) || url;
+
+    const $ =
+      cheerio.load(
+        result.html
+      );
+
+    const jsonLd =
+      extractJsonLd($);
+
+    const title =
+      truncate(
+        cleanText(
+          $("title").first().text()
+        ),
+        1000
+      ) || null;
+
+    const description =
+      extractDescription($);
+
+    const author =
+      extractAuthor($);
+
+    const publishedAt =
+      extractPublishedDate($);
+
+    const language =
+      detectLanguage(
+        $,
+        result.html
+      );
+
+    const content =
+      extractContent($);
+
+    const images =
+      extractImages(
+        $,
+        finalUrl,
+        jsonLd
+      );
+
+    const videos =
+      extractVideos(
+        $,
+        finalUrl,
+        jsonLd
+      );
+
+    const places =
+      extractPlaces(
+        finalUrl,
+        jsonLd
+      );
+
+    const links =
+      extractLinks(
+        $,
+        finalUrl
+      );
+
+    const firstImage =
+      images.length
+        ? images[0].image_url
+        : null;
+
+    await savePage(
+      supabase,
+      {
+        url: finalUrl,
+        title,
+        description,
+        content,
+        author,
+        image_url: firstImage,
+        published_at:
+          publishedAt,
+        language,
+      }
+    );
+
+    await saveImages(
+      supabase,
+      images
+    );
+
+    await saveVideos(
+      supabase,
+      videos
+    );
+
+    await savePlaces(
+      supabase,
+      places
+    );
+
+    // Queue discovered global links.
+    if (links.length) {
+      await queueUrls(
+        supabase,
+        links,
+        finalUrl
+      );
     }
 
-  } catch {
-    // keep default
+    await markQueueDone(
+      supabase,
+      row,
+      finalUrl
+    );
+
+    console.log(
+      `Crawled: ${finalUrl} | ` +
+        `images: ${images.length} | ` +
+        `videos: ${videos.length} | ` +
+        `places: ${places.length} | ` +
+        `links: ${links.length}`
+    );
+
+    return {
+      ok: true,
+      url: finalUrl,
+      images: images.length,
+      videos: videos.length,
+      places: places.length,
+      links: links.length,
+    };
+  } catch (error) {
+    console.error(
+      `Crawl failed: ${url}`,
+      error
+    );
+
+    try {
+      await markQueueFailed(
+        supabase,
+        row,
+        error
+      );
+    } catch (queueError) {
+      console.error(
+        "Failed to update queue:",
+        queueError
+      );
+    }
+
+    return {
+      ok: false,
+      url,
+      error:
+        error?.message ||
+        String(error),
+    };
   }
-
-  return priority;
 }
 
-
-/* =========================================
-   CRAWL BATCH
-========================================= */
+/* ---------------------------------------------------------
+   BATCH
+--------------------------------------------------------- */
 
 export async function crawlBatch(
   supabase,
-  batchSize = 10
+  batchSize = 12
 ) {
-  const { data, error } =
-    await supabase
-      .from("crawl_queue")
-      .select(
-        "id,url,priority,status"
-      )
-      .eq(
-        "status",
-        "pending"
-      )
-      .order(
-        "priority",
-        {
-          ascending: false
-        }
-      )
-      .order(
-        "id",
-        {
-          ascending: true
-        }
-      )
-      .limit(batchSize);
+  const requested =
+    Math.max(
+      1,
+      Number(batchSize || 12)
+    );
 
-  if (error) {
-    throw error;
+  const rows =
+    await claimQueue(
+      supabase,
+      requested
+    );
+
+  if (!rows.length) {
+    return {
+      requested,
+      claimed: 0,
+      success: 0,
+      failed: 0,
+    };
   }
-
-  const jobs =
-    data || [];
 
   let success = 0;
   let failed = 0;
 
-  for (const job of jobs) {
-    await supabase
-      .from("crawl_queue")
-      .update({
-        status:
-          "processing",
-
-        started_at:
-          new Date().toISOString()
-      })
-      .eq(
-        "id",
-        job.id
+  /*
+    Sequential crawling keeps domain delays and
+    robots handling predictable.
+  */
+  for (const row of rows) {
+    const result =
+      await crawlOne(
+        supabase,
+        row
       );
 
-    try {
-      const result =
-        await crawlUrl(
-          supabase,
-          job.url
-        );
-
-      if (result.ok) {
-        success++;
-
-        console.log(
-          "Crawled:",
-          result.url,
-          "| images:",
-          result.images,
-          "| videos:",
-          result.videos,
-          "| places:",
-          result.places
-        );
-
-        await supabase
-          .from("crawl_queue")
-          .update({
-            status:
-              "done",
-
-            finished_at:
-              new Date().toISOString(),
-
-            error:
-              null
-          })
-          .eq(
-            "id",
-            job.id
-          );
-
-      } else {
-        failed++;
-
-        await supabase
-          .from("crawl_queue")
-          .update({
-            status:
-              "failed",
-
-            finished_at:
-              new Date().toISOString(),
-
-            error:
-              result.reason
-          })
-          .eq(
-            "id",
-            job.id
-          );
-      }
-
-    } catch (error) {
+    if (result.ok) {
+      success++;
+    } else {
       failed++;
-
-      console.error(
-        "Crawler error:",
-        job.url,
-        error
-      );
-
-      await supabase
-        .from("crawl_queue")
-        .update({
-          status:
-            "failed",
-
-          finished_at:
-            new Date().toISOString(),
-
-          error:
-            String(
-              error?.message ||
-              error
-            ).slice(0, 1000)
-        })
-        .eq(
-          "id",
-          job.id
-        );
     }
   }
 
   return {
-    requested:
-      jobs.length,
-
+    requested,
+    claimed: rows.length,
     success,
-
-    failed
+    failed,
   };
+}
+
+/* ---------------------------------------------------------
+   SEED HELPER
+--------------------------------------------------------- */
+
+export async function seedUrls(
+  supabase,
+  urls
+) {
+  return queueUrls(
+    supabase,
+    urls
+  );
 }
