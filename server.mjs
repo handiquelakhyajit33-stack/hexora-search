@@ -82,7 +82,7 @@ function tokenize(value) {
 
 
 /* =========================================================
-   COUNT WORD OCCURRENCES
+   COUNT OCCURRENCES
    ========================================================= */
 
 function countOccurrences(text, term) {
@@ -101,7 +101,6 @@ function countOccurrences(text, term) {
     }
 
     count++;
-
     position = index + term.length;
   }
 
@@ -110,7 +109,7 @@ function countOccurrences(text, term) {
 
 
 /* =========================================================
-   WORD PROXIMITY
+   PROXIMITY SCORE
    ========================================================= */
 
 function calculateProximityScore(text, queryWords) {
@@ -144,28 +143,17 @@ function calculateProximityScore(text, queryWords) {
     positions[positions.length - 1] -
     positions[0];
 
-  if (distance <= 3) {
-    return 35;
-  }
-
-  if (distance <= 6) {
-    return 25;
-  }
-
-  if (distance <= 12) {
-    return 15;
-  }
-
-  if (distance <= 20) {
-    return 8;
-  }
+  if (distance <= 3) return 35;
+  if (distance <= 6) return 25;
+  if (distance <= 12) return 15;
+  if (distance <= 20) return 8;
 
   return 0;
 }
 
 
 /* =========================================================
-   FIELD SCORING
+   FIELD SCORE
    ========================================================= */
 
 function calculateFieldScore(
@@ -189,18 +177,16 @@ function calculateFieldScore(
   let occurrences = 0;
 
   for (const word of queryWords) {
-    if (!word) {
-      continue;
-    }
+    if (!word) continue;
 
-    const count = countOccurrences(
-      normalized,
-      word
-    );
+    const count =
+      countOccurrences(
+        normalized,
+        word
+      );
 
     if (count > 0) {
       matchedWords++;
-
       occurrences += count;
 
       score += weights.word;
@@ -229,7 +215,7 @@ function calculateFieldScore(
 
 
 /* =========================================================
-   HEXORA ADVANCED RELEVANCE RANKING
+   HEXORA ADVANCED RANKING
    ========================================================= */
 
 function calculateScore(page, query) {
@@ -266,7 +252,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     1. TITLE
+     TITLE
      ======================================================= */
 
   const titleResult =
@@ -302,7 +288,7 @@ function calculateScore(page, query) {
   }
 
 
-  /* All query words found in title */
+  /* All query words in title */
 
   if (
     queryWords.length > 1 &&
@@ -314,7 +300,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     2. DESCRIPTION
+     DESCRIPTION
      ======================================================= */
 
   const descriptionResult =
@@ -333,7 +319,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     3. URL / DOMAIN
+     URL
      ======================================================= */
 
   const urlResult =
@@ -352,7 +338,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     4. CONTENT
+     CONTENT
      ======================================================= */
 
   const contentResult =
@@ -367,11 +353,6 @@ function calculateScore(page, query) {
       }
     );
 
-  /*
-   * Content is useful, but must not overpower
-   * title and description relevance.
-   */
-
   score += Math.min(
     contentResult.score,
     80
@@ -379,7 +360,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     5. QUERY COVERAGE
+     QUERY COVERAGE
      ======================================================= */
 
   const matchedSet =
@@ -405,7 +386,6 @@ function calculateScore(page, query) {
         queryWords.length
       : 0;
 
-
   if (coverage === 1) {
     score += 100;
   } else {
@@ -416,7 +396,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     6. EXACT PHRASE
+     EXACT PHRASE
      ======================================================= */
 
   let exactPhrase = false;
@@ -428,13 +408,12 @@ function calculateScore(page, query) {
     content.includes(normalizedQuery)
   ) {
     exactPhrase = true;
-
     score += 60;
   }
 
 
   /* =======================================================
-     7. WORD PROXIMITY
+     PROXIMITY
      ======================================================= */
 
   const titleProximity =
@@ -466,11 +445,11 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     8. FRESHNESS
+     FRESHNESS
+     Uses only columns already available
      ======================================================= */
 
   const date =
-    page.published_at ||
     page.updated_at ||
     page.last_crawled_at;
 
@@ -485,11 +464,6 @@ function calculateScore(page, query) {
           Date.now() - timestamp
         ) / 86400000;
 
-      /*
-       * Freshness is intentionally small.
-       * Relevance remains much more important.
-       */
-
       if (ageDays < 1) {
         score += 8;
       } else if (ageDays < 7) {
@@ -502,7 +476,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     9. HTTPS
+     HTTPS
      ======================================================= */
 
   if (
@@ -515,7 +489,7 @@ function calculateScore(page, query) {
 
 
   /* =======================================================
-     10. SMALL AUTHORITY SIGNAL
+     SMALL AUTHORITY SIGNAL
      ======================================================= */
 
   const lowerUrl =
@@ -577,12 +551,19 @@ async function searchWeb(
 
   if (!query) {
     return {
-      engine: "HEXORA",
+      engine:
+        "HEXORA Independent Search Engine",
+
       query,
+
       results: [],
+
       total: 0,
+
       page: pageNumber,
+
       limit,
+
       total_pages: 0
     };
   }
@@ -597,7 +578,7 @@ async function searchWeb(
 
 
   /* =======================================================
-     SUPABASE FULL TEXT SEARCH
+     FULL TEXT SEARCH
      ======================================================= */
 
   const fullText =
@@ -610,8 +591,7 @@ async function searchWeb(
         description,
         content,
         last_crawled_at,
-        updated_at,
-        published_at
+        updated_at
       `)
       .textSearch(
         "search_vector",
@@ -641,14 +621,20 @@ async function searchWeb(
 
 
   /* =======================================================
-     FALLBACK SEARCH
+     FALLBACK
      ======================================================= */
 
   if (rows.length === 0) {
     const safe =
       query
-        .replace(/[%\\_,]/g, " ")
-        .replace(/\s+/g, " ")
+        .replace(
+          /[%\\_,]/g,
+          " "
+        )
+        .replace(
+          /\s+/g,
+          " "
+        )
         .trim();
 
     const pattern =
@@ -665,8 +651,7 @@ async function searchWeb(
           description,
           content,
           last_crawled_at,
-          updated_at,
-          published_at
+          updated_at
         `)
         .or(
           `title.ilike.${pattern},description.ilike.${pattern},url.ilike.${pattern},content.ilike.${pattern}`
@@ -690,30 +675,37 @@ async function searchWeb(
 
 
   /* =======================================================
-     REMOVE DUPLICATE URLS
+     DEDUPLICATION
      ======================================================= */
 
   const uniqueMap =
     new Map();
 
   for (const row of rows) {
+
     const normalizedUrl =
       String(row.url || "")
         .trim()
         .toLowerCase()
-        .replace(/\/+$/, "");
+        .replace(
+          /\/+$/,
+          ""
+        );
 
     const key =
       normalizedUrl ||
       String(row.id);
 
-    if (!uniqueMap.has(key)) {
+    if (
+      !uniqueMap.has(key)
+    ) {
       uniqueMap.set(
         key,
         row
       );
     }
   }
+
 
   const uniqueRows =
     Array.from(
@@ -727,12 +719,13 @@ async function searchWeb(
 
 
   /* =======================================================
-     RANK
+     RANKING
      ======================================================= */
 
   const ranked =
     uniqueRows
       .map(row => {
+
         const ranking =
           calculateScore(
             row,
@@ -763,19 +756,14 @@ async function searchWeb(
       })
 
 
-      /* Only remove zero relevance */
       .filter(row => {
         return row.hexora_score > 0;
       })
 
 
-      /* =====================================================
-         FINAL SORT
-         ===================================================== */
-
       .sort((a, b) => {
 
-        /* 1. Overall relevance */
+        /* Overall relevance */
 
         if (
           b.hexora_score !==
@@ -788,7 +776,7 @@ async function searchWeb(
         }
 
 
-        /* 2. Exact phrase */
+        /* Exact phrase */
 
         if (
           b.exact_phrase !==
@@ -801,7 +789,7 @@ async function searchWeb(
         }
 
 
-        /* 3. Query coverage */
+        /* Coverage */
 
         if (
           b.coverage !==
@@ -814,7 +802,7 @@ async function searchWeb(
         }
 
 
-        /* 4. Title matches */
+        /* Title matches */
 
         if (
           b.title_matches !==
@@ -827,7 +815,7 @@ async function searchWeb(
         }
 
 
-        /* 5. Proximity */
+        /* Proximity */
 
         if (
           b.proximity !==
@@ -840,7 +828,7 @@ async function searchWeb(
         }
 
 
-        /* 6. Matched words */
+        /* Matched words */
 
         if (
           b.matched_words !==
@@ -853,7 +841,7 @@ async function searchWeb(
         }
 
 
-        /* 7. Stable alphabetical fallback */
+        /* Stable fallback */
 
         return String(
           a.title || ""
@@ -884,6 +872,7 @@ async function searchWeb(
   const start =
     (pageNumber - 1) *
     limit;
+
 
   const results =
     ranked
@@ -994,13 +983,12 @@ async function getNews() {
     throw error;
   }
 
-
   return data || [];
 }
 
 
 /* =========================================================
-   STATIC FILE MIME TYPES
+   MIME TYPES
    ========================================================= */
 
 const MIME = {
@@ -1037,7 +1025,7 @@ const MIME = {
 
 
 /* =========================================================
-   SEND STATIC FILE
+   STATIC FILE SERVER
    ========================================================= */
 
 function sendFile(
@@ -1052,7 +1040,6 @@ function sendFile(
     return false;
   }
 
-
   if (
     !fs.statSync(
       filePath
@@ -1061,12 +1048,10 @@ function sendFile(
     return false;
   }
 
-
   const ext =
     path.extname(
       filePath
     ).toLowerCase();
-
 
   res.writeHead(
     200,
@@ -1077,13 +1062,11 @@ function sendFile(
     }
   );
 
-
   res.end(
     fs.readFileSync(
       filePath
     )
   );
-
 
   return true;
 }
@@ -1149,7 +1132,7 @@ const server =
 
 
         /* =================================================
-           SEARCH
+           SEARCH API
            ================================================= */
 
         if (
@@ -1211,7 +1194,7 @@ const server =
 
 
         /* =================================================
-           NEWS
+           NEWS API
            ================================================= */
 
         if (
@@ -1233,7 +1216,7 @@ const server =
 
 
         /* =================================================
-           STATIC WEBSITE
+           STATIC FILES
            ================================================= */
 
         let requested =
@@ -1282,7 +1265,7 @@ const server =
 
 
         /* =================================================
-           SPA FALLBACK
+           INDEX FALLBACK
            ================================================= */
 
         const indexFile =
@@ -1313,7 +1296,6 @@ const server =
               "text/plain; charset=utf-8"
           }
         );
-
 
         res.end(
           "HEXORA page not found."
@@ -1349,6 +1331,7 @@ const server =
         } else {
 
           res.end();
+
         }
       }
     }
