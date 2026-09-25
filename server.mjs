@@ -10,43 +10,23 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY;
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error(
-    "ERROR: Supabase environment variables are missing."
-  );
+  console.error("Missing SUPABASE_URL or Supabase key");
 }
 
-const supabase =
-  SUPABASE_URL && SUPABASE_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_KEY)
-    : null;
+const supabase = createClient(
+  SUPABASE_URL || "",
+  SUPABASE_KEY || ""
+);
 
-
-/* =========================================================
-   JSON RESPONSE
-   ========================================================= */
-
-function json(res, status, data) {
-  const body = JSON.stringify(data);
-
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "no-store"
-  });
-
-  res.end(body);
-}
-
-
-/* =========================================================
-   QUERY CLEANING
-   ========================================================= */
+/* -------------------------------------------------------
+   BASIC HELPERS
+------------------------------------------------------- */
 
 function cleanQuery(value) {
   return String(value || "")
@@ -55,781 +35,396 @@ function cleanQuery(value) {
     .slice(0, 300);
 }
 
-
-/* =========================================================
-   TEXT NORMALIZATION
-   ========================================================= */
-
 function normalizeText(value) {
   return String(value || "")
     .toLowerCase()
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-
-/* =========================================================
-   TOKENIZER
-   ========================================================= */
-
 function tokenize(value) {
   return normalizeText(value)
-    .split(/\s+/)
-    .filter(word => word.length > 1);
+    .split(" ")
+    .map(x => x.trim())
+    .filter(Boolean);
 }
-
-
-/* =========================================================
-   UNIQUE TOKENS
-   ========================================================= */
 
 function uniqueTokens(value) {
   return [...new Set(tokenize(value))];
 }
 
+function countWholeWordOccurrences(text, word) {
+  const source = normalizeText(text);
+  const target = normalizeText(word);
 
-/* =========================================================
-   WHOLE WORD OCCURRENCES
-   Prevents:
-   AI matching Aiut
-   car matching cars
-   cricket matching cricketer
-   ========================================================= */
+  if (!source || !target) return 0;
 
-function countWholeWordOccurrences(text, term) {
-  const normalizedText = normalizeText(text);
-  const normalizedTerm = normalizeText(term);
-
-  if (!normalizedText || !normalizedTerm) {
-    return 0;
-  }
-
-  const words = normalizedText.split(/\s+/);
-
-  let count = 0;
-
-  for (const word of words) {
-    if (word === normalizedTerm) {
-      count++;
-    }
-  }
-
-  return count;
+  return source
+    .split(" ")
+    .filter(part => part === target)
+    .length;
 }
 
-
-/* =========================================================
-   WHOLE WORD EXISTS
-   ========================================================= */
-
-function hasWholeWord(text, term) {
-  return countWholeWordOccurrences(text, term) > 0;
+function hasWholeWord(text, word) {
+  return countWholeWordOccurrences(text, word) > 0;
 }
-
-
-/* =========================================================
-   PHRASE MATCH
-   ========================================================= */
 
 function hasExactPhrase(text, phrase) {
-  const normalizedText = normalizeText(text);
-  const normalizedPhrase = normalizeText(phrase);
+  const source = normalizeText(text);
+  const target = normalizeText(phrase);
 
-  if (!normalizedText || !normalizedPhrase) {
-    return false;
-  }
+  if (!source || !target) return false;
 
-  return normalizedText.includes(normalizedPhrase);
+  return source.includes(target);
 }
 
+function calculateProximityScore(page, query) {
+  const words = uniqueTokens(query);
 
-/* =========================================================
-   PROXIMITY SCORE
-   ========================================================= */
+  if (words.length <= 1) return 0;
 
-function calculateProximityScore(text, queryWords) {
-  if (!text || queryWords.length < 2) {
-    return 0;
-  }
-
-  const words = tokenize(text);
-
-  if (words.length === 0) {
-    return 0;
-  }
-
-  const positions = [];
-
-  for (const queryWord of queryWords) {
-    const index = words.indexOf(queryWord);
-
-    if (index !== -1) {
-      positions.push(index);
-    }
-  }
-
-  if (positions.length < 2) {
-    return 0;
-  }
-
-  positions.sort((a, b) => a - b);
-
-  const distance =
-    positions[positions.length - 1] -
-    positions[0];
-
-  if (distance <= 3) return 40;
-  if (distance <= 6) return 30;
-  if (distance <= 12) return 20;
-  if (distance <= 20) return 10;
-
-  return 0;
-}
-
-
-/* =========================================================
-   FIELD SCORE
-   ========================================================= */
-
-function calculateFieldScore(
-  text,
-  queryWords,
-  exactQuery,
-  weights
-) {
-  const normalized = normalizeText(text);
-
-  if (!normalized) {
-    return {
-      score: 0,
-      matchedWords: 0,
-      occurrences: 0,
-      exactPhrase: false
-    };
-  }
+  const title = tokenize(page.title);
+  const description = tokenize(page.description);
 
   let score = 0;
-  let matchedWords = 0;
-  let occurrences = 0;
 
-  for (const word of queryWords) {
-    if (!word) continue;
+  for (let i = 0; i < words.length - 1; i++) {
+    const a = words[i];
+    const b = words[i + 1];
 
-    const count =
-      countWholeWordOccurrences(
-        normalized,
-        word
-      );
+    const titleA = title.indexOf(a);
+    const titleB = title.indexOf(b);
 
-    if (count > 0) {
-      matchedWords++;
-      occurrences += count;
+    if (titleA !== -1 && titleB !== -1) {
+      const distance = Math.abs(titleA - titleB);
 
-      score += weights.word;
+      if (distance === 1) score += 80;
+      else if (distance <= 3) score += 35;
+      else score += 10;
+    }
 
-      if (count > 1) {
-        score +=
-          Math.min(count - 1, 5) *
-          weights.repeat;
-      }
+    const descA = description.indexOf(a);
+    const descB = description.indexOf(b);
+
+    if (descA !== -1 && descB !== -1) {
+      const distance = Math.abs(descA - descB);
+
+      if (distance === 1) score += 20;
+      else if (distance <= 5) score += 8;
     }
   }
 
-  const phrase =
-    hasExactPhrase(
-      normalized,
-      exactQuery
-    );
-
-  if (
-    phrase &&
-    weights.phrase
-  ) {
-    score += weights.phrase;
-  }
-
-  return {
-    score,
-    matchedWords,
-    occurrences,
-    exactPhrase: phrase
-  };
+  return score;
 }
-
-
-/* =========================================================
-   AUTHORITY / POPULARITY BONUS
-   ========================================================= */
 
 function calculateAuthorityBonus(page) {
-  let bonus = 0;
-
-  const authority =
-    Number(page.authority_score);
-
-  const popularity =
-    Number(page.popularity_score);
-
-  if (
-    Number.isFinite(authority) &&
-    authority > 0
-  ) {
-    bonus += Math.min(
-      12,
-      Math.max(0, authority)
-    );
-  }
-
-  if (
-    Number.isFinite(popularity) &&
-    popularity > 0
-  ) {
-    bonus += Math.min(
-      8,
-      Math.max(0, popularity)
-    );
-  }
-
-  return Math.round(bonus);
-}
-
-
-/* =========================================================
-   HEXORA ADVANCED RELEVANCE RANKING
-   ========================================================= */
-
-function calculateScore(page, query) {
-  const normalizedQuery =
-    normalizeText(query);
-
-  if (!normalizedQuery) {
-    return {
-      score: 0,
-      matchedWords: 0,
-      coverage: 0,
-      exactPhrase: false,
-      titleMatches: 0,
-      proximity: 0
-    };
-  }
-
-  const queryWords =
-    uniqueTokens(normalizedQuery);
-
-  const title =
-    normalizeText(page.title);
-
-  const description =
-    normalizeText(page.description);
-
-  const url =
-    normalizeText(page.url);
-
-  const content =
-    normalizeText(page.content);
-
   let score = 0;
 
+  const url = String(page.url || "").toLowerCase();
 
-  /* =======================================================
-     TITLE
-     ======================================================= */
+  const authority = Number(page.authority_score || 0);
+  const popularity = Number(page.popularity_score || 0);
 
-  const titleResult =
-    calculateFieldScore(
-      title,
-      queryWords,
-      normalizedQuery,
-      {
-        word: 80,
-        repeat: 5,
-        phrase: 180
-      }
-    );
-
-  score += titleResult.score;
-
-
-  /* Exact complete title */
-
-  if (title === normalizedQuery) {
-    score += 400;
+  if (Number.isFinite(authority)) {
+    score += Math.min(authority, 100) * 0.8;
   }
 
-
-  /* Title starts with query */
-
-  if (
-    title.startsWith(
-      normalizedQuery + " "
-    ) ||
-    title.startsWith(
-      normalizedQuery
-    )
-  ) {
-    score += 120;
+  if (Number.isFinite(popularity)) {
+    score += Math.min(popularity, 100) * 0.4;
   }
 
-
-  /* Every query word is in title */
-
-  if (
-    queryWords.length > 1 &&
-    titleResult.matchedWords ===
-      queryWords.length
-  ) {
-    score += 180;
-  }
-
-
-  /* =======================================================
-     DESCRIPTION
-     ======================================================= */
-
-  const descriptionResult =
-    calculateFieldScore(
-      description,
-      queryWords,
-      normalizedQuery,
-      {
-        word: 30,
-        repeat: 3,
-        phrase: 70
-      }
-    );
-
-  score += descriptionResult.score;
-
-
-  /* =======================================================
-     URL
-     ======================================================= */
-
-  const urlResult =
-    calculateFieldScore(
-      url,
-      queryWords,
-      normalizedQuery,
-      {
-        word: 12,
-        repeat: 1,
-        phrase: 25
-      }
-    );
-
-  score += urlResult.score;
-
-
-  /* =======================================================
-     CONTENT
-     ======================================================= */
-
-  const contentResult =
-    calculateFieldScore(
-      content,
-      queryWords,
-      normalizedQuery,
-      {
-        word: 3,
-        repeat: 1,
-        phrase: 8
-      }
-    );
-
-  /*
-   * Content is intentionally capped.
-   * This prevents a long article containing a word many times
-   * from beating a page whose title is actually relevant.
-   */
-
-  score += Math.min(
-    contentResult.score,
-    50
-  );
-
-
-  /* =======================================================
-     QUERY COVERAGE
-     ======================================================= */
-
-  const matchedSet =
-    new Set();
-
-  for (const word of queryWords) {
-
-    if (
-      hasWholeWord(title, word) ||
-      hasWholeWord(description, word) ||
-      hasWholeWord(url, word) ||
-      hasWholeWord(content, word)
-    ) {
-      matchedSet.add(word);
-    }
-  }
-
-  const matchedWords =
-    matchedSet.size;
-
-  const coverage =
-    queryWords.length > 0
-      ? matchedWords /
-        queryWords.length
-      : 0;
-
-
-  if (coverage === 1) {
-    score += 120;
-  } else {
-    score += Math.round(
-      coverage * 40
-    );
-  }
-
-
-  /* =======================================================
-     EXACT PHRASE
-     ======================================================= */
-
-  let exactPhrase = false;
-
-  if (
-    hasExactPhrase(
-      title,
-      normalizedQuery
-    ) ||
-    hasExactPhrase(
-      description,
-      normalizedQuery
-    ) ||
-    hasExactPhrase(
-      url,
-      normalizedQuery
-    ) ||
-    hasExactPhrase(
-      content,
-      normalizedQuery
-    )
-  ) {
-    exactPhrase = true;
-
-    /*
-     * Title phrase is more valuable than content phrase.
-     */
-
-    if (
-      hasExactPhrase(
-        title,
-        normalizedQuery
-      )
-    ) {
-      score += 120;
-    } else {
-      score += 30;
-    }
-  }
-
-
-  /* =======================================================
-     PROXIMITY
-     ======================================================= */
-
-  const titleProximity =
-    calculateProximityScore(
-      title,
-      queryWords
-    );
-
-  const descriptionProximity =
-    calculateProximityScore(
-      description,
-      queryWords
-    );
-
-  const contentProximity =
-    calculateProximityScore(
-      content,
-      queryWords
-    );
-
-  const proximity =
-    Math.max(
-      titleProximity,
-      descriptionProximity,
-      contentProximity
-    );
-
-  score += proximity;
-
-
-  /* =======================================================
-     WEAK MATCH PENALTY
-     ======================================================= */
-
-  /*
-   * If query words only occur in content and NOT in title,
-   * description, or URL, reduce the score.
-   *
-   * This prevents unrelated pages from ranking too highly.
-   */
-
-  const strongFieldMatch =
-    queryWords.some(word =>
-      hasWholeWord(title, word) ||
-      hasWholeWord(description, word) ||
-      hasWholeWord(url, word)
-    );
-
-  if (
-    queryWords.length === 1 &&
-    !strongFieldMatch &&
-    contentResult.matchedWords > 0
-  ) {
-    score -= 25;
-  }
-
-
-  /*
-   * Multi-word queries require reasonable coverage.
-   */
-
-  if (
-    queryWords.length > 1 &&
-    coverage < 0.5
-  ) {
-    score -= 35;
-  }
-
-
-  /* =======================================================
-     FRESHNESS
-     ======================================================= */
-
-  const date =
-    page.published_at ||
-    page.updated_at ||
-    page.last_crawled_at;
-
-  if (date) {
-
-    const timestamp =
-      new Date(date).getTime();
-
-    if (!Number.isNaN(timestamp)) {
-
-      const ageDays =
-        Math.max(
-          0,
-          Date.now() - timestamp
-        ) / 86400000;
-
-      if (ageDays < 1) {
-        score += 10;
-      } else if (ageDays < 7) {
-        score += 7;
-      } else if (ageDays < 30) {
-        score += 4;
-      } else if (ageDays < 180) {
-        score += 1;
-      }
-    }
-  }
-
-
-  /* =======================================================
-     AUTHORITY / POPULARITY
-     ======================================================= */
-
-  score +=
-    calculateAuthorityBonus(page);
-
-
-  /* =======================================================
-     HTTPS
-     ======================================================= */
-
-  if (
-    String(page.url || "")
-      .toLowerCase()
-      .startsWith("https://")
-  ) {
+  if (url.startsWith("https://")) {
     score += 2;
   }
 
-
-  /* =======================================================
-     TRUSTED DOMAIN SIGNAL
-     ======================================================= */
-
-  const lowerUrl =
-    String(page.url || "")
-      .toLowerCase();
-
   if (
-    lowerUrl.includes(".gov.") ||
-    lowerUrl.includes(".gov/") ||
-    lowerUrl.includes(".edu.") ||
-    lowerUrl.includes(".edu/")
+    url.includes(".gov.") ||
+    url.includes(".gov/") ||
+    url.includes(".edu.") ||
+    url.includes(".edu/")
   ) {
     score += 5;
   }
 
+  return score;
+}
+
+function calculateFreshnessBonus(dateValue) {
+  if (!dateValue) return 0;
+
+  const time = new Date(dateValue).getTime();
+
+  if (!Number.isFinite(time)) return 0;
+
+  const ageDays =
+    (Date.now() - time) / (1000 * 60 * 60 * 24);
+
+  if (ageDays < 1) return 30;
+  if (ageDays < 3) return 20;
+  if (ageDays < 7) return 12;
+  if (ageDays < 30) return 6;
+
+  return 0;
+}
+
+function isShortQuery(query) {
+  const words = uniqueTokens(query);
+
+  return (
+    words.length === 1 &&
+    words[0].length <= 2
+  );
+}
+
+function hasStrictShortQueryMatch(page, query) {
+  const word = normalizeText(query);
+
+  if (!word) return false;
+
+  return (
+    hasWholeWord(page.title, word) ||
+    hasWholeWord(page.description, word) ||
+    hasWholeWord(page.url, word)
+  );
+}
+
+function detectMode(mode) {
+  const value = String(mode || "web").toLowerCase();
+
+  const allowed = [
+    "web",
+    "images",
+    "news",
+    "videos",
+    "maps"
+  ];
+
+  return allowed.includes(value)
+    ? value
+    : "web";
+}
+
+/* -------------------------------------------------------
+   WEB RANKING
+------------------------------------------------------- */
+
+function calculateScore(page, query) {
+  const words = uniqueTokens(query);
+
+  const title = page.title || "";
+  const description = page.description || "";
+  const content = page.content || "";
+  const url = page.url || "";
+
+  let score = 0;
+
+  let matchedWords = 0;
+
+  for (const word of words) {
+    let matched = false;
+
+    const titleCount = countWholeWordOccurrences(
+      title,
+      word
+    );
+
+    const descriptionCount =
+      countWholeWordOccurrences(
+        description,
+        word
+      );
+
+    const urlCount =
+      countWholeWordOccurrences(
+        url,
+        word
+      );
+
+    const contentCount =
+      countWholeWordOccurrences(
+        content,
+        word
+      );
+
+    if (titleCount > 0) {
+      matched = true;
+
+      score += 80;
+      score += Math.min(titleCount, 5) * 5;
+    }
+
+    if (descriptionCount > 0) {
+      matched = true;
+
+      score += 30;
+      score += Math.min(descriptionCount, 3) * 3;
+    }
+
+    if (urlCount > 0) {
+      matched = true;
+
+      score += 12;
+      score += Math.min(urlCount, 2);
+    }
+
+    if (contentCount > 0) {
+      matched = true;
+
+      score += 3;
+      score += Math.min(contentCount, 50);
+    }
+
+    if (matched) {
+      matchedWords++;
+    }
+  }
+
+  const queryPhrase = normalizeText(query);
+
+  if (hasExactPhrase(title, queryPhrase)) {
+    score += 180;
+  }
+
+  if (hasExactPhrase(description, queryPhrase)) {
+    score += 70;
+  }
+
+  if (hasExactPhrase(url, queryPhrase)) {
+    score += 25;
+  }
+
+  if (
+    normalizeText(title) === queryPhrase &&
+    queryPhrase
+  ) {
+    score += 400;
+  }
+
+  if (
+    normalizeText(title).startsWith(queryPhrase) &&
+    queryPhrase
+  ) {
+    score += 120;
+  }
+
+  if (
+    words.length > 1 &&
+    words.every(word =>
+      hasWholeWord(title, word)
+    )
+  ) {
+    score += 180;
+  }
+
+  const coverage =
+    words.length > 0
+      ? matchedWords / words.length
+      : 0;
+
+  score += coverage * 100;
+
+  score += calculateProximityScore(
+    page,
+    query
+  );
+
+  if (
+    words.length === 1 &&
+    matchedWords === 1 &&
+    !hasWholeWord(title, words[0]) &&
+    !hasWholeWord(description, words[0]) &&
+    !hasWholeWord(url, words[0])
+  ) {
+    score -= 100;
+  }
+
+  if (
+    words.length > 1 &&
+    coverage < 1
+  ) {
+    score -= (1 - coverage) * 100;
+  }
+
+  score += calculateFreshnessBonus(
+    page.published_at ||
+    page.updated_at ||
+    page.last_crawled_at
+  );
+
+  score += calculateAuthorityBonus(page);
 
   return {
-    score: Math.max(
-      0,
-      Math.round(score)
-    ),
-
+    score,
     matchedWords,
-
-    coverage,
-
-    exactPhrase,
-
-    titleMatches:
-      titleResult.matchedWords,
-
-    proximity
+    coverage
   };
 }
 
-
-/* =========================================================
-   SEARCH
-   ========================================================= */
+/* -------------------------------------------------------
+   WEB SEARCH
+------------------------------------------------------- */
 
 async function searchWeb(
   query,
   pageNumber = 1,
-  limit = 20
+  limit = 20,
+  mode = "web"
 ) {
-  if (!supabase) {
-    throw new Error(
-      "Supabase is not configured."
-    );
-  }
-
   query = cleanQuery(query);
-
-  pageNumber = Math.max(
-    1,
-    Number(pageNumber) || 1
-  );
-
-  limit = Math.min(
-    50,
-    Math.max(
-      1,
-      Number(limit) || 20
-    )
-  );
-
+  mode = detectMode(mode);
 
   if (!query) {
     return {
-      engine:
-        "HEXORA Independent Search Engine",
-
+      ok: true,
+      mode,
       query,
-
-      results: [],
-
       total: 0,
-
       page: pageNumber,
-
       limit,
-
-      total_pages: 0
+      results: []
     };
   }
 
-
-  console.log(
-    `[SEARCH_QUERY] ${query}`
-  );
-
-
   let rows = [];
 
+  const { data, error } = await supabase
+    .from("pages")
+    .select(`
+      id,
+      url,
+      title,
+      description,
+      content,
+      author,
+      image_url,
+      published_at,
+      last_crawled_at,
+      updated_at,
+      authority_score,
+      popularity_score
+    `)
+    .textSearch(
+      "search_vector",
+      query,
+      {
+        type: "websearch",
+        config: "simple"
+      }
+    )
+    .limit(500);
 
-  /* =======================================================
-     FULL TEXT SEARCH
-     ======================================================= */
-
-  const fullText =
-    await supabase
-      .from("pages")
-      .select(`
-        id,
-        url,
-        title,
-        description,
-        content,
-        author,
-        image_url,
-        published_at,
-        last_crawled_at,
-        updated_at,
-        authority_score,
-        popularity_score
-      `)
-      .textSearch(
-        "search_vector",
-        query,
-        {
-          type: "websearch",
-          config: "simple"
-        }
-      )
-      .limit(500);
-
-
-  if (!fullText.error) {
-
-    rows =
-      fullText.data || [];
-
-  } else {
-
-    console.error(
-      "[SEARCH_FTS_ERROR]",
-      fullText.error.message
-    );
+  if (!error && Array.isArray(data)) {
+    rows = data;
   }
 
+  if (!rows.length) {
+    const safe = query
+      .replace(/[%_]/g, " ")
+      .trim();
 
-  console.log(
-    `[SEARCH_LOCAL_INDEX_COUNT] ${rows.length}`
-  );
-
-
-  /* =======================================================
-     FALLBACK
-     ======================================================= */
-
-  if (rows.length === 0) {
-
-    const safe =
-      query
-        .replace(
-          /[%\\_,]/g,
-          " "
-        )
-        .replace(
-          /\s+/g,
-          " "
-        )
-        .trim();
-
-
-    const pattern =
-      `%${safe}%`;
-
-
-    const fallback =
+    const { data: fallbackData } =
       await supabase
         .from("pages")
         .select(`
@@ -847,563 +442,458 @@ async function searchWeb(
           popularity_score
         `)
         .or(
-          `title.ilike.${pattern},description.ilike.${pattern},url.ilike.${pattern},content.ilike.${pattern}`
+          `title.ilike.%${safe}%,description.ilike.%${safe}%,url.ilike.%${safe}%,content.ilike.%${safe}%`
         )
         .limit(500);
 
-
-    if (fallback.error) {
-      throw fallback.error;
+    if (Array.isArray(fallbackData)) {
+      rows = fallbackData;
     }
-
-
-    rows =
-      fallback.data || [];
-
-
-    console.log(
-      `[SEARCH_FALLBACK_COUNT] ${rows.length}`
-    );
   }
 
+  const seen = new Set();
 
-  /* =======================================================
-     DEDUPLICATION
-     ======================================================= */
-
-  const uniqueMap =
-    new Map();
-
-
-  for (const row of rows) {
-
-    const normalizedUrl =
-      String(row.url || "")
-        .trim()
-        .toLowerCase()
-        .replace(
-          /\/+$/,
-          ""
-        );
-
-
+  rows = rows.filter(row => {
     const key =
-      normalizedUrl ||
-      String(row.id);
+      String(row.url || "").trim() ||
+      String(row.id || "");
 
+    if (seen.has(key)) return false;
 
-    if (
-      !uniqueMap.has(key)
-    ) {
+    seen.add(key);
 
-      uniqueMap.set(
-        key,
-        row
-      );
-    }
+    return true;
+  });
+
+  /* Short query protection.
+     Example:
+     AI must not match Aiuto only.
+  */
+
+  if (isShortQuery(query)) {
+    rows = rows.filter(row =>
+      hasStrictShortQueryMatch(
+        row,
+        query
+      )
+    );
   }
 
+  /* IMAGE MODE */
 
-  const uniqueRows =
-    Array.from(
-      uniqueMap.values()
+  if (mode === "images") {
+    rows = rows.filter(row =>
+      Boolean(
+        String(row.image_url || "").trim()
+      )
     );
+  }
 
+  /* VIDEO MODE */
 
-  console.log(
-    `[SEARCH_DEDUPED_COUNT] ${uniqueRows.length}`
-  );
+  if (mode === "videos") {
+    rows = rows.filter(row => {
+      const text = normalizeText(
+        `${row.title || ""} ${
+          row.description || ""
+        } ${row.url || ""} ${
+          row.content || ""
+        }`
+      );
 
+      const url = String(
+        row.url || ""
+      ).toLowerCase();
 
-  /* =======================================================
-     RANKING
-     ======================================================= */
+      return (
+        url.includes("youtube.com") ||
+        url.includes("youtu.be") ||
+        url.includes("vimeo.com") ||
+        text.includes(" video ") ||
+        text.startsWith("video ") ||
+        text.endsWith(" video")
+      );
+    });
+  }
 
-  const ranked =
-    uniqueRows
+  /* MAP / PLACE MODE */
 
-      .map(row => {
+  if (mode === "maps") {
+    rows = rows.filter(row => {
+      const text = normalizeText(
+        `${row.title || ""} ${
+          row.description || ""
+        } ${row.url || ""}`
+      );
 
-        const ranking =
-          calculateScore(
-            row,
-            query
-          );
+      return (
+        text.includes("map") ||
+        text.includes("maps") ||
+        text.includes("location") ||
+        text.includes("place") ||
+        text.includes("address") ||
+        text.includes("district") ||
+        text.includes("city") ||
+        text.includes("town") ||
+        text.includes("village")
+      );
+    });
+  }
 
+  const ranked = rows
+    .map(row => {
+      const ranking =
+        calculateScore(row, query);
 
-        return {
-          ...row,
+      return {
+        ...row,
+        ...ranking
+      };
+    })
+    .filter(row => row.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
 
-          hexora_score:
-            ranking.score,
+      return String(
+        a.title || ""
+      ).localeCompare(
+        String(b.title || "")
+      );
+    });
 
-          matched_words:
-            ranking.matchedWords,
-
-          coverage:
-            ranking.coverage,
-
-          exact_phrase:
-            ranking.exactPhrase,
-
-          title_matches:
-            ranking.titleMatches,
-
-          proximity:
-            ranking.proximity
-        };
-      })
-
-
-      .filter(row => {
-
-        return (
-          row.hexora_score > 0 &&
-          row.matched_words > 0
-        );
-      })
-
-
-      .sort((a, b) => {
-
-        /* Overall relevance */
-
-        if (
-          b.hexora_score !==
-          a.hexora_score
-        ) {
-          return (
-            b.hexora_score -
-            a.hexora_score
-          );
-        }
-
-
-        /* Exact phrase */
-
-        if (
-          b.exact_phrase !==
-          a.exact_phrase
-        ) {
-          return (
-            Number(b.exact_phrase) -
-            Number(a.exact_phrase)
-          );
-        }
-
-
-        /* Coverage */
-
-        if (
-          b.coverage !==
-          a.coverage
-        ) {
-          return (
-            b.coverage -
-            a.coverage
-          );
-        }
-
-
-        /* Title matches */
-
-        if (
-          b.title_matches !==
-          a.title_matches
-        ) {
-          return (
-            b.title_matches -
-            a.title_matches
-          );
-        }
-
-
-        /* Proximity */
-
-        if (
-          b.proximity !==
-          a.proximity
-        ) {
-          return (
-            b.proximity -
-            a.proximity
-          );
-        }
-
-
-        /* Matched words */
-
-        if (
-          b.matched_words !==
-          a.matched_words
-        ) {
-          return (
-            b.matched_words -
-            a.matched_words
-          );
-        }
-
-
-        /* Freshness */
-
-        const bDate =
-          new Date(
-            b.published_at ||
-            b.updated_at ||
-            b.last_crawled_at ||
-            0
-          ).getTime();
-
-
-        const aDate =
-          new Date(
-            a.published_at ||
-            a.updated_at ||
-            a.last_crawled_at ||
-            0
-          ).getTime();
-
-
-        if (
-          bDate !== aDate
-        ) {
-          return (
-            bDate - aDate
-          );
-        }
-
-
-        /* Stable fallback */
-
-        return String(
-          a.title || ""
-        ).localeCompare(
-          String(
-            b.title || ""
-          ),
-          undefined,
-          {
-            sensitivity: "base"
-          }
-        );
-      });
-
-
-  console.log(
-    `[SEARCH_RANKED_COUNT] ${ranked.length}`
-  );
-
-
-  /* =======================================================
-     PAGINATION
-     ======================================================= */
-
-  const total =
-    ranked.length;
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
-
+    (pageNumber - 1) * limit;
 
   const results =
-    ranked
-      .slice(
-        start,
-        start + limit
-      )
-      .map(row => ({
-
-        id:
-          row.id,
-
-        url:
-          row.url,
-
-        title:
-          row.title ||
-          row.url,
-
-        description:
-          row.description ||
-          String(
-            row.content || ""
-          ).slice(
-            0,
-            240
-          ),
-
-        score:
-          row.hexora_score,
-
-        matched_words:
-          row.matched_words,
-
-        coverage:
-          Number(
-            row.coverage.toFixed(3)
-          ),
-
-        exact_phrase:
-          row.exact_phrase,
-
-        last_crawled_at:
-          row.last_crawled_at
-      }));
-
-
-  console.log(
-    `[SEARCH_FINAL_COUNT] ${results.length}`
-  );
-
+    ranked.slice(
+      start,
+      start + limit
+    );
 
   return {
-    engine:
-      "HEXORA Independent Search Engine",
-
+    ok: true,
+    mode,
     query,
-
-    results,
-
     total,
-
-    page:
-      pageNumber,
-
+    page: pageNumber,
     limit,
-
-    total_pages:
-      Math.ceil(
-        total / limit
-      )
+    results: results.map(row => ({
+      id: row.id,
+      url: row.url,
+      title: row.title,
+      description: row.description,
+      author: row.author,
+      image_url: row.image_url,
+      published_at: row.published_at,
+      last_crawled_at:
+        row.last_crawled_at,
+      score: Math.round(row.score * 100) / 100,
+      matched_words: row.matchedWords,
+      coverage: row.coverage
+    }))
   };
 }
 
+/* -------------------------------------------------------
+   NEWS SEARCH
+------------------------------------------------------- */
 
-/* =========================================================
-   NEWS
-   ========================================================= */
+function calculateNewsScore(item, query) {
+  const words = uniqueTokens(query);
 
-async function getNews() {
+  const title = item.title || "";
+  const description =
+    item.description || "";
+  const source =
+    item.source_name || "";
 
-  if (!supabase) {
-    return [];
+  let score = 0;
+  let matched = 0;
+
+  for (const word of words) {
+    let found = false;
+
+    if (hasWholeWord(title, word)) {
+      score += 120;
+      found = true;
+    }
+
+    if (
+      hasWholeWord(
+        description,
+        word
+      )
+    ) {
+      score += 35;
+      found = true;
+    }
+
+    if (
+      hasWholeWord(
+        source,
+        word
+      )
+    ) {
+      score += 20;
+      found = true;
+    }
+
+    if (found) matched++;
   }
 
+  const phrase =
+    normalizeText(query);
 
-  const {
-    data,
-    error
-  } = await supabase
-    .from("news")
-    .select(`
-      id,
+  if (
+    hasExactPhrase(
       title,
-      description,
-      url,
-      source_name,
-      source_domain,
-      published_at,
-      image_url,
-      fetched_at
-    `)
-    .order(
-      "published_at",
-      {
-        ascending: false
-      }
+      phrase
     )
-    .limit(30);
-
-
-  if (error) {
-    throw error;
+  ) {
+    score += 220;
   }
 
+  if (
+    normalizeText(title) === phrase
+  ) {
+    score += 300;
+  }
 
-  return data || [];
+  score +=
+    calculateFreshnessBonus(
+      item.published_at ||
+      item.fetched_at
+    );
+
+  const coverage =
+    words.length
+      ? matched / words.length
+      : 0;
+
+  score += coverage * 100;
+
+  return {
+    score,
+    coverage,
+    matchedWords: matched
+  };
 }
 
+async function searchNews(
+  query,
+  pageNumber = 1,
+  limit = 20
+) {
+  query = cleanQuery(query);
 
-/* =========================================================
-   MIME TYPES
-   ========================================================= */
+  let rows = [];
 
-const MIME = {
+  const { data, error } =
+    await supabase
+      .from("news")
+      .select(`
+        id,
+        title,
+        description,
+        url,
+        source_name,
+        source_domain,
+        published_at,
+        image_url,
+        fetched_at
+      `)
+      .order(
+        "published_at",
+        {
+          ascending: false,
+          nullsFirst: false
+        }
+      )
+      .limit(500);
 
-  ".html":
-    "text/html; charset=utf-8",
+  if (!error && Array.isArray(data)) {
+    rows = data;
+  }
 
-  ".js":
-    "text/javascript; charset=utf-8",
+  const queryWords =
+    uniqueTokens(query);
 
-  ".css":
-    "text/css; charset=utf-8",
+  if (queryWords.length) {
+    rows = rows.filter(item => {
+      const text = normalizeText(
+        `${item.title || ""} ${
+          item.description || ""
+        } ${item.source_name || ""}`
+      );
 
-  ".json":
-    "application/json; charset=utf-8",
+      return queryWords.some(word =>
+        hasWholeWord(text, word)
+      );
+    });
+  }
 
-  ".svg":
-    "image/svg+xml",
+  const ranked = rows
+    .map(item => ({
+      ...item,
+      ...calculateNewsScore(
+        item,
+        query
+      )
+    }))
+    .sort((a, b) =>
+      b.score - a.score
+    );
 
-  ".png":
-    "image/png",
+  const total = ranked.length;
 
-  ".jpg":
-    "image/jpeg",
+  const start =
+    (pageNumber - 1) * limit;
 
-  ".jpeg":
-    "image/jpeg",
+  const results =
+    ranked.slice(
+      start,
+      start + limit
+    );
 
-  ".webp":
-    "image/webp",
+  return {
+    ok: true,
+    mode: "news",
+    query,
+    total,
+    page: pageNumber,
+    limit,
+    results
+  };
+}
 
-  ".ico":
-    "image/x-icon"
-};
+/* -------------------------------------------------------
+   HTTP SERVER
+------------------------------------------------------- */
 
+function jsonResponse(
+  res,
+  status,
+  data
+) {
+  const body =
+    JSON.stringify(data);
 
-/* =========================================================
-   STATIC FILE SERVER
-   ========================================================= */
+  res.writeHead(
+    status,
+    {
+      "Content-Type":
+        "application/json; charset=utf-8",
+      "Cache-Control":
+        "no-store"
+    }
+  );
+
+  res.end(body);
+}
 
 function sendFile(
   res,
   filePath
 ) {
-
-  if (
-    !fs.existsSync(
-      filePath
-    )
-  ) {
-    return false;
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404);
+    res.end("Not Found");
+    return;
   }
-
-
-  if (
-    !fs.statSync(
-      filePath
-    ).isFile()
-  ) {
-    return false;
-  }
-
 
   const ext =
-    path.extname(
-      filePath
-    ).toLowerCase();
+    path.extname(filePath)
+      .toLowerCase();
 
+  const types = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon"
+  };
 
   res.writeHead(
     200,
     {
       "Content-Type":
-        MIME[ext] ||
+        types[ext] ||
         "application/octet-stream"
     }
   );
 
-
-  res.end(
-    fs.readFileSync(
-      filePath
-    )
-  );
-
-
-  return true;
+  fs.createReadStream(
+    filePath
+  ).pipe(res);
 }
-
-
-/* =========================================================
-   HTTP SERVER
-   ========================================================= */
 
 const server =
   http.createServer(
-    async (
-      req,
-      res
-    ) => {
-
+    async (req, res) => {
       try {
-
         const requestUrl =
           new URL(
             req.url,
-            `http://${
-              req.headers.host ||
-              "localhost"
-            }`
+            `http://${req.headers.host || "localhost"}`
           );
 
+        const pathname =
+          requestUrl.pathname;
 
-        /* =================================================
-           HEALTH
-           ================================================= */
+        /* HEALTH */
 
         if (
-          requestUrl.pathname ===
+          pathname ===
             "/api/health" ||
-          requestUrl.pathname ===
-            "/health"
+          pathname === "/health"
         ) {
-
-          return json(
+          return jsonResponse(
             res,
             200,
             {
               ok: true,
-
-              engine:
-                "HEXORA Independent Search Engine",
-
-              database:
-                Boolean(
-                  supabase
-                ),
-
-              crawler:
-                "Railway Worker",
-
-              timestamp:
-                new Date()
-                  .toISOString()
+              service: "HEXORA",
+              index: "Supabase",
+              status: "online"
             }
           );
         }
 
-
-        /* =================================================
-           SEARCH API
-           ================================================= */
+        /* SEARCH */
 
         if (
-          requestUrl.pathname ===
+          pathname ===
             "/api/search" ||
-          requestUrl.pathname ===
-            "/search"
+          pathname === "/search"
         ) {
-
           const query =
-            requestUrl.searchParams
-              .get("q") ||
-            "";
+            requestUrl.searchParams.get(
+              "q"
+            ) || "";
 
+          const mode =
+            requestUrl.searchParams.get(
+              "mode"
+            ) || "web";
 
           const page =
             Math.max(
               1,
               Number(
-                requestUrl
-                  .searchParams
-                  .get("page") ||
-                  1
+                requestUrl.searchParams.get(
+                  "page"
+                ) || 1
               )
             );
-
 
           const limit =
             Math.min(
@@ -1411,107 +901,105 @@ const server =
               Math.max(
                 1,
                 Number(
-                  requestUrl
-                    .searchParams
-                    .get(
-                      "limit"
-                    ) ||
-                    20
+                  requestUrl.searchParams.get(
+                    "limit"
+                  ) || 20
                 )
               )
             );
 
+          if (
+            detectMode(mode) ===
+            "news"
+          ) {
+            const result =
+              await searchNews(
+                query,
+                page,
+                limit
+              );
+
+            return jsonResponse(
+              res,
+              200,
+              result
+            );
+          }
 
           const result =
             await searchWeb(
               query,
               page,
-              limit
+              limit,
+              mode
             );
 
-
-          return json(
+          return jsonResponse(
             res,
             200,
             result
           );
         }
 
-
-        /* =================================================
-           NEWS API
-           ================================================= */
+        /* NEWS */
 
         if (
-          requestUrl.pathname ===
+          pathname ===
             "/api/news" ||
-          requestUrl.pathname ===
-            "/news"
+          pathname === "/news"
         ) {
+          const result =
+            await searchNews(
+              "",
+              1,
+              30
+            );
 
-          return json(
+          return jsonResponse(
             res,
             200,
-            {
-              items:
-                await getNews()
-            }
+            result
           );
         }
 
+        /* STATIC FILES */
 
-        /* =================================================
-           STATIC FILES
-           ================================================= */
+        let filePath;
 
-        let requested =
-          decodeURIComponent(
-            requestUrl.pathname
-          );
+        if (pathname === "/") {
+          filePath =
+            path.join(
+              __dirname,
+              "index.html"
+            );
+        } else {
+          const requested =
+            decodeURIComponent(
+              pathname
+            );
 
+          filePath =
+            path.join(
+              __dirname,
+              requested
+            );
+        }
 
         if (
-          requested === "/"
+          fs.existsSync(
+            filePath
+          ) &&
+          fs.statSync(
+            filePath
+          ).isFile()
         ) {
-          requested =
-            "/index.html";
+          return sendFile(
+            res,
+            filePath
+          );
         }
 
-
-        const requestedFile =
-          path.resolve(
-            __dirname,
-            "." + requested
-          );
-
-
-        const projectRoot =
-          path.resolve(
-            __dirname
-          );
-
-
-        if (
-          requestedFile.startsWith(
-            projectRoot +
-              path.sep
-          )
-        ) {
-
-          if (
-            sendFile(
-              res,
-              requestedFile
-            )
-          ) {
-            return;
-          }
-        }
-
-
-        /* =================================================
-           INDEX FALLBACK
-           ================================================= */
+        /* SPA FALLBACK */
 
         const indexFile =
           path.join(
@@ -1519,90 +1007,42 @@ const server =
             "index.html"
           );
 
-
         if (
-          sendFile(
+          fs.existsSync(indexFile)
+        ) {
+          return sendFile(
             res,
             indexFile
-          )
-        ) {
-          return;
+          );
         }
 
-
-        /* =================================================
-           404
-           ================================================= */
-
-        res.writeHead(
-          404,
-          {
-            "Content-Type":
-              "text/plain; charset=utf-8"
-          }
-        );
-
-
-        res.end(
-          "HEXORA page not found."
-        );
-
+        res.writeHead(404);
+        res.end("Not Found");
       } catch (error) {
-
         console.error(
-          "HEXORA server error:",
+          "Server error:",
           error
         );
 
-
-        if (
-          !res.headersSent
-        ) {
-
-          json(
-            res,
-            500,
-            {
-              error:
-                "HEXORA server error",
-
-              message:
-                String(
-                  error?.message ||
-                  error
-                )
-            }
-          );
-
-        } else {
-
-          res.end();
-
-        }
+        return jsonResponse(
+          res,
+          500,
+          {
+            ok: false,
+            error:
+              "HEXORA server error"
+          }
+        );
       }
     }
   );
-
-
-/* =========================================================
-   START SERVER
-   ========================================================= */
 
 server.listen(
   PORT,
   "0.0.0.0",
   () => {
-
     console.log(
-      `HEXORA API running on port ${PORT}`
-    );
-
-    console.log(
-      "Independent Supabase search engine ready."
-    );
-
-    console.log(
-      "Advanced relevance ranking enabled."
+      `HEXORA search server running on port ${PORT}`
     );
   }
 );
