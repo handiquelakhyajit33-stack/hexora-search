@@ -1,16 +1,21 @@
 // commoncrawl-importer.mjs
-// HEXORA - Common Crawl importer
+// HEXORA - Safe Common Crawl Importer
+// Test target: 100 real web pages
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
 import { gunzipSync } from "node:zlib";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
+
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_KEY;
 
 const MAX_PAGES = Number(process.env.CC_MAX_PAGES || 100);
+
+const USER_AGENT =
+  "HEXORA-SearchEngine/1.0 (Common Crawl importer)";
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error(
@@ -29,39 +34,94 @@ const supabase = createClient(
   }
 );
 
+/*
+  We intentionally query several known domains
+  instead of using url=*.
+
+  This avoids the "No Captures found for:"
+  error caused by the previous broad query.
+*/
+const TARGET_DOMAINS = [
+  "commoncrawl.org",
+  "wikipedia.org",
+  "mozilla.org",
+  "python.org",
+  "nodejs.org",
+  "github.com",
+  "ietf.org",
+  "w3.org",
+  "apache.org",
+  "ubuntu.com",
+  "debian.org",
+  "gnu.org",
+  "linux.org",
+  "stackoverflow.com",
+  "npmjs.com",
+  "mozilla.com",
+  "cloudflare.com",
+  "microsoft.com",
+  "apple.com",
+  "ibm.com"
+];
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function cleanText(html) {
   return String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function getTitle(html) {
-  const m = String(html || "").match(
+  const match = String(html || "").match(
     /<title[^>]*>([\s\S]*?)<\/title>/i
   );
 
-  return cleanText(m?.[1] || "").slice(0, 500);
+  return cleanText(match?.[1] || "").slice(0, 500);
 }
 
 function getDescription(html) {
-  const m = String(html || "").match(
+  const htmlText = String(html || "");
+
+  let match = htmlText.match(
     /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i
   );
 
-  return cleanText(m?.[1] || "").slice(0, 1000);
+  if (!match) {
+    match = htmlText.match(
+      /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i
+    );
+  }
+
+  return cleanText(match?.[1] || "").slice(0, 1000);
+}
+
+function getCanonical(html, fallbackUrl) {
+  const match = String(html || "").match(
+    /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i
+  );
+
+  return match?.[1] || fallbackUrl;
 }
 
 function getDomain(url) {
   try {
-    return new URL(url).hostname
+    return new URL(url)
+      .hostname
       .toLowerCase()
       .replace(/^www\./, "");
   } catch {
@@ -70,7 +130,7 @@ function getDomain(url) {
 }
 
 function getWordCount(text) {
-  return text
+  return String(text || "")
     .split(/\s+/)
     .filter(Boolean)
     .length;
@@ -83,20 +143,51 @@ function getHash(text) {
     .digest("hex");
 }
 
+/*
+  Common Crawl returns a WARC record.
+  Inside that record there is an HTTP response.
+  We extract the HTTP body after the HTTP headers.
+*/
 function extractHttpBody(text) {
-  const match = String(text).match(
-    /\r?\n\r?\n([\s\S]*)/
+  const value = String(text || "");
+
+  const httpIndex = value.indexOf("HTTP/");
+
+  if (httpIndex >= 0) {
+    const httpPart = value.slice(httpIndex);
+
+    const separator = httpPart.search(
+      /\r?\n\r?\n/
+    );
+
+    if (separator >= 0) {
+      return httpPart
+        .slice(separator)
+        .replace(/^\r?\n\r?\n/, "");
+    }
+  }
+
+  const separator = value.search(
+    /\r?\n\r?\n/
   );
 
-  return match ? match[1] : text;
+  if (separator >= 0) {
+    return value
+      .slice(separator)
+      .replace(/^\r?\n\r?\n/, "");
+  }
+
+  return value;
 }
 
 async function getLatestCrawl() {
+  console.log("Checking Common Crawl collections...");
+
   const response = await fetch(
     "https://index.commoncrawl.org/collinfo.json",
     {
       headers: {
-        "User-Agent": "HEXORA-SearchEngine/1.0"
+        "User-Agent": USER_AGENT
       }
     }
   );
@@ -107,128 +198,346 @@ async function getLatestCrawl() {
     );
   }
 
-  const collections = await response.json();
+  const collections =
+    await response.json();
 
-  if (!Array.isArray(collections) || collections.length === 0) {
+  if (
+    !Array.isArray(collections) ||
+    collections.length === 0
+  ) {
     throw new Error(
       "No Common Crawl collections found."
     );
   }
 
   const available = collections
-    .filter(x => x && x.id)
+    .filter(
+      item =>
+        item &&
+        typeof item.id === "string" &&
+        item.id.startsWith("CC-MAIN-")
+    )
     .sort((a, b) =>
-      String(b.id).localeCompare(String(a.id))
+      String(b.id).localeCompare(
+        String(a.id),
+        undefined,
+        { numeric: true }
+      )
     );
 
-  const crawl = available[0];
+  if (available.length === 0) {
+    throw new Error(
+      "No CC-MAIN collections found."
+    );
+  }
+
+  const crawl = available[0].id;
 
   console.log(
-    `Latest Common Crawl collection: ${crawl.id}`
+    `Latest Common Crawl collection: ${crawl}`
   );
 
-  return crawl.id;
+  return crawl;
 }
 
-async function getRecords(crawl) {
-  const params = new URLSearchParams({
-    url: "*",
-    output: "json",
-    filter: "status:200",
-    collapse: "urlkey",
-    pageSize: String(Math.min(MAX_PAGES, 100))
-  });
+/*
+  Query ONE domain at a time.
+
+  Example:
+  wikipedia.org/*
+*/
+async function getDomainRecords(
+  crawl,
+  domain,
+  limit
+) {
+  const params = new URLSearchParams();
+
+  params.set(
+    "url",
+    `${domain}/*`
+  );
+
+  params.set(
+    "output",
+    "json"
+  );
+
+  params.set(
+    "filter",
+    "status:200"
+  );
+
+  params.set(
+    "filter",
+    "mime:text/html"
+  );
+
+  params.set(
+    "collapse",
+    "urlkey"
+  );
+
+  params.set(
+    "pageSize",
+    String(limit)
+  );
 
   const indexUrl =
-    `https://index.commoncrawl.org/${crawl}-index?${params}`;
+    `https://index.commoncrawl.org/${crawl}-index?${params.toString()}`;
 
   console.log("");
-  console.log("Fetching Common Crawl index...");
-  console.log(indexUrl);
-
-  const response = await fetch(indexUrl, {
-    headers: {
-      "User-Agent": "HEXORA-SearchEngine/1.0"
-    }
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-
-    throw new Error(
-      `Common Crawl index error: ${response.status} ${body.slice(0, 300)}`
-    );
-  }
-
-  const text = await response.text();
-
-  const records = [];
-
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      // Ignore malformed lines.
-    }
-
-    if (records.length >= MAX_PAGES) {
-      break;
-    }
-  }
-
-  return records;
-}
-
-async function downloadWarc(record) {
-  const offset = Number(record.offset);
-  const length = Number(record.length);
-
-  if (
-    !record.filename ||
-    !Number.isFinite(offset) ||
-    !Number.isFinite(length)
-  ) {
-    throw new Error("Invalid Common Crawl WARC record.");
-  }
-
-  const start = offset;
-  const end = offset + length - 1;
+  console.log(
+    `Querying domain: ${domain}`
+  );
 
   const response = await fetch(
-    `https://data.commoncrawl.org/${record.filename}`,
+    indexUrl,
     {
       headers: {
-        Range: `bytes=${start}-${end}`,
-        "User-Agent": "HEXORA-SearchEngine/1.0"
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json"
       }
     }
   );
 
-  if (!response.ok && response.status !== 206) {
+  if (response.status === 404) {
+    console.log(
+      `No captures found for ${domain}`
+    );
+
+    return [];
+  }
+
+  if (response.status === 429) {
+    throw new Error(
+      "Common Crawl rate limit reached. Please wait before retrying."
+    );
+  }
+
+  if (!response.ok) {
+    const body =
+      await response.text();
+
+    throw new Error(
+      `Common Crawl index error for ${domain}: ${response.status} ${body.slice(0, 300)}`
+    );
+  }
+
+  const text =
+    await response.text();
+
+  const records = [];
+
+  for (
+    const line of text.split("\n")
+  ) {
+    if (!line.trim()) continue;
+
+    try {
+      const record =
+        JSON.parse(line);
+
+      if (
+        record &&
+        record.url &&
+        record.filename &&
+        record.offset &&
+        record.length
+      ) {
+        records.push(record);
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+
+    if (
+      records.length >= limit
+    ) {
+      break;
+    }
+  }
+
+  console.log(
+    `Records received: ${records.length}`
+  );
+
+  return records;
+}
+
+/*
+  Collect records from several domains
+  until MAX_PAGES is reached.
+*/
+async function getRecords(crawl) {
+  const allRecords = [];
+  const seenUrls = new Set();
+
+  const perDomain =
+    Math.max(
+      1,
+      Math.ceil(
+        MAX_PAGES /
+          Math.min(
+            TARGET_DOMAINS.length,
+            10
+          )
+      )
+    );
+
+  for (
+    const domain of TARGET_DOMAINS
+  ) {
+    if (
+      allRecords.length >=
+      MAX_PAGES
+    ) {
+      break;
+    }
+
+    const remaining =
+      MAX_PAGES -
+      allRecords.length;
+
+    const limit =
+      Math.min(
+        perDomain,
+        remaining
+      );
+
+    try {
+      const records =
+        await getDomainRecords(
+          crawl,
+          domain,
+          limit
+        );
+
+      for (
+        const record of records
+      ) {
+        if (
+          !record.url ||
+          seenUrls.has(record.url)
+        ) {
+          continue;
+        }
+
+        seenUrls.add(record.url);
+
+        allRecords.push(record);
+
+        if (
+          allRecords.length >=
+          MAX_PAGES
+        ) {
+          break;
+        }
+      }
+    } catch (error) {
+      console.log(
+        `Domain failed: ${domain}`
+      );
+
+      console.log(
+        `Reason: ${error.message}`
+      );
+    }
+
+    /*
+      Important:
+      Common Crawl asks clients to slow down
+      and avoid repeated rapid requests.
+    */
+    await sleep(1500);
+  }
+
+  return allRecords.slice(
+    0,
+    MAX_PAGES
+  );
+}
+
+async function downloadWarc(
+  record
+) {
+  const offset =
+    Number(record.offset);
+
+  const length =
+    Number(record.length);
+
+  if (
+    !record.filename ||
+    !Number.isFinite(offset) ||
+    !Number.isFinite(length) ||
+    length <= 0
+  ) {
+    throw new Error(
+      "Invalid Common Crawl WARC record."
+    );
+  }
+
+  const start = offset;
+
+  const end =
+    offset +
+    length -
+    1;
+
+  const url =
+    `https://data.commoncrawl.org/${record.filename}`;
+
+  const response =
+    await fetch(
+      url,
+      {
+        headers: {
+          "User-Agent":
+            USER_AGENT,
+          "Range":
+            `bytes=${start}-${end}`
+        }
+      }
+    );
+
+  if (
+    response.status !== 206 &&
+    response.status !== 200
+  ) {
     throw new Error(
       `WARC download failed: ${response.status}`
     );
   }
 
-  const buffer = Buffer.from(
-    await response.arrayBuffer()
-  );
+  const buffer =
+    Buffer.from(
+      await response.arrayBuffer()
+    );
 
   let decoded;
 
   try {
-    decoded = gunzipSync(buffer).toString("utf8");
+    decoded =
+      gunzipSync(buffer)
+        .toString("utf8");
   } catch {
-    decoded = buffer.toString("utf8");
+    decoded =
+      buffer.toString("utf8");
   }
 
-  return extractHttpBody(decoded);
+  return extractHttpBody(
+    decoded
+  );
 }
 
-async function urlExists(url) {
-  const { data, error } = await supabase
+async function urlExists(
+  url
+) {
+  const {
+    data,
+    error
+  } = await supabase
     .from("pages")
     .select("id")
     .eq("url", url)
@@ -238,33 +547,59 @@ async function urlExists(url) {
     throw error;
   }
 
-  return Array.isArray(data) && data.length > 0;
+  return (
+    Array.isArray(data) &&
+    data.length > 0
+  );
 }
 
-async function insertPage(record, html) {
-  const url = record.url;
+async function insertPage(
+  record,
+  html
+) {
+  const url =
+    record.url;
 
   if (!url) {
     return false;
   }
 
-  if (await urlExists(url)) {
-    console.log("  -> duplicate URL, skipped");
+  if (
+    await urlExists(url)
+  ) {
+    console.log(
+      "  -> duplicate URL, skipped"
+    );
+
     return false;
   }
 
-  const content = cleanText(html).slice(0, 100000);
+  const content =
+    cleanText(html)
+      .slice(0, 100000);
 
-  if (content.length < 100) {
-    console.log("  -> too little text, skipped");
+  if (
+    content.length < 100
+  ) {
+    console.log(
+      "  -> too little text, skipped"
+    );
+
     return false;
   }
 
   const title =
-    getTitle(html) || url;
+    getTitle(html) ||
+    url;
 
   const description =
     getDescription(html);
+
+  const canonical =
+    getCanonical(
+      html,
+      url
+    );
 
   const domain =
     getDomain(url);
@@ -283,21 +618,28 @@ async function insertPage(record, html) {
     title,
     description,
     content,
-    content_hash: contentHash,
-    word_count: wordCount,
-    language: "unknown",
-    canonical: url,
-    last_crawled_at: now,
-    updated_at: now,
+    content_hash:
+      contentHash,
+    word_count:
+      wordCount,
+    language:
+      record.languages ||
+      "unknown",
+    canonical,
+    last_crawled_at:
+      now,
+    updated_at:
+      now,
     domain,
     authority_score: 0,
     popularity_score: 0
   };
 
-  const { error } =
-    await supabase
-      .from("pages")
-      .insert(page);
+  const {
+    error
+  } = await supabase
+    .from("pages")
+    .insert(page);
 
   if (error) {
     throw error;
@@ -308,30 +650,58 @@ async function insertPage(record, html) {
 
 async function main() {
   console.log("");
-  console.log("====================================");
-  console.log(" HEXORA COMMON CRAWL IMPORTER");
-  console.log("====================================");
-  console.log(`Limit: ${MAX_PAGES}`);
+  console.log(
+    "===================================="
+  );
+  console.log(
+    " HEXORA COMMON CRAWL IMPORTER"
+  );
+  console.log(
+    "===================================="
+  );
+  console.log(
+    `Limit: ${MAX_PAGES}`
+  );
+  console.log(
+    "Mode: Safe domain-based import"
+  );
   console.log("");
 
   const crawl =
     await getLatestCrawl();
 
+  console.log("");
+
   const records =
-    await getRecords(crawl);
+    await getRecords(
+      crawl
+    );
 
   console.log("");
   console.log(
-    `Found ${records.length} records.`
+    `Total records collected: ${records.length}`
   );
   console.log("");
+
+  if (
+    records.length === 0
+  ) {
+    throw new Error(
+      "No Common Crawl records were collected."
+    );
+  }
 
   let imported = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
+  for (
+    let i = 0;
+    i < records.length;
+    i++
+  ) {
+    const record =
+      records[i];
 
     console.log(
       `[${i + 1}/${records.length}] ${record.url}`
@@ -339,14 +709,22 @@ async function main() {
 
     try {
       const html =
-        await downloadWarc(record);
+        await downloadWarc(
+          record
+        );
 
       const inserted =
-        await insertPage(record, html);
+        await insertPage(
+          record,
+          html
+        );
 
       if (inserted) {
         imported++;
-        console.log("  -> IMPORTED");
+
+        console.log(
+          "  -> IMPORTED"
+        );
       } else {
         skipped++;
       }
@@ -358,24 +736,42 @@ async function main() {
       );
     }
 
-    await new Promise(resolve =>
-      setTimeout(resolve, 250)
-    );
+    /*
+      Small delay between WARC downloads.
+    */
+    await sleep(500);
   }
 
   console.log("");
-  console.log("====================================");
-  console.log(" IMPORT FINISHED");
-  console.log("====================================");
-  console.log(`Imported: ${imported}`);
-  console.log(`Skipped : ${skipped}`);
-  console.log(`Failed  : ${failed}`);
-  console.log("====================================");
+  console.log(
+    "===================================="
+  );
+  console.log(
+    " IMPORT FINISHED"
+  );
+  console.log(
+    "===================================="
+  );
+  console.log(
+    `Imported: ${imported}`
+  );
+  console.log(
+    `Skipped : ${skipped}`
+  );
+  console.log(
+    `Failed  : ${failed}`
+  );
+  console.log(
+    "===================================="
+  );
 }
 
 main().catch(error => {
   console.error("");
-  console.error("FATAL ERROR:");
+  console.error(
+    "FATAL ERROR:"
+  );
   console.error(error);
+
   process.exit(1);
 });
