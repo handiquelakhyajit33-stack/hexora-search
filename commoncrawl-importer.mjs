@@ -1,6 +1,6 @@
 // commoncrawl-importer.mjs
-// HEXORA - Safe Common Crawl Importer
-// Test target: 100 real web pages
+// HEXORA - Common Crawl Safe Importer
+// Test: 100 pages
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
@@ -12,10 +12,30 @@ const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_KEY;
 
-const MAX_PAGES = Number(process.env.CC_MAX_PAGES || 100);
+const MAX_PAGES = Number(
+  process.env.CC_MAX_PAGES || 100
+);
 
 const USER_AGENT =
-  "HEXORA-SearchEngine/1.0 (Common Crawl importer)";
+  "HEXORA-SearchEngine/1.0 (web crawler; HEXORA)";
+
+const TARGET_DOMAINS = [
+  "commoncrawl.org/*",
+  "wikipedia.org/*",
+  "mozilla.org/*",
+  "python.org/*",
+  "nodejs.org/*",
+  "ietf.org/*",
+  "w3.org/*",
+  "apache.org/*",
+  "ubuntu.com/*",
+  "debian.org/*",
+  "gnu.org/*",
+  "linux.org/*",
+  "stackoverflow.com/*",
+  "npmjs.com/*",
+  "cloudflare.com/*"
+];
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error(
@@ -34,38 +54,10 @@ const supabase = createClient(
   }
 );
 
-/*
-  We intentionally query several known domains
-  instead of using url=*.
-
-  This avoids the "No Captures found for:"
-  error caused by the previous broad query.
-*/
-const TARGET_DOMAINS = [
-  "commoncrawl.org",
-  "wikipedia.org",
-  "mozilla.org",
-  "python.org",
-  "nodejs.org",
-  "github.com",
-  "ietf.org",
-  "w3.org",
-  "apache.org",
-  "ubuntu.com",
-  "debian.org",
-  "gnu.org",
-  "linux.org",
-  "stackoverflow.com",
-  "npmjs.com",
-  "mozilla.com",
-  "cloudflare.com",
-  "microsoft.com",
-  "apple.com",
-  "ibm.com"
-];
-
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
+  );
 }
 
 function cleanText(html) {
@@ -91,31 +83,35 @@ function getTitle(html) {
     /<title[^>]*>([\s\S]*?)<\/title>/i
   );
 
-  return cleanText(match?.[1] || "").slice(0, 500);
+  return cleanText(
+    match?.[1] || ""
+  ).slice(0, 500);
 }
 
 function getDescription(html) {
-  const htmlText = String(html || "");
+  const value = String(html || "");
 
-  let match = htmlText.match(
+  let match = value.match(
     /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i
   );
 
   if (!match) {
-    match = htmlText.match(
+    match = value.match(
       /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i
     );
   }
 
-  return cleanText(match?.[1] || "").slice(0, 1000);
+  return cleanText(
+    match?.[1] || ""
+  ).slice(0, 1000);
 }
 
-function getCanonical(html, fallbackUrl) {
+function getCanonical(html, fallback) {
   const match = String(html || "").match(
     /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i
   );
 
-  return match?.[1] || fallbackUrl;
+  return match?.[1] || fallback;
 }
 
 function getDomain(url) {
@@ -143,22 +139,18 @@ function getHash(text) {
     .digest("hex");
 }
 
-/*
-  Common Crawl returns a WARC record.
-  Inside that record there is an HTTP response.
-  We extract the HTTP body after the HTTP headers.
-*/
 function extractHttpBody(text) {
   const value = String(text || "");
 
-  const httpIndex = value.indexOf("HTTP/");
+  const httpIndex =
+    value.indexOf("HTTP/");
 
   if (httpIndex >= 0) {
-    const httpPart = value.slice(httpIndex);
+    const httpPart =
+      value.slice(httpIndex);
 
-    const separator = httpPart.search(
-      /\r?\n\r?\n/
-    );
+    const separator =
+      httpPart.search(/\r?\n\r?\n/);
 
     if (separator >= 0) {
       return httpPart
@@ -167,9 +159,8 @@ function extractHttpBody(text) {
     }
   }
 
-  const separator = value.search(
-    /\r?\n\r?\n/
-  );
+  const separator =
+    value.search(/\r?\n\r?\n/);
 
   if (separator >= 0) {
     return value
@@ -181,7 +172,9 @@ function extractHttpBody(text) {
 }
 
 async function getLatestCrawl() {
-  console.log("Checking Common Crawl collections...");
+  console.log(
+    "Checking Common Crawl collections..."
+  );
 
   const response = await fetch(
     "https://index.commoncrawl.org/collinfo.json",
@@ -194,44 +187,37 @@ async function getLatestCrawl() {
 
   if (!response.ok) {
     throw new Error(
-      `Common Crawl collection error: ${response.status}`
+      `Collection request failed: ${response.status}`
     );
   }
 
   const collections =
     await response.json();
 
-  if (
-    !Array.isArray(collections) ||
-    collections.length === 0
-  ) {
-    throw new Error(
-      "No Common Crawl collections found."
-    );
-  }
-
-  const available = collections
-    .filter(
-      item =>
-        item &&
-        typeof item.id === "string" &&
-        item.id.startsWith("CC-MAIN-")
-    )
-    .sort((a, b) =>
-      String(b.id).localeCompare(
-        String(a.id),
-        undefined,
-        { numeric: true }
+  const crawls =
+    collections
+      .filter(
+        item =>
+          item &&
+          typeof item.id === "string" &&
+          item.id.startsWith("CC-MAIN-")
       )
-    );
+      .sort((a, b) =>
+        String(b.id).localeCompare(
+          String(a.id),
+          undefined,
+          { numeric: true }
+        )
+      );
 
-  if (available.length === 0) {
+  if (!crawls.length) {
     throw new Error(
-      "No CC-MAIN collections found."
+      "No CC-MAIN crawl found."
     );
   }
 
-  const crawl = available[0].id;
+  const crawl =
+    crawls[0].id;
 
   console.log(
     `Latest Common Crawl collection: ${crawl}`
@@ -240,22 +226,17 @@ async function getLatestCrawl() {
   return crawl;
 }
 
-/*
-  Query ONE domain at a time.
-
-  Example:
-  wikipedia.org/*
-*/
 async function getDomainRecords(
   crawl,
-  domain,
+  domainPattern,
   limit
 ) {
-  const params = new URLSearchParams();
+  const params =
+    new URLSearchParams();
 
   params.set(
     "url",
-    `${domain}/*`
+    domainPattern
   );
 
   params.set(
@@ -268,7 +249,7 @@ async function getDomainRecords(
     "status:200"
   );
 
-  params.set(
+  params.append(
     "filter",
     "mime:text/html"
   );
@@ -288,22 +269,23 @@ async function getDomainRecords(
 
   console.log("");
   console.log(
-    `Querying domain: ${domain}`
+    `Querying: ${domainPattern}`
   );
 
-  const response = await fetch(
-    indexUrl,
-    {
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json"
+  const response =
+    await fetch(
+      indexUrl,
+      {
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Accept": "application/json"
+        }
       }
-    }
-  );
+    );
 
   if (response.status === 404) {
     console.log(
-      `No captures found for ${domain}`
+      `No captures found: ${domainPattern}`
     );
 
     return [];
@@ -311,7 +293,7 @@ async function getDomainRecords(
 
   if (response.status === 429) {
     throw new Error(
-      "Common Crawl rate limit reached. Please wait before retrying."
+      "Common Crawl rate limit reached."
     );
   }
 
@@ -320,7 +302,7 @@ async function getDomainRecords(
       await response.text();
 
     throw new Error(
-      `Common Crawl index error for ${domain}: ${response.status} ${body.slice(0, 300)}`
+      `Index error ${response.status}: ${body.slice(0, 300)}`
     );
   }
 
@@ -332,14 +314,15 @@ async function getDomainRecords(
   for (
     const line of text.split("\n")
   ) {
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      continue;
+    }
 
     try {
       const record =
         JSON.parse(line);
 
       if (
-        record &&
         record.url &&
         record.filename &&
         record.offset &&
@@ -348,7 +331,7 @@ async function getDomainRecords(
         records.push(record);
       }
     } catch {
-      // Ignore malformed lines.
+      // ignore invalid JSON line
     }
 
     if (
@@ -365,23 +348,16 @@ async function getDomainRecords(
   return records;
 }
 
-/*
-  Collect records from several domains
-  until MAX_PAGES is reached.
-*/
-async function getRecords(crawl) {
-  const allRecords = [];
-  const seenUrls = new Set();
+async function collectRecords(crawl) {
+  const records = [];
+  const seen = new Set();
 
   const perDomain =
     Math.max(
-      1,
+      2,
       Math.ceil(
         MAX_PAGES /
-          Math.min(
-            TARGET_DOMAINS.length,
-            10
-          )
+        TARGET_DOMAINS.length
       )
     );
 
@@ -389,15 +365,14 @@ async function getRecords(crawl) {
     const domain of TARGET_DOMAINS
   ) {
     if (
-      allRecords.length >=
-      MAX_PAGES
+      records.length >= MAX_PAGES
     ) {
       break;
     }
 
     const remaining =
       MAX_PAGES -
-      allRecords.length;
+      records.length;
 
     const limit =
       Math.min(
@@ -406,7 +381,7 @@ async function getRecords(crawl) {
       );
 
     try {
-      const records =
+      const domainRecords =
         await getDomainRecords(
           crawl,
           domain,
@@ -414,53 +389,45 @@ async function getRecords(crawl) {
         );
 
       for (
-        const record of records
+        const record of domainRecords
       ) {
         if (
           !record.url ||
-          seenUrls.has(record.url)
+          seen.has(record.url)
         ) {
           continue;
         }
 
-        seenUrls.add(record.url);
-
-        allRecords.push(record);
+        seen.add(record.url);
+        records.push(record);
 
         if (
-          allRecords.length >=
-          MAX_PAGES
+          records.length >= MAX_PAGES
         ) {
           break;
         }
       }
     } catch (error) {
       console.log(
-        `Domain failed: ${domain}`
+        `Failed: ${domain}`
       );
 
       console.log(
-        `Reason: ${error.message}`
+        error.message
       );
     }
 
-    /*
-      Important:
-      Common Crawl asks clients to slow down
-      and avoid repeated rapid requests.
-    */
-    await sleep(1500);
+    // Slow down API requests.
+    await sleep(3000);
   }
 
-  return allRecords.slice(
+  return records.slice(
     0,
     MAX_PAGES
   );
 }
 
-async function downloadWarc(
-  record
-) {
+async function downloadWarc(record) {
   const offset =
     Number(record.offset);
 
@@ -474,27 +441,27 @@ async function downloadWarc(
     length <= 0
   ) {
     throw new Error(
-      "Invalid Common Crawl WARC record."
+      "Invalid WARC record."
     );
   }
 
-  const start = offset;
+  const start =
+    offset;
 
   const end =
     offset +
     length -
     1;
 
-  const url =
+  const warcUrl =
     `https://data.commoncrawl.org/${record.filename}`;
 
   const response =
     await fetch(
-      url,
+      warcUrl,
       {
         headers: {
-          "User-Agent":
-            USER_AGENT,
+          "User-Agent": USER_AGENT,
           "Range":
             `bytes=${start}-${end}`
         }
@@ -531,9 +498,7 @@ async function downloadWarc(
   );
 }
 
-async function urlExists(
-  url
-) {
+async function urlExists(url) {
   const {
     data,
     error
@@ -568,7 +533,7 @@ async function insertPage(
     await urlExists(url)
   ) {
     console.log(
-      "  -> duplicate URL, skipped"
+      "  -> duplicate, skipped"
     );
 
     return false;
@@ -582,7 +547,7 @@ async function insertPage(
     content.length < 100
   ) {
     console.log(
-      "  -> too little text, skipped"
+      "  -> too little content, skipped"
     );
 
     return false;
@@ -663,7 +628,7 @@ async function main() {
     `Limit: ${MAX_PAGES}`
   );
   console.log(
-    "Mode: Safe domain-based import"
+    "Mode: SAFE DOMAIN IMPORT"
   );
   console.log("");
 
@@ -673,7 +638,7 @@ async function main() {
   console.log("");
 
   const records =
-    await getRecords(
+    await collectRecords(
       crawl
     );
 
@@ -683,11 +648,9 @@ async function main() {
   );
   console.log("");
 
-  if (
-    records.length === 0
-  ) {
+  if (!records.length) {
     throw new Error(
-      "No Common Crawl records were collected."
+      "No Common Crawl records collected."
     );
   }
 
@@ -736,10 +699,7 @@ async function main() {
       );
     }
 
-    /*
-      Small delay between WARC downloads.
-    */
-    await sleep(500);
+    await sleep(1000);
   }
 
   console.log("");
@@ -772,6 +732,5 @@ main().catch(error => {
     "FATAL ERROR:"
   );
   console.error(error);
-
   process.exit(1);
 });
