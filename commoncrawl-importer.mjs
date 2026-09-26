@@ -1,9 +1,9 @@
 // commoncrawl-importer.mjs
 // HEXORA - Common Crawl importer
-// First test: 100 pages
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
+import { gunzipSync } from "node:zlib";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -11,8 +11,6 @@ const SUPABASE_KEY =
   process.env.SUPABASE_KEY;
 
 const MAX_PAGES = Number(process.env.CC_MAX_PAGES || 100);
-const CC_INDEX =
-  process.env.CC_INDEX || "CC-MAIN-2026-30";
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error(
@@ -26,8 +24,8 @@ const supabase = createClient(
   {
     auth: {
       persistSession: false,
-      autoRefreshToken: false,
-    },
+      autoRefreshToken: false
+    }
   }
 );
 
@@ -46,19 +44,19 @@ function cleanText(html) {
 }
 
 function getTitle(html) {
-  const match = String(html || "").match(
+  const m = String(html || "").match(
     /<title[^>]*>([\s\S]*?)<\/title>/i
   );
 
-  return cleanText(match?.[1] || "").slice(0, 500);
+  return cleanText(m?.[1] || "").slice(0, 500);
 }
 
 function getDescription(html) {
-  const match = String(html || "").match(
+  const m = String(html || "").match(
     /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i
   );
 
-  return cleanText(match?.[1] || "").slice(0, 1000);
+  return cleanText(m?.[1] || "").slice(0, 1000);
 }
 
 function getDomain(url) {
@@ -85,40 +83,80 @@ function getHash(text) {
     .digest("hex");
 }
 
-function extractBody(warcText) {
-  const parts = String(warcText).split(/\r?\n\r?\n/);
+function extractHttpBody(text) {
+  const match = String(text).match(
+    /\r?\n\r?\n([\s\S]*)/
+  );
 
-  if (parts.length < 2) {
-    return warcText;
-  }
-
-  return parts[parts.length - 1];
+  return match ? match[1] : text;
 }
 
-async function getRecords() {
+async function getLatestCrawl() {
+  const response = await fetch(
+    "https://index.commoncrawl.org/collinfo.json",
+    {
+      headers: {
+        "User-Agent": "HEXORA-SearchEngine/1.0"
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Common Crawl collection error: ${response.status}`
+    );
+  }
+
+  const collections = await response.json();
+
+  if (!Array.isArray(collections) || collections.length === 0) {
+    throw new Error(
+      "No Common Crawl collections found."
+    );
+  }
+
+  const available = collections
+    .filter(x => x && x.id)
+    .sort((a, b) =>
+      String(b.id).localeCompare(String(a.id))
+    );
+
+  const crawl = available[0];
+
+  console.log(
+    `Latest Common Crawl collection: ${crawl.id}`
+  );
+
+  return crawl.id;
+}
+
+async function getRecords(crawl) {
   const params = new URLSearchParams({
     url: "*",
     output: "json",
     filter: "status:200",
     collapse: "urlkey",
-    pageSize: String(Math.min(MAX_PAGES, 1000)),
+    pageSize: String(Math.min(MAX_PAGES, 100))
   });
 
-  const url =
-    `https://index.commoncrawl.org/${CC_INDEX}-index?${params}`;
+  const indexUrl =
+    `https://index.commoncrawl.org/${crawl}-index?${params}`;
 
+  console.log("");
   console.log("Fetching Common Crawl index...");
-  console.log(url);
+  console.log(indexUrl);
 
-  const response = await fetch(url, {
+  const response = await fetch(indexUrl, {
     headers: {
-      "User-Agent": "HEXORA-SearchEngine/1.0",
-    },
+      "User-Agent": "HEXORA-SearchEngine/1.0"
+    }
   });
 
   if (!response.ok) {
+    const body = await response.text();
+
     throw new Error(
-      `Common Crawl index error: ${response.status}`
+      `Common Crawl index error: ${response.status} ${body.slice(0, 300)}`
     );
   }
 
@@ -132,7 +170,7 @@ async function getRecords() {
     try {
       records.push(JSON.parse(line));
     } catch {
-      // Ignore invalid lines.
+      // Ignore malformed lines.
     }
 
     if (records.length >= MAX_PAGES) {
@@ -144,28 +182,27 @@ async function getRecords() {
 }
 
 async function downloadWarc(record) {
-  const filename = record.filename;
   const offset = Number(record.offset);
   const length = Number(record.length);
 
   if (
-    !filename ||
+    !record.filename ||
     !Number.isFinite(offset) ||
     !Number.isFinite(length)
   ) {
-    throw new Error("Invalid WARC record");
+    throw new Error("Invalid Common Crawl WARC record.");
   }
 
   const start = offset;
   const end = offset + length - 1;
 
   const response = await fetch(
-    `https://data.commoncrawl.org/${filename}`,
+    `https://data.commoncrawl.org/${record.filename}`,
     {
       headers: {
         Range: `bytes=${start}-${end}`,
-        "User-Agent": "HEXORA-SearchEngine/1.0",
-      },
+        "User-Agent": "HEXORA-SearchEngine/1.0"
+      }
     }
   );
 
@@ -179,26 +216,47 @@ async function downloadWarc(record) {
     await response.arrayBuffer()
   );
 
-  // Common Crawl WARC records are normally gzip compressed.
   let decoded;
 
   try {
-    decoded = await import("node:zlib").then(({ gunzipSync }) =>
-      gunzipSync(buffer).toString("utf8")
-    );
+    decoded = gunzipSync(buffer).toString("utf8");
   } catch {
     decoded = buffer.toString("utf8");
   }
 
-  return extractBody(decoded);
+  return extractHttpBody(decoded);
+}
+
+async function urlExists(url) {
+  const { data, error } = await supabase
+    .from("pages")
+    .select("id")
+    .eq("url", url)
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return Array.isArray(data) && data.length > 0;
 }
 
 async function insertPage(record, html) {
   const url = record.url;
 
+  if (!url) {
+    return false;
+  }
+
+  if (await urlExists(url)) {
+    console.log("  -> duplicate URL, skipped");
+    return false;
+  }
+
   const content = cleanText(html).slice(0, 100000);
 
-  if (!content || content.length < 100) {
+  if (content.length < 100) {
+    console.log("  -> too little text, skipped");
     return false;
   }
 
@@ -217,6 +275,9 @@ async function insertPage(record, html) {
   const wordCount =
     getWordCount(content);
 
+  const now =
+    new Date().toISOString();
+
   const page = {
     url,
     title,
@@ -226,29 +287,12 @@ async function insertPage(record, html) {
     word_count: wordCount,
     language: "unknown",
     canonical: url,
+    last_crawled_at: now,
+    updated_at: now,
     domain,
-    last_crawled_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
     authority_score: 0,
-    popularity_score: 0,
+    popularity_score: 0
   };
-
-  // First check whether this URL already exists.
-  const { data: existing, error: checkError } =
-    await supabase
-      .from("pages")
-      .select("id")
-      .eq("url", url)
-      .limit(1);
-
-  if (checkError) {
-    throw checkError;
-  }
-
-  if (existing && existing.length > 0) {
-    console.log("  -> already exists");
-    return false;
-  }
 
   const { error } =
     await supabase
@@ -267,22 +311,24 @@ async function main() {
   console.log("====================================");
   console.log(" HEXORA COMMON CRAWL IMPORTER");
   console.log("====================================");
-  console.log(`Index: ${CC_INDEX}`);
   console.log(`Limit: ${MAX_PAGES}`);
   console.log("");
 
-  const records = await getRecords();
+  const crawl =
+    await getLatestCrawl();
 
+  const records =
+    await getRecords(crawl);
+
+  console.log("");
   console.log(
-    `Found ${records.length} Common Crawl records.`
+    `Found ${records.length} records.`
   );
   console.log("");
 
   let imported = 0;
   let skipped = 0;
   let failed = 0;
-
-  const seen = new Set();
 
   for (let i = 0; i < records.length; i++) {
     const record = records[i];
@@ -292,13 +338,6 @@ async function main() {
     );
 
     try {
-      if (!record.url || seen.has(record.url)) {
-        skipped++;
-        continue;
-      }
-
-      seen.add(record.url);
-
       const html =
         await downloadWarc(record);
 
@@ -311,10 +350,6 @@ async function main() {
       } else {
         skipped++;
       }
-
-      await new Promise((resolve) =>
-        setTimeout(resolve, 250)
-      );
     } catch (error) {
       failed++;
 
@@ -322,6 +357,10 @@ async function main() {
         `  -> FAILED: ${error.message}`
       );
     }
+
+    await new Promise(resolve =>
+      setTimeout(resolve, 250)
+    );
   }
 
   console.log("");
@@ -334,7 +373,7 @@ async function main() {
   console.log("====================================");
 }
 
-main().catch((error) => {
+main().catch(error => {
   console.error("");
   console.error("FATAL ERROR:");
   console.error(error);
