@@ -1,101 +1,1069 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>HEXORA — Search Beyond Limits</title>
+
+<style>
+*{
+  box-sizing:border-box;
+  margin:0;
+  padding:0;
+}
+
+body{
+  font-family:Arial,Helvetica,sans-serif;
+  background:#020b18;
+  color:#fff;
+  min-height:100vh;
+}
+
+header{
+  height:76px;
+  display:flex;
+  align-items:center;
+  padding:0 5%;
+  background:#031221;
+  border-bottom:1px solid #12314a;
+  position:sticky;
+  top:0;
+  z-index:20;
+}
+
+.logo{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:250px;
+}
+
+.logoIcon{
+  font-size:42px;
+  font-weight:900;
+  color:#00eaff;
+}
+
+.logoText{
+  font-size:27px;
+  font-weight:800;
+}
+
+.logoSub{
+  font-size:10px;
+  letter-spacing:3px;
+  color:#9db3c8;
+}
+
+nav{
+  display:flex;
+  gap:30px;
+  align-items:center;
+  flex:1;
+  justify-content:center;
+}
+
+nav a{
+  color:#dcecff;
+  text-decoration:none;
+  font-size:14px;
+  padding:28px 0;
+}
+
+nav a:hover,
+nav a.active{
+  color:#00eaff;
+  border-bottom:3px solid #00eaff;
+}
+
+.weather{
+  white-space:nowrap;
+  color:#dcecff;
+}
+
+.menu{
+  font-size:28px;
+  margin-left:20px;
+  color:#fff;
+}
+
+.hero{
+  min-height:590px;
+  text-align:center;
+  padding:55px 20px 70px;
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(0,210,255,.18),
+      transparent 50%
+    ),
+    linear-gradient(
+      180deg,
+      #031529 0%,
+      #020b18 100%
+    );
+  position:relative;
+  overflow:hidden;
+}
+
+.hero:before{
+  content:"";
+  position:absolute;
+  left:-10%;
+  right:-10%;
+  bottom:80px;
+  height:260px;
+  border-radius:50% 50% 0 0;
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(0,210,255,.28),
+      transparent 65%
+    );
+  border-top:2px solid rgba(0,220,255,.5);
+}
+
+.heroContent{
+  position:relative;
+  z-index:2;
+}
+
+.hero h1{
+  font-size:82px;
+  letter-spacing:5px;
+  margin-top:20px;
+  background:
+    linear-gradient(
+      90deg,
+      #fff,
+      #00eaff,
+      #fff
+    );
+  -webkit-background-clip:text;
+  color:transparent;
+}
+
+.tagline{
+  letter-spacing:8px;
+  font-size:16px;
+  color:#d7eaff;
+  margin:5px 0 45px;
+}
+
+.searchBox{
+  max-width:800px;
+  height:72px;
+  margin:auto;
+  display:flex;
+  align-items:center;
+  background:#06182c;
+  border:2px solid #00eaff;
+  border-radius:40px;
+  box-shadow:
+    0 0 30px rgba(0,234,255,.25);
+  overflow:hidden;
+}
+
+.searchIcon{
+  font-size:27px;
+  padding-left:28px;
+}
+
+#query{
+  flex:1;
+  height:100%;
+  border:0;
+  outline:0;
+  background:transparent;
+  color:#fff;
+  font-size:20px;
+  padding:0 20px;
+}
+
+#query::placeholder{
+  color:#8fa8bd;
+}
+
+.searchBtn{
+  width:70px;
+  height:70px;
+  border:0;
+  border-radius:50%;
+  background:#00eaff;
+  color:#00111c;
+  font-size:28px;
+  cursor:pointer;
+}
+
+.categories{
+  margin:28px auto;
+  display:flex;
+  justify-content:center;
+  gap:18px;
+  flex-wrap:wrap;
+}
+
+.category{
+  padding:13px 25px;
+  border-radius:30px;
+  background:#08213b;
+  border:1px solid #1e5275;
+  color:#fff;
+  cursor:pointer;
+}
+
+.category.active,
+.category:hover{
+  border-color:#00eaff;
+  color:#00eaff;
+  box-shadow:0 0 15px rgba(0,234,255,.2);
+}
+
+.trending{
+  margin-top:30px;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap;
+}
+
+.trend{
+  background:#08223b;
+  border:1px solid #173f60;
+  padding:10px 18px;
+  border-radius:22px;
+  cursor:pointer;
+  color:#d9efff;
+}
+
+.trend:hover{
+  border-color:#00eaff;
+  color:#00eaff;
+}
+
+.main{
+  max-width:1450px;
+  margin:auto;
+  padding:35px 25px;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:
+    1fr 1.2fr 1fr;
+  gap:18px;
+}
+
+.card{
+  background:#041426;
+  border:1px solid #123b58;
+  border-radius:15px;
+  padding:22px;
+}
+
+.card h2{
+  color:#fff;
+  margin-bottom:20px;
+}
+
+.newsItem{
+  border-top:1px solid #15344d;
+  padding:15px 0;
+}
+
+.newsItem:first-child{
+  border-top:0;
+}
+
+.newsItem b{
+  color:#fff;
+}
+
+.newsItem small{
+  color:#00eaff;
+}
+
+.feature{
+  min-height:330px;
+  border-radius:14px;
+  padding:25px;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  background:
+    linear-gradient(
+      transparent,
+      rgba(0,0,0,.9)
+    ),
+    radial-gradient(
+      circle at top,
+      #0c5c75,
+      #061426 70%
+    );
+}
+
+.feature h2{
+  font-size:27px;
+}
+
+.feature p{
+  color:#b9cde0;
+  line-height:1.6;
+  margin:10px 0 20px;
+}
+
+.explore{
+  width:max-content;
+  padding:12px 22px;
+  border:1px solid #00eaff;
+  color:#00eaff;
+  border-radius:25px;
+}
+
+.quick{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+
+.quickItem{
+  border:1px solid #16496b;
+  padding:18px 12px;
+  border-radius:12px;
+  color:#dff7ff;
+}
+
+.quickItem:hover{
+  border-color:#00eaff;
+}
+
+.results{
+  display:none;
+  max-width:1100px;
+  margin:30px auto;
+  padding:0 20px 50px;
+}
+
+.resultsHeader{
+  color:#8fa8bd;
+  margin-bottom:20px;
+}
+
+.result{
+  padding:20px 0;
+  border-bottom:1px solid #17344c;
+}
+
+.result a{
+  color:#39eaff;
+  font-size:20px;
+  text-decoration:none;
+}
+
+.resultUrl{
+  color:#57c878;
+  font-size:13px;
+  margin:6px 0;
+  word-break:break-word;
+}
+
+.result p{
+  color:#b5c8d8;
+  line-height:1.5;
+}
+
+.result img{
+  max-width:100%;
+}
+
+.imageGrid{
+  display:grid;
+  grid-template-columns:
+    repeat(3,1fr);
+  gap:18px;
+}
+
+.imageCard{
+  background:#041426;
+  border:1px solid #123b58;
+  border-radius:15px;
+  padding:12px;
+  overflow:hidden;
+}
+
+.imageCard img{
+  width:100%;
+  height:190px;
+  object-fit:cover;
+  border-radius:10px;
+  display:block;
+  background:#06182c;
+}
+
+.imageCard a{
+  display:block;
+  margin-top:10px;
+  font-size:16px;
+  line-height:1.4;
+}
+
+.imageCard .resultUrl{
+  margin-top:6px;
+}
+
+.mapCard{
+  background:#041426;
+  border:1px solid #123b58;
+  border-radius:15px;
+  padding:18px;
+  margin-bottom:15px;
+}
+
+.mapTitle{
+  color:#39eaff;
+  font-size:20px;
+  margin-bottom:8px;
+}
+
+.mapInfo{
+  color:#b5c8d8;
+  line-height:1.6;
+}
+
+.videoCard{
+  background:#041426;
+  border:1px solid #123b58;
+  border-radius:15px;
+  padding:15px;
+  margin-bottom:15px;
+}
+
+.videoThumb{
+  width:100%;
+  max-width:360px;
+  height:200px;
+  object-fit:cover;
+  border-radius:10px;
+  display:block;
+  margin-bottom:12px;
+  background:#06182c;
+}
+
+.loading{
+  text-align:center;
+  color:#00eaff;
+  padding:30px;
+}
+
+.errorBox{
+  background:#041426;
+  border:1px solid #7a2638;
+  border-radius:15px;
+  padding:22px;
+}
+
+.errorBox h2{
+  margin-bottom:10px;
+}
+
+.errorBox p{
+  color:#b5c8d8;
+}
+
+footer{
+  padding:35px;
+  text-align:center;
+  border-top:1px solid #12314a;
+  color:#8198ab;
+}
+
+@media(max-width:900px){
+
+  header{
+    height:65px;
+    padding:0 15px;
+  }
+
+  .logo{
+    min-width:auto;
+  }
+
+  .logoText{
+    font-size:20px;
+  }
+
+  .logoSub{
+    display:none;
+  }
+
+  nav{
+    display:none;
+  }
+
+  .weather{
+    margin-left:auto;
+    font-size:12px;
+  }
+
+  .hero{
+    min-height:600px;
+  }
+
+  .hero h1{
+    font-size:52px;
+  }
+
+  .tagline{
+    font-size:11px;
+    letter-spacing:5px;
+  }
+
+  .searchBox{
+    height:62px;
+  }
+
+  .searchBtn{
+    width:60px;
+    height:60px;
+  }
+
+  .grid{
+    grid-template-columns:1fr;
+  }
+
+  .imageGrid{
+    grid-template-columns:
+      repeat(2,1fr);
+  }
+
+  .main{
+    padding:20px 14px;
+  }
+}
+
+@media(max-width:500px){
+
+  .hero h1{
+    font-size:43px;
+  }
+
+  .searchBox{
+    height:58px;
+  }
+
+  #query{
+    font-size:16px;
+  }
+
+  .searchIcon{
+    padding-left:15px;
+  }
+
+  .categories{
+    gap:8px;
+  }
+
+  .category{
+    padding:10px 14px;
+    font-size:13px;
+  }
+
+  .imageGrid{
+    grid-template-columns:1fr;
+  }
+
+  .imageCard img{
+    height:220px;
+  }
+
+}
+</style>
+</head>
+
+<body>
+
+<header>
+
+  <div class="logo">
+
+    <div class="logoIcon">
+      H
+    </div>
+
+    <div>
+
+      <div class="logoText">
+        HEXORA
+      </div>
+
+      <div class="logoSub">
+        SEARCH BEYOND LIMITS
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <nav>
+
+    <a
+      class="active"
+      href="/"
+    >
+      Home
+    </a>
+
+    <a href="#search">
+      Search
+    </a>
+
+    <a href="#">
+      AI
+    </a>
+
+    <a href="#">
+      Maps
+    </a>
+
+    <a href="#">
+      Workspace
+    </a>
+
+    <a href="#">
+      Engine
+    </a>
+
+    <a href="#">
+      Profile
+    </a>
+
+  </nav>
+
+
+  <div class="weather">
+    ☀️ Assam 28°C
+  </div>
+
+
+  <div class="menu">
+    ☰
+  </div>
+
+</header>
+
+
+<section class="hero">
+
+  <div class="heroContent">
+
+    <h1>
+      HEXORA
+    </h1>
+
+    <div class="tagline">
+      SEARCH BEYOND LIMITS
+    </div>
+
+
+    <div
+      class="searchBox"
+      id="search"
+    >
+
+      <div class="searchIcon">
+        🔍
+      </div>
+
+
+      <input
+        id="query"
+        type="text"
+        placeholder="Search"
+        autocomplete="off"
+      >
+
+
+      <button
+        class="searchBtn"
+        onclick="performSearch()"
+        aria-label="Search"
+      >
+        🔍
+      </button>
+
+    </div>
+
+
+    <div class="categories">
+
+      <button
+        class="category active"
+        data-mode="web"
+        onclick="setMode(this)"
+      >
+        🌐 Web
+      </button>
+
+
+      <button
+        class="category"
+        data-mode="images"
+        onclick="setMode(this)"
+      >
+        🖼 Images
+      </button>
+
+
+      <button
+        class="category"
+        data-mode="news"
+        onclick="setMode(this)"
+      >
+        📰 News
+      </button>
+
+
+      <button
+        class="category"
+        data-mode="maps"
+        onclick="setMode(this)"
+      >
+        📍 Maps
+      </button>
+
+
+      <button
+        class="category"
+        data-mode="videos"
+        onclick="setMode(this)"
+      >
+        ▶ Videos
+      </button>
+
+    </div>
+
+
+    <div class="trending">
+
+      <span>
+        ↗ Trending
+      </span>
+
+
+      <span
+        class="trend"
+        onclick="quickSearch('Assam news')"
+      >
+        Assam news
+      </span>
+
+
+      <span
+        class="trend"
+        onclick="quickSearch('India vs Australia')"
+      >
+        India vs Australia
+      </span>
+
+
+      <span
+        class="trend"
+        onclick="quickSearch('Python tutorial')"
+      >
+        Python tutorial
+      </span>
+
+
+      <span
+        class="trend"
+        onclick="quickSearch('AI tools')"
+      >
+        AI tools
+      </span>
+
+    </div>
+
+  </div>
+
+</section>
+
+
+<section
+  class="results"
+  id="results"
+>
+
+  <div
+    class="resultsHeader"
+    id="resultsHeader"
+  ></div>
+
+
+  <div
+    id="resultList"
+  ></div>
+
+</section>
+
+
+<main class="main">
+
+  <div class="grid">
+
+
+    <div class="card">
+
+      <h2>
+        📰 Latest News
+      </h2>
+
+
+      <div class="newsItem">
+
+        <small>
+          Assam
+        </small>
+
+        <br>
+
+        <b>
+          Discover the latest information
+          with HEXORA
+        </b>
+
+      </div>
+
+
+      <div class="newsItem">
+
+        <small>
+          Technology
+        </small>
+
+        <br>
+
+        <b>
+          Explore technology and AI
+        </b>
+
+      </div>
+
+
+      <div class="newsItem">
+
+        <small>
+          World
+        </small>
+
+        <br>
+
+        <b>
+          Search information from the web
+        </b>
+
+      </div>
+
+    </div>
+
+
+    <div class="card">
+
+      <div class="feature">
+
+        <h2>
+          Explore Assam with HEXORA
+        </h2>
+
+
+        <p>
+          Search places, information
+          and discover the HEXORA
+          independent web index.
+        </p>
+
+
+        <div class="explore">
+          Explore Now →
+        </div>
+
+      </div>
+
+    </div>
+
+
+    <div class="card">
+
+      <h2>
+        ⚡ Quick Access
+      </h2>
+
+
+      <div class="quick">
+
+        <div class="quickItem">
+          📍<br>
+          <b>HEXORA Map</b>
+        </div>
+
+
+        <div class="quickItem">
+          🖼<br>
+          <b>HEXORA Images</b>
+        </div>
+
+
+        <div class="quickItem">
+          📰<br>
+          <b>HEXORA News</b>
+        </div>
+
+
+        <div class="quickItem">
+          ▶<br>
+          <b>HEXORA Videos</b>
+        </div>
+
+
+        <div class="quickItem">
+          ☀️<br>
+          <b>HEXORA Weather</b>
+        </div>
+
+
+        <div class="quickItem">
+          🌐<br>
+          <b>HEXORA Translate</b>
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</main>
+
+
+<footer>
+
+  <div
+    style="
+      font-size:25px;
+      color:#00eaff;
+      font-weight:bold;
+      margin-bottom:10px;
+    "
+  >
+    HEXORA
+  </div>
+
+
+  SEARCH BEYOND LIMITS
+
+  <br><br>
+
+  About · Privacy · Terms · Help · Contact
+
+  <br><br>
+
+  Made with ❤️ in India 🇮🇳
+
+</footer>
+
+
 <script>
 
+/* =====================================================
+   HEXORA FRONTEND SEARCH
+===================================================== */
+
 const queryInput =
-  document.getElementById("query");
+  document.getElementById(
+    "query"
+  );
 
 const results =
-  document.getElementById("results");
+  document.getElementById(
+    "results"
+  );
 
 const resultList =
-  document.getElementById("resultList");
+  document.getElementById(
+    "resultList"
+  );
 
 const resultsHeader =
-  document.getElementById("resultsHeader");
+  document.getElementById(
+    "resultsHeader"
+  );
 
 
-/* =========================
-   CURRENT SEARCH MODE
-========================= */
+/* =====================================================
+   CURRENT MODE
+===================================================== */
 
 let currentMode = "web";
 
 
-/* =========================
+/* =====================================================
    QUICK SEARCH
-========================= */
+===================================================== */
 
-function quickSearch(text) {
+function quickSearch(text){
 
-  queryInput.value = text;
+  queryInput.value =
+    text;
 
   performSearch();
 
 }
 
 
-/* =========================
-   CHANGE SEARCH MODE
-========================= */
+/* =====================================================
+   SET SEARCH MODE
+===================================================== */
 
-function setMode(button) {
+function setMode(button){
 
   document
-    .querySelectorAll(".category")
+    .querySelectorAll(
+      ".category"
+    )
     .forEach(item => {
 
-      item.classList.remove("active");
+      item.classList.remove(
+        "active"
+      );
 
     });
 
-  button.classList.add("active");
+
+  button.classList.add(
+    "active"
+  );
 
 
-  const text =
-    button.textContent.toLowerCase();
-
-
-  if (text.includes("images")) {
-
-    currentMode = "images";
-
-  }
-
-  else if (text.includes("news")) {
-
-    currentMode = "news";
-
-  }
-
-  else if (text.includes("maps")) {
-
-    currentMode = "maps";
-
-  }
-
-  else if (text.includes("videos")) {
-
-    currentMode = "videos";
-
-  }
-
-  else {
-
-    currentMode = "web";
-
-  }
+  currentMode =
+    button.dataset.mode ||
+    "web";
 
 }
 
 
-/* =========================
-   ENTER KEY SEARCH
-========================= */
+/* =====================================================
+   ENTER KEY
+===================================================== */
 
 queryInput.addEventListener(
   "keydown",
-  function(event) {
+  function(event){
 
-    if (event.key === "Enter") {
+    if(
+      event.key ===
+      "Enter"
+    ){
 
       performSearch();
 
@@ -105,17 +1073,17 @@ queryInput.addEventListener(
 );
 
 
-/* =========================
-   SEARCH
-========================= */
+/* =====================================================
+   MAIN SEARCH
+===================================================== */
 
-async function performSearch() {
+async function performSearch(){
 
   const q =
     queryInput.value.trim();
 
 
-  if (!q) {
+  if(!q){
 
     queryInput.focus();
 
@@ -124,7 +1092,8 @@ async function performSearch() {
   }
 
 
-  results.style.display = "block";
+  results.style.display =
+    "block";
 
 
   resultList.innerHTML = `
@@ -135,30 +1104,41 @@ async function performSearch() {
 
 
   resultsHeader.textContent =
-    `Searching for "${q}"`;
+    `Searching ${currentMode} for "${q}"`;
 
 
   results.scrollIntoView({
-    behavior: "smooth"
+    behavior:"smooth"
   });
 
 
-  try {
+  try{
 
-    /* =========================
-       SEND SELECTED MODE
-    ========================= */
+    const endpoint =
+      `/search?q=${
+        encodeURIComponent(q)
+      }&mode=${
+        encodeURIComponent(currentMode)
+      }&page=1&limit=20`;
+
 
     const response =
       await fetch(
-        `/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(currentMode)}`
+        endpoint,
+        {
+          method:"GET",
+          headers:{
+            "Accept":
+              "application/json"
+          }
+        }
       );
 
 
-    if (!response.ok) {
+    if(!response.ok){
 
       throw new Error(
-        "Search request failed"
+        `HTTP ${response.status}`
       );
 
     }
@@ -169,37 +1149,50 @@ async function performSearch() {
 
 
     const items =
-      data.results || [];
+      Array.isArray(
+        data.results
+      )
+      ?
+      data.results
+      :
+      [];
 
 
     resultsHeader.textContent =
-      `${items.length} ${currentMode} results for "${q}"`;
+      `${items.length} ${
+        currentMode
+      } results for "${q}"`;
 
 
-    /* =========================
-       NO RESULTS
-    ========================= */
-
-    if (!items.length) {
+    if(!items.length){
 
       resultList.innerHTML = `
+
         <div class="card">
 
           <h2>
-            No ${escapeHtml(currentMode)} results found
+            No ${
+              escapeHtml(
+                currentMode
+              )
+            } results found
           </h2>
+
 
           <p
             style="
               color:#9db3c8;
               margin-top:10px;
+              line-height:1.6;
             "
           >
             HEXORA could not find
-            matching indexed ${escapeHtml(currentMode)} results.
+            matching indexed results
+            for this search.
           </p>
 
         </div>
+
       `;
 
       return;
@@ -207,35 +1200,423 @@ async function performSearch() {
     }
 
 
-    /* =========================
-       RESULTS
-    ========================= */
+    /* =================================================
+       IMAGES
+    ================================================= */
 
-    resultList.innerHTML =
-      items.map(
-        item => `
+    if(
+      currentMode ===
+      "images"
+    ){
 
-          <article class="result">
+      renderImages(
+        items
+      );
+
+      return;
+
+    }
+
+
+    /* =================================================
+       NEWS
+    ================================================= */
+
+    if(
+      currentMode ===
+      "news"
+    ){
+
+      renderNews(
+        items
+      );
+
+      return;
+
+    }
+
+
+    /* =================================================
+       VIDEOS
+    ================================================= */
+
+    if(
+      currentMode ===
+      "videos"
+    ){
+
+      renderVideos(
+        items
+      );
+
+      return;
+
+    }
+
+
+    /* =================================================
+       MAPS
+    ================================================= */
+
+    if(
+      currentMode ===
+      "maps"
+    ){
+
+      renderMaps(
+        items
+      );
+
+      return;
+
+    }
+
+
+    /* =================================================
+       WEB
+    ================================================= */
+
+    renderWeb(
+      items
+    );
+
+
+  }catch(error){
+
+    console.error(
+      "HEXORA search error:",
+      error
+    );
+
+
+    resultsHeader.textContent =
+      "Search error";
+
+
+    resultList.innerHTML = `
+
+      <div class="errorBox">
+
+        <h2>
+          Search temporarily unavailable
+        </h2>
+
+
+        <p>
+          HEXORA could not complete
+          this search request.
+          Please try again.
+        </p>
+
+      </div>
+
+    `;
+
+  }
+
+}
+
+
+/* =====================================================
+   WEB RESULTS
+===================================================== */
+
+function renderWeb(
+  items
+){
+
+  resultList.innerHTML =
+    items.map(
+      item => {
+
+        const url =
+          item.url ||
+          "#";
+
+
+        const title =
+          item.title ||
+          url ||
+          "Untitled";
+
+
+        const description =
+          item.description ||
+          item.content ||
+          "No description available.";
+
+
+        return `
+
+          <article
+            class="result"
+          >
+
+            <a
+              href="${
+                escapeHtml(url)
+              }"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ${
+                escapeHtml(
+                  title
+                )
+              }
+            </a>
+
+
+            <div
+              class="resultUrl"
+            >
+              ${
+                escapeHtml(
+                  url
+                )
+              }
+            </div>
+
+
+            <p>
+              ${
+                escapeHtml(
+                  String(
+                    description
+                  ).slice(
+                    0,
+                    600
+                  )
+                )
+              }
+            </p>
+
+          </article>
+
+        `;
+
+      }
+    ).join("");
+
+}
+
+
+/* =====================================================
+   IMAGE RESULTS
+===================================================== */
+
+function renderImages(
+  items
+){
+
+  resultList.innerHTML = `
+
+    <div
+      class="imageGrid"
+    >
+
+      ${
+        items.map(
+          item => {
+
+            const imageUrl =
+              item.image_url ||
+              "";
+
+
+            const pageUrl =
+              item.page_url ||
+              "#";
+
+
+            const title =
+              item.title ||
+              item.alt_text ||
+              "HEXORA Image";
+
+
+            const alt =
+              item.alt_text ||
+              title;
+
+
+            const domain =
+              item.source_domain ||
+              "";
+
+
+            return `
+
+              <article
+                class="imageCard"
+              >
+
+                ${
+                  imageUrl
+                  ?
+                  `
+                  <a
+                    href="${
+                      escapeHtml(
+                        pageUrl
+                      )
+                    }"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+
+                    <img
+                      src="${
+                        escapeHtml(
+                          imageUrl
+                        )
+                      }"
+                      alt="${
+                        escapeHtml(
+                          alt
+                        )
+                      }"
+                      loading="lazy"
+                    >
+
+                  </a>
+                  `
+                  :
+                  `
+                  <div
+                    style="
+                      height:190px;
+                      display:flex;
+                      align-items:center;
+                      justify-content:center;
+                      background:#06182c;
+                      border-radius:10px;
+                      color:#8198ab;
+                    "
+                  >
+                    No image preview
+                  </div>
+                  `
+                }
+
+
+                <a
+                  href="${
+                    escapeHtml(
+                      pageUrl
+                    )
+                  }"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  ${
+                    escapeHtml(
+                      title
+                    )
+                  }
+                </a>
+
+
+                <div
+                  class="resultUrl"
+                >
+                  ${
+                    escapeHtml(
+                      domain ||
+                      pageUrl
+                    )
+                  }
+                </div>
+
+
+              </article>
+
+            `;
+
+          }
+        ).join("")
+      }
+
+    </div>
+
+  `;
+
+}
+
+
+/* =====================================================
+   NEWS RESULTS
+===================================================== */
+
+function renderNews(
+  items
+){
+
+  resultList.innerHTML =
+    items.map(
+      item => {
+
+        const url =
+          item.url ||
+          "#";
+
+
+        const title =
+          item.title ||
+          "News";
+
+
+        const description =
+          item.description ||
+          "No description available.";
+
+
+        const source =
+          item.source_name ||
+          item.source_domain ||
+          "";
+
+
+        const image =
+          item.image_url ||
+          "";
+
+
+        const date =
+          item.published_at ||
+          "";
+
+
+        return `
+
+          <article
+            class="result"
+          >
 
             ${
-              currentMode === "images" &&
-              item.image_url
+              image
               ?
               `
               <img
-                src="${escapeHtml(item.image_url)}"
-                alt="${escapeHtml(
-                  item.title || "HEXORA image"
-                )}"
+                src="${
+                  escapeHtml(
+                    image
+                  )
+                }"
+                alt="${
+                  escapeHtml(
+                    title
+                  )
+                }"
                 loading="lazy"
                 style="
-                  width:180px;
-                  height:120px;
+                  width:100%;
+                  max-width:360px;
+                  height:200px;
                   object-fit:cover;
                   border-radius:12px;
-                  margin-bottom:12px;
                   display:block;
-                  border:1px solid #16496b;
+                  margin-bottom:12px;
                 "
               >
               `
@@ -245,83 +1626,390 @@ async function performSearch() {
 
 
             <a
-              href="${escapeHtml(item.url || "#")}"
+              href="${
+                escapeHtml(
+                  url
+                )
+              }"
               target="_blank"
-              rel="noopener"
+              rel="noopener noreferrer"
             >
-              ${escapeHtml(
-                item.title ||
-                item.url ||
-                "Untitled"
-              )}
+              ${
+                escapeHtml(
+                  title
+                )
+              }
             </a>
 
 
-            <div class="resultUrl">
-              ${escapeHtml(
-                item.url || ""
-              )}
+            <div
+              class="resultUrl"
+            >
+              ${
+                escapeHtml(
+                  source
+                )
+              }
+
+              ${
+                date
+                ?
+                " · " +
+                escapeHtml(
+                  date
+                )
+                :
+                ""
+              }
             </div>
 
 
             <p>
-              ${escapeHtml(
-                item.description ||
-                item.content?.slice(0, 300) ||
-                "No description available."
-              )}
+              ${
+                escapeHtml(
+                  String(
+                    description
+                  ).slice(
+                    0,
+                    600
+                  )
+                )
+              }
             </p>
 
           </article>
 
-        `
-      ).join("");
+        `;
 
-
-  }
-
-  catch (error) {
-
-    console.error(error);
-
-
-    resultList.innerHTML = `
-      <div class="card">
-
-        <h2>
-          Search temporarily unavailable
-        </h2>
-
-        <p
-          style="
-            color:#9db3c8;
-            margin-top:10px;
-          "
-        >
-          Please try again.
-        </p>
-
-      </div>
-    `;
-
-  }
+      }
+    ).join("");
 
 }
 
 
-/* =========================
-   HTML SAFETY
-========================= */
+/* =====================================================
+   VIDEO RESULTS
+===================================================== */
 
-function escapeHtml(value) {
+function renderVideos(
+  items
+){
 
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  resultList.innerHTML =
+    items.map(
+      item => {
+
+        const pageUrl =
+          item.page_url ||
+          "#";
+
+
+        const videoUrl =
+          item.video_url ||
+          pageUrl;
+
+
+        const title =
+          item.title ||
+          "HEXORA Video";
+
+
+        const description =
+          item.description ||
+          "";
+
+
+        const thumbnail =
+          item.thumbnail_url ||
+          "";
+
+
+        const domain =
+          item.source_domain ||
+          "";
+
+
+        return `
+
+          <article
+            class="videoCard"
+          >
+
+            ${
+              thumbnail
+              ?
+              `
+              <a
+                href="${
+                  escapeHtml(
+                    videoUrl
+                  )
+                }"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+
+                <img
+                  class="videoThumb"
+                  src="${
+                    escapeHtml(
+                      thumbnail
+                    )
+                  }"
+                  alt="${
+                    escapeHtml(
+                      title
+                    )
+                  }"
+                  loading="lazy"
+                >
+
+              </a>
+              `
+              :
+              ""
+            }
+
+
+            <a
+              href="${
+                escapeHtml(
+                  videoUrl
+                )
+              }"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ${
+                escapeHtml(
+                  title
+                )
+              }
+            </a>
+
+
+            <div
+              class="resultUrl"
+            >
+              ${
+                escapeHtml(
+                  domain ||
+                  pageUrl
+                )
+              }
+            </div>
+
+
+            <p>
+              ${
+                escapeHtml(
+                  String(
+                    description
+                  ).slice(
+                    0,
+                    600
+                  )
+                )
+              }
+            </p>
+
+          </article>
+
+        `;
+
+      }
+    ).join("");
+
+}
+
+
+/* =====================================================
+   MAP RESULTS
+===================================================== */
+
+function renderMaps(
+  items
+){
+
+  resultList.innerHTML =
+    items.map(
+      item => {
+
+        const pageUrl =
+          item.page_url ||
+          "#";
+
+
+        const name =
+          item.name ||
+          "Place";
+
+
+        const addressParts = [
+          item.address,
+          item.city,
+          item.district,
+          item.state,
+          item.country
+        ].filter(Boolean);
+
+
+        const address =
+          addressParts.join(
+            ", "
+          );
+
+
+        const coordinates =
+          (
+            item.latitude !== null &&
+            item.latitude !== undefined &&
+            item.longitude !== null &&
+            item.longitude !== undefined
+          )
+          ?
+          `${item.latitude}, ${item.longitude}`
+          :
+          "";
+
+
+        const domain =
+          item.source_domain ||
+          "";
+
+
+        return `
+
+          <article
+            class="mapCard"
+          >
+
+            <div
+              class="mapTitle"
+            >
+              📍 ${
+                escapeHtml(
+                  name
+                )
+              }
+            </div>
+
+
+            ${
+              address
+              ?
+              `
+              <div
+                class="mapInfo"
+              >
+                ${
+                  escapeHtml(
+                    address
+                  )
+                }
+              </div>
+              `
+              :
+              ""
+            }
+
+
+            ${
+              coordinates
+              ?
+              `
+              <div
+                class="mapInfo"
+              >
+                Coordinates:
+                ${
+                  escapeHtml(
+                    coordinates
+                  )
+                }
+              </div>
+              `
+              :
+              ""
+            }
+
+
+            ${
+              domain
+              ?
+              `
+              <div
+                class="resultUrl"
+              >
+                ${
+                  escapeHtml(
+                    domain
+                  )
+                }
+              </div>
+              `
+              :
+              ""
+            }
+
+
+            <a
+              href="${
+                escapeHtml(
+                  pageUrl
+                )
+              }"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open source page →
+            </a>
+
+          </article>
+
+        `;
+
+      }
+    ).join("");
+
+}
+
+
+/* =====================================================
+   HTML ESCAPE
+===================================================== */
+
+function escapeHtml(
+  value
+){
+
+  return String(
+    value ?? ""
+  )
+    .replaceAll(
+      "&",
+      "&amp;"
+    )
+    .replaceAll(
+      "<",
+      "&lt;"
+    )
+    .replaceAll(
+      ">",
+      "&gt;"
+    )
+    .replaceAll(
+      '"',
+      "&quot;"
+    )
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
 
 }
 
 </script>
+
+</body>
+</html>
