@@ -82,8 +82,7 @@ function hasExactPhrase(text, phrase) {
 }
 
 function detectMode(mode) {
-  const value =
-    String(mode || "web").toLowerCase();
+  const value = String(mode || "web").toLowerCase();
 
   const allowed = [
     "web",
@@ -146,13 +145,8 @@ function calculateAuthorityBonus(page) {
 
   const url = String(page.url || "").toLowerCase();
 
-  const authority = Number(
-    page.authority_score || 0
-  );
-
-  const popularity = Number(
-    page.popularity_score || 0
-  );
+  const authority = Number(page.authority_score || 0);
+  const popularity = Number(page.popularity_score || 0);
 
   if (Number.isFinite(authority)) {
     score += Math.min(authority, 100) * 0.8;
@@ -233,28 +227,16 @@ function calculateScore(page, query) {
     let matched = false;
 
     const titleCount =
-      countWholeWordOccurrences(
-        title,
-        word
-      );
+      countWholeWordOccurrences(title, word);
 
     const descriptionCount =
-      countWholeWordOccurrences(
-        description,
-        word
-      );
+      countWholeWordOccurrences(description, word);
 
     const urlCount =
-      countWholeWordOccurrences(
-        url,
-        word
-      );
+      countWholeWordOccurrences(url, word);
 
     const contentCount =
-      countWholeWordOccurrences(
-        content,
-        word
-      );
+      countWholeWordOccurrences(content, word);
 
     if (titleCount > 0) {
       matched = true;
@@ -285,48 +267,29 @@ function calculateScore(page, query) {
     }
   }
 
-  const queryPhrase =
-    normalizeText(query);
+  const queryPhrase = normalizeText(query);
 
-  if (
-    hasExactPhrase(
-      title,
-      queryPhrase
-    )
-  ) {
+  if (hasExactPhrase(title, queryPhrase)) {
     score += 180;
   }
 
-  if (
-    hasExactPhrase(
-      description,
-      queryPhrase
-    )
-  ) {
+  if (hasExactPhrase(description, queryPhrase)) {
     score += 70;
   }
 
-  if (
-    hasExactPhrase(
-      url,
-      queryPhrase
-    )
-  ) {
+  if (hasExactPhrase(url, queryPhrase)) {
     score += 25;
   }
 
   if (
-    normalizeText(title) ===
-      queryPhrase &&
+    normalizeText(title) === queryPhrase &&
     queryPhrase
   ) {
     score += 400;
   }
 
   if (
-    normalizeText(title).startsWith(
-      queryPhrase
-    ) &&
+    normalizeText(title).startsWith(queryPhrase) &&
     queryPhrase
   ) {
     score += 120;
@@ -357,10 +320,7 @@ function calculateScore(page, query) {
     words.length === 1 &&
     matchedWords === 1 &&
     !hasWholeWord(title, words[0]) &&
-    !hasWholeWord(
-      description,
-      words[0]
-    ) &&
+    !hasWholeWord(description, words[0]) &&
     !hasWholeWord(url, words[0])
   ) {
     score -= 100;
@@ -380,9 +340,7 @@ function calculateScore(page, query) {
       page.last_crawled_at
   );
 
-  score += calculateAuthorityBonus(
-    page
-  );
+  score += calculateAuthorityBonus(page);
 
   return {
     score,
@@ -416,43 +374,15 @@ async function searchWeb(
 
   let rows = [];
 
-  const { data, error } =
-    await supabase
-      .from("pages")
-      .select(`
-        id,
-        url,
-        title,
-        description,
-        content,
-        author,
-        image_url,
-        published_at,
-        last_crawled_at,
-        updated_at,
-        authority_score,
-        popularity_score
-      `)
-      .textSearch(
-        "search_vector",
-        query,
-        {
-          type: "websearch",
-          config: "simple"
-        }
-      )
-      .limit(500);
+  /*
+   -------------------------------------------------------
+   STEP 1
+   Full-text search using Supabase search_vector.
+   -------------------------------------------------------
+  */
 
-  if (!error && Array.isArray(data)) {
-    rows = data;
-  }
-
-  if (!rows.length) {
-    const safe = query
-      .replace(/[%_]/g, " ")
-      .trim();
-
-    const { data: fallbackData } =
+  try {
+    const { data, error } =
       await supabase
         .from("pages")
         .select(`
@@ -469,15 +399,106 @@ async function searchWeb(
           authority_score,
           popularity_score
         `)
-        .or(
-          `title.ilike.%${safe}%,description.ilike.%${safe}%,url.ilike.%${safe}%,content.ilike.%${safe}%`
+        .textSearch(
+          "search_vector",
+          query,
+          {
+            type: "websearch",
+            config: "simple"
+          }
         )
         .limit(500);
 
-    if (Array.isArray(fallbackData)) {
-      rows = fallbackData;
+    if (!error && Array.isArray(data)) {
+      rows = data;
+    } else if (error) {
+      console.error(
+        "Full text search error:",
+        error.message || error
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Full text search exception:",
+      error.message || error
+    );
+  }
+
+  /*
+   -------------------------------------------------------
+   STEP 2
+   Safe fallback.
+
+   IMPORTANT:
+   Do NOT scan content with ILIKE.
+   Search title / description / URL only.
+   This prevents expensive full content scans.
+   -------------------------------------------------------
+  */
+
+  if (!rows.length) {
+    const words = uniqueTokens(query);
+
+    const searchParts = [];
+
+    for (const word of words.slice(0, 8)) {
+      const safeWord = word
+        .replace(/[%_,]/g, " ")
+        .trim();
+
+      if (!safeWord) continue;
+
+      searchParts.push(
+        `title.ilike.%${safeWord}%`,
+        `description.ilike.%${safeWord}%`,
+        `url.ilike.%${safeWord}%`
+      );
+    }
+
+    if (searchParts.length) {
+      try {
+        const { data: fallbackData, error } =
+          await supabase
+            .from("pages")
+            .select(`
+              id,
+              url,
+              title,
+              description,
+              content,
+              author,
+              image_url,
+              published_at,
+              last_crawled_at,
+              updated_at,
+              authority_score,
+              popularity_score
+            `)
+            .or(searchParts.join(","))
+            .limit(500);
+
+        if (!error && Array.isArray(fallbackData)) {
+          rows = fallbackData;
+        } else if (error) {
+          console.error(
+            "Fallback search error:",
+            error.message || error
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Fallback search exception:",
+          error.message || error
+        );
+      }
     }
   }
+
+  /*
+   -------------------------------------------------------
+   Remove duplicate URLs
+   -------------------------------------------------------
+  */
 
   const seen = new Set();
 
@@ -491,9 +512,14 @@ async function searchWeb(
     }
 
     seen.add(key);
-
     return true;
   });
+
+  /*
+   -------------------------------------------------------
+   Very short queries need exact word matching
+   -------------------------------------------------------
+  */
 
   if (isShortQuery(query)) {
     rows = rows.filter(row =>
@@ -503,6 +529,12 @@ async function searchWeb(
       )
     );
   }
+
+  /*
+   -------------------------------------------------------
+   Ranking
+   -------------------------------------------------------
+  */
 
   const ranked = rows
     .map(row => ({
@@ -746,7 +778,7 @@ function calculateVideoScore(
       item.description || ""
     } ${item.source_domain || ""} ${
       item.page_url || ""
-    }`
+    } ${item.video_url || ""}`
   );
 
   let score = 0;
