@@ -61,6 +61,10 @@ body{
   color:var(--text);
 }
 
+body{
+  overflow-x:hidden;
+}
+
 button,
 input{
   font:inherit;
@@ -72,10 +76,6 @@ button{
 
 a{
   color:inherit;
-}
-
-body{
-  overflow-x:hidden;
 }
 
 /* ================= HEADER ================= */
@@ -178,6 +178,50 @@ body{
   color:var(--cyan);
 
   font-size:22px;
+}
+
+/* ================= MOBILE NAV ================= */
+
+.mobile-nav{
+  display:none;
+}
+
+.mobile-nav.open{
+  display:flex;
+  position:fixed;
+  z-index:999;
+
+  top:74px;
+  left:10px;
+  right:10px;
+
+  padding:12px;
+
+  flex-direction:column;
+  gap:5px;
+
+  background:rgba(2,9,20,.97);
+  border:1px solid var(--border);
+  border-radius:16px;
+
+  box-shadow:0 20px 50px rgba(0,0,0,.4);
+}
+
+.mobile-nav button{
+  width:100%;
+  border:0;
+  background:transparent;
+  color:#d8e9f1;
+
+  text-align:left;
+  padding:14px;
+
+  border-radius:10px;
+}
+
+.mobile-nav button:hover{
+  color:var(--cyan);
+  background:rgba(0,234,255,.08);
 }
 
 /* ================= HERO ================= */
@@ -430,8 +474,7 @@ body{
   font-size:17px;
 }
 
-.card-head button,
-.card-head span{
+.card-head button{
   color:var(--cyan);
   font-size:12px;
 
@@ -439,7 +482,7 @@ body{
   border:0;
 }
 
-/* ================= REAL NEWS ================= */
+/* ================= NEWS ================= */
 
 .news-list{
   min-height:100px;
@@ -478,12 +521,7 @@ body{
 
   object-fit:cover;
 
-  background:
-    linear-gradient(
-      135deg,
-      #073a53,
-      #05121d
-    );
+  background:#071c2a;
 }
 
 .news-source{
@@ -720,7 +758,6 @@ body{
 
 .result h2{
   font-size:19px;
-
   margin-bottom:6px;
 }
 
@@ -830,7 +867,6 @@ body{
 
 .map-search-panel input{
   flex:1;
-
   min-width:0;
 
   border:0;
@@ -959,6 +995,10 @@ body{
 
   .menu-btn{
     display:block;
+  }
+
+  .mobile-nav.open{
+    top:65px;
   }
 
   .hero{
@@ -1136,7 +1176,6 @@ body{
 </style>
 </head>
 
-
 <body>
 
 <header class="header">
@@ -1157,48 +1196,114 @@ body{
 
   </div>
 
-
   <nav class="nav">
 
-    <button class="active" data-nav="home">
+    <button
+      class="active"
+      data-nav="home"
+      type="button"
+    >
       ⌂ Home
     </button>
 
-    <button data-nav="web">
+    <button
+      data-nav="web"
+      type="button"
+    >
       ◎ Web
     </button>
 
-    <button data-nav="images">
+    <button
+      data-nav="images"
+      type="button"
+    >
       ▣ Images
     </button>
 
-    <button data-nav="news">
+    <button
+      data-nav="news"
+      type="button"
+    >
       ▤ News
     </button>
 
-    <button data-nav="maps">
+    <button
+      data-nav="maps"
+      type="button"
+    >
       ⌖ Maps
     </button>
 
-    <button data-nav="more">
+    <button
+      data-nav="more"
+      type="button"
+    >
       ⋮ More
     </button>
 
   </nav>
 
-
   <button
     class="menu-btn"
-    id="menuBtn"
+    id="mobileMenu"
     type="button"
+    aria-label="Open menu"
   >
     ☰
   </button>
 
 </header>
 
+<!-- MOBILE MENU -->
 
-<section class="hero" id="hero">
+<nav
+  class="mobile-nav"
+  id="mobileNav"
+>
+
+  <button
+    data-nav="home"
+    type="button"
+  >
+    ⌂ Home
+  </button>
+
+  <button
+    data-nav="web"
+    type="button"
+  >
+    ◎ Web
+  </button>
+
+  <button
+    data-nav="images"
+    type="button"
+  >
+    ▣ Images
+  </button>
+
+  <button
+    data-nav="news"
+    type="button"
+  >
+    ▤ News
+  </button>
+
+  <button
+    data-nav="maps"
+    type="button"
+  >
+    ⌖ Maps
+  </button>
+
+</nav>
+
+<!-- HERO -->
+
+<section
+  class="hero"
+  id="hero"
+>
 
   <div class="hero-content">
 
@@ -1209,7 +1314,6 @@ body{
     <div class="hero-sub">
       SEARCH THE WORLD
     </div>
-
 
     <form
       class="search-box"
@@ -1222,6 +1326,7 @@ body{
         autocomplete="off"
         spellcheck="false"
         placeholder="Search anything..."
+        aria-label="Search HEXORA"
       >
 
       <button
@@ -1234,35 +1339,57 @@ body{
 
     </form>
 
-
     <div class="modes">
 
-      <button class="mode active" data-mode="web">
+      <button
+        class="mode active"
+        data-mode="web"
+        type="button"
+      >
         ◉ Web
       </button>
 
-      <button class="mode" data-mode="images">
+      <button
+        class="mode"
+        data-mode="images"
+        type="button"
+      >
         ▧ Images
       </button>
 
-      <button class="mode" data-mode="news">
+      <button
+        class="mode"
+        data-mode="news"
+        type="button"
+      >
         ▤ News
       </button>
 
-      <button class="mode" data-mode="maps">
+      <button
+        class="mode"
+        data-mode="maps"
+        type="button"
+      >
         ⌖ Maps
       </button>
 
-      <button class="mode" data-mode="videos">
+      <button
+        class="mode"
+        data-mode="videos"
+        type="button"
+      >
         ▶ Videos
       </button>
 
-      <button class="mode" data-mode="shopping">
+      <button
+        class="mode"
+        data-mode="shopping"
+        type="button"
+      >
         🛍 Shopping
       </button>
 
     </div>
-
 
     <div class="trending">
 
@@ -1270,31 +1397,59 @@ body{
         ↗ Trending Searches
       </div>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="Assam news"
+        type="button"
+      >
         Assam news
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="India vs Australia"
+        type="button"
+      >
         India vs Australia
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="Python tutorial"
+        type="button"
+      >
         Python tutorial
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="AI tools"
+        type="button"
+      >
         AI tools
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="Travel Assam"
+        type="button"
+      >
         Travel Assam
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="Education"
+        type="button"
+      >
         Education
       </button>
 
-      <button class="trend">
+      <button
+        class="trend"
+        data-query="Cricket"
+        type="button"
+      >
         Cricket
       </button>
 
@@ -1304,12 +1459,12 @@ body{
 
 </section>
 
+<!-- HOME CONTENT -->
 
 <main
   class="content"
   id="homeContent"
 >
-
 
   <!-- REAL NEWS -->
 
@@ -1343,10 +1498,11 @@ body{
 
   </section>
 
+  <!-- HEXORA FEATURE -->
 
-  <!-- HEXORA DISCOVERY -->
-
-  <section class="card feature">
+  <section
+    class="card feature"
+  >
 
     <div class="feature-content">
 
@@ -1367,8 +1523,7 @@ body{
 
   </section>
 
-
-  <!-- MAP + QUICK -->
+  <!-- MAP -->
 
   <section>
 
@@ -1389,7 +1544,6 @@ body{
 
       </div>
 
-
       <div class="map-preview">
 
         <div id="mapPreview"></div>
@@ -1406,6 +1560,7 @@ body{
 
     </div>
 
+    <!-- QUICK ACTIONS -->
 
     <div
       class="card"
@@ -1419,7 +1574,6 @@ body{
         </h2>
 
       </div>
-
 
       <div class="quick-grid">
 
@@ -1443,7 +1597,6 @@ body{
 
         </button>
 
-
         <button
           class="quick"
           data-quick="place"
@@ -1464,7 +1617,6 @@ body{
 
         </button>
 
-
         <button
           class="quick"
           data-quick="directions"
@@ -1484,7 +1636,6 @@ body{
           </small>
 
         </button>
-
 
         <button
           class="quick"
@@ -1514,7 +1665,6 @@ body{
 
 </main>
 
-
 <!-- SEARCH RESULTS -->
 
 <section
@@ -1530,8 +1680,7 @@ body{
 
 </section>
 
-
-<!-- MAP -->
+<!-- MAP VIEW -->
 
 <section
   id="mapView"
@@ -1544,6 +1693,7 @@ body{
       type="search"
       autocomplete="off"
       placeholder="Search a place..."
+      aria-label="Search a place"
     >
 
     <button
@@ -1555,9 +1705,7 @@ body{
 
   </div>
 
-
   <div id="hexoraMap"></div>
-
 
   <div class="map-tools">
 
@@ -1584,14 +1732,12 @@ body{
 
   </div>
 
-
   <div
     id="mapInfo"
     class="map-info"
   ></div>
 
 </section>
-
 
 <script src="/main.js"></script>
 
