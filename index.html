@@ -1,2017 +1,1599 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <title>HEXORA — Search Beyond Limits</title>
-  <meta
-    name="description"
-    content="HEXORA — Search Beyond Limits. Search the web, news, images, videos and maps."
-  />
-
-  <!-- HEXORA Map -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
-  />
-
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    html,
-    body {
-      width: 100%;
-      min-height: 100%;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #05070d;
-      color: #ffffff;
-    }
-
-    body {
-      overflow-x: hidden;
-    }
-
-    button,
-    input {
-      font: inherit;
-    }
-
-    button {
-      cursor: pointer;
-    }
-
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-
-    /* =========================
-       HEADER
-    ========================= */
-
-    header {
-      width: 100%;
-      height: 70px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 28px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(5, 7, 13, 0.94);
-      backdrop-filter: blur(16px);
-      position: sticky;
-      top: 0;
-      z-index: 1000;
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 25px;
-      font-weight: 800;
-      letter-spacing: 1px;
-    }
-
-    .logo-icon {
-      width: 38px;
-      height: 38px;
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: linear-gradient(135deg, #6d5dfc, #00d4ff);
-      color: #fff;
-      font-weight: 900;
-      box-shadow: 0 0 25px rgba(0, 212, 255, 0.22);
-    }
-
-    nav {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-
-    nav button {
-      border: 0;
-      background: transparent;
-      color: #aeb6c7;
-      padding: 10px 14px;
-      border-radius: 10px;
-      transition: 0.2s;
-    }
-
-    nav button:hover,
-    nav button.active {
-      color: #ffffff;
-      background: rgba(255, 255, 255, 0.08);
-    }
-
-    /* =========================
-       HERO
-    ========================= */
-
-    .hero {
-      min-height: 470px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 70px 20px 40px;
-      text-align: center;
-    }
-
-    .hero h1 {
-      font-size: clamp(48px, 9vw, 100px);
-      line-height: 0.95;
-      font-weight: 900;
-      letter-spacing: -4px;
-      background: linear-gradient(135deg, #ffffff, #8be8ff, #8475ff);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-
-    .tagline {
-      margin-top: 18px;
-      color: #9aa5bb;
-      font-size: 15px;
-      letter-spacing: 4px;
-      text-transform: uppercase;
-    }
-
-    /* =========================
-       SEARCH
-    ========================= */
-
-    .search-wrap {
-      width: min(850px, 94vw);
-      margin-top: 36px;
-    }
-
-    .search-box {
-      width: 100%;
-      min-height: 62px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 7px 9px 7px 20px;
-      background: #101521;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 20px;
-      box-shadow:
-        0 20px 60px rgba(0, 0, 0, 0.35),
-        0 0 0 1px rgba(109, 93, 252, 0.05);
-    }
-
-    .search-icon {
-      color: #7f8ba3;
-      font-size: 21px;
-    }
-
-    #searchInput {
-      flex: 1;
-      min-width: 0;
-      border: 0;
-      outline: 0;
-      background: transparent;
-      color: #ffffff;
-      font-size: 17px;
-    }
-
-    #searchInput::placeholder {
-      color: #69758d;
-    }
-
-    .search-btn {
-      border: 0;
-      border-radius: 15px;
-      min-width: 112px;
-      min-height: 48px;
-      padding: 0 20px;
-      color: white;
-      font-weight: 700;
-      background: linear-gradient(135deg, #6555f7, #00aeea);
-      box-shadow: 0 10px 25px rgba(0, 174, 234, 0.16);
-    }
-
-    .search-btn:hover {
-      transform: translateY(-1px);
-    }
-
-    /* =========================
-       CATEGORIES
-    ========================= */
-
-    .categories {
-      width: min(850px, 94vw);
-      display: flex;
-      justify-content: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 18px;
-    }
-
-    .category {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(255, 255, 255, 0.035);
-      color: #8f9ab0;
-      padding: 9px 16px;
-      border-radius: 999px;
-      transition: 0.2s;
-    }
-
-    .category:hover,
-    .category.active {
-      color: #fff;
-      border-color: rgba(0, 212, 255, 0.4);
-      background: rgba(0, 212, 255, 0.08);
-    }
-
-    /* =========================
-       TRENDING
-    ========================= */
-
-    .trending {
-      width: min(900px, 94vw);
-      margin: 10px auto 0;
-      display: flex;
-      gap: 8px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    .trend {
-      border: 0;
-      color: #8792a9;
-      background: transparent;
-      font-size: 13px;
-    }
-
-    .trend:hover {
-      color: #fff;
-    }
-
-    /* =========================
-       MAIN
-    ========================= */
-
-    main {
-      width: min(1200px, 94vw);
-      margin: 0 auto;
-      padding-bottom: 70px;
-    }
-
-    .section-title {
-      font-size: 22px;
-      margin-bottom: 18px;
-    }
-
-    .home-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-    }
-
-    .card {
-      background: #0c111b;
-      border: 1px solid rgba(255, 255, 255, 0.07);
-      border-radius: 18px;
-      padding: 20px;
-      min-height: 150px;
-    }
-
-    .card h3 {
-      font-size: 16px;
-      margin-bottom: 10px;
-    }
-
-    .card p {
-      color: #7f8ba1;
-      line-height: 1.6;
-      font-size: 14px;
-    }
-
-    /* =========================
-       RESULTS
-    ========================= */
-
-    #resultsSection {
-      display: none;
-      margin-top: 35px;
-    }
-
-    .results-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 15px;
-      margin-bottom: 18px;
-    }
-
-    #resultsTitle {
-      font-size: 21px;
-    }
-
-    #resultCount {
-      color: #68748b;
-      font-size: 13px;
-    }
-
-    .results-list {
-      display: grid;
-      gap: 13px;
-    }
-
-    .result-card {
-      padding: 18px;
-      border-radius: 16px;
-      background: #0b1019;
-      border: 1px solid rgba(255, 255, 255, 0.07);
-    }
-
-    .result-card:hover {
-      border-color: rgba(0, 212, 255, 0.18);
-    }
-
-    .result-url {
-      color: #35c7e9;
-      font-size: 12px;
-      margin-bottom: 7px;
-      word-break: break-all;
-    }
-
-    .result-title {
-      color: #ffffff;
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-
-    .result-description {
-      color: #8b96aa;
-      line-height: 1.55;
-      font-size: 14px;
-    }
-
-    .result-meta {
-      margin-top: 10px;
-      color: #59657b;
-      font-size: 12px;
-    }
-
-    /* =========================
-       IMAGE RESULTS
-    ========================= */
-
-    .image-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 14px;
-    }
-
-    .image-card {
-      overflow: hidden;
-      border-radius: 15px;
-      background: #0c111b;
-      border: 1px solid rgba(255, 255, 255, 0.07);
-    }
-
-    .image-card img {
-      width: 100%;
-      height: 170px;
-      display: block;
-      object-fit: cover;
-      background: #101621;
-    }
-
-    .image-card-info {
-      padding: 11px;
-    }
-
-    .image-card-title {
-      font-size: 13px;
-      color: #dce2ec;
-    }
-
-    /* =========================
-       MAP
-    ========================= */
-
-    #mapSection {
-      display: none;
-      margin-top: 20px;
-    }
-
-    .map-shell {
-      position: relative;
-      width: 100%;
-      height: min(72vh, 680px);
-      min-height: 450px;
-      overflow: hidden;
-      border-radius: 22px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      background: #111820;
-      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.4);
-    }
-
-    #hexoraMap {
-      width: 100%;
-      height: 100%;
-    }
-
-    .map-topbar {
-      position: absolute;
-      left: 16px;
-      top: 16px;
-      right: 16px;
-      z-index: 10;
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      pointer-events: none;
-    }
-
-    .map-brand {
-      pointer-events: auto;
-      padding: 11px 15px;
-      border-radius: 13px;
-      background: rgba(5, 7, 13, 0.88);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(12px);
-      font-weight: 800;
-      letter-spacing: 1px;
-    }
-
-    .map-controls {
-      display: flex;
-      gap: 7px;
-      pointer-events: auto;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
-    .map-control {
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(5, 7, 13, 0.88);
-      color: #fff;
-      border-radius: 11px;
-      padding: 10px 12px;
-      backdrop-filter: blur(12px);
-      font-size: 12px;
-    }
-
-    .map-control:hover,
-    .map-control.active {
-      background: rgba(0, 174, 234, 0.2);
-      border-color: rgba(0, 212, 255, 0.4);
-    }
-
-    .map-search-status {
-      position: absolute;
-      left: 16px;
-      bottom: 16px;
-      z-index: 10;
-      max-width: min(450px, calc(100% - 32px));
-      padding: 11px 14px;
-      border-radius: 12px;
-      color: #dce5f2;
-      background: rgba(5, 7, 13, 0.88);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(12px);
-      font-size: 12px;
-      display: none;
-    }
-
-    .map-legend {
-      position: absolute;
-      right: 16px;
-      bottom: 16px;
-      z-index: 10;
-      padding: 9px 12px;
-      border-radius: 10px;
-      color: #aeb9ca;
-      background: rgba(5, 7, 13, 0.84);
-      font-size: 11px;
-    }
-
-    .location-marker {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: #168cff;
-      border: 3px solid #fff;
-      box-shadow:
-        0 0 0 7px rgba(22, 140, 255, 0.2),
-        0 0 25px rgba(22, 140, 255, 0.8);
-    }
-
-    /* =========================
-       LOADING
-    ========================= */
-
-    .loading {
-      padding: 30px;
-      text-align: center;
-      color: #8290a6;
-    }
-
-    .spinner {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      border: 3px solid rgba(255, 255, 255, 0.1);
-      border-top-color: #00c6ef;
-      animation: spin 0.8s linear infinite;
-      margin: 0 auto 12px;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .empty {
-      padding: 35px 15px;
-      text-align: center;
-      color: #68748a;
-    }
-
-    /* =========================
-       FOOTER
-    ========================= */
-
-    footer {
-      border-top: 1px solid rgba(255, 255, 255, 0.07);
-      padding: 28px 20px;
-      text-align: center;
-      color: #59657a;
-      font-size: 13px;
-    }
-
-    /* =========================
-       MOBILE
-    ========================= */
-
-    @media (max-width: 850px) {
-      header {
-        height: auto;
-        min-height: 64px;
-        padding: 10px 15px;
-      }
-
-      nav {
-        gap: 2px;
-      }
-
-      nav button {
-        padding: 8px 9px;
-        font-size: 12px;
-      }
-
-      .hero {
-        min-height: 410px;
-        padding-top: 50px;
-      }
-
-      .hero h1 {
-        letter-spacing: -2px;
-      }
-
-      .home-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .image-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
-
-      .map-shell {
-        height: 70vh;
-        min-height: 420px;
-      }
-    }
-
-    @media (max-width: 560px) {
-      .logo {
-        font-size: 20px;
-      }
-
-      .logo-icon {
-        width: 32px;
-        height: 32px;
-        border-radius: 9px;
-      }
-
-      nav button {
-        display: none;
-      }
-
-      nav button:last-child {
-        display: block;
-      }
-
-      .search-box {
-        min-height: 58px;
-        padding-left: 15px;
-        border-radius: 17px;
-      }
-
-      .search-btn {
-        min-width: 82px;
-        padding: 0 13px;
-        min-height: 44px;
-      }
-
-      #searchInput {
-        font-size: 15px;
-      }
-
-      .categories {
-        justify-content: flex-start;
-        overflow-x: auto;
-        flex-wrap: nowrap;
-        padding-bottom: 5px;
-      }
-
-      .category {
-        white-space: nowrap;
-      }
-
-      .map-topbar {
-        align-items: flex-start;
-      }
-
-      .map-brand {
-        font-size: 12px;
-        padding: 9px 11px;
-      }
-
-      .map-controls {
-        max-width: 65%;
-      }
-
-      .map-control {
-        padding: 8px 9px;
-        font-size: 11px;
-      }
-
-      .map-shell {
-        height: 68vh;
-        min-height: 400px;
-        border-radius: 16px;
-      }
-
-      .image-grid {
-        gap: 9px;
-      }
-
-      .image-card img {
-        height: 130px;
-      }
-    }
-  </style>
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+>
+
+<meta
+  name="description"
+  content="HEXORA — Search the World"
+>
+
+<title>HEXORA — Search the World</title>
+
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+>
+
+<style>
+
+*{
+  box-sizing:border-box;
+  margin:0;
+  padding:0;
+}
+
+:root{
+  --bg:#020914;
+  --panel:rgba(5,21,35,.90);
+  --cyan:#00eaff;
+  --cyan2:#16cfff;
+  --text:#f4fbff;
+  --muted:#8fa7b8;
+  --border:rgba(0,229,255,.22);
+}
+
+html,
+body{
+  width:100%;
+  min-height:100%;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+
+  background:
+    radial-gradient(
+      circle at 50% 10%,
+      rgba(0,210,255,.13),
+      transparent 35%
+    ),
+    var(--bg);
+
+  color:var(--text);
+}
+
+button,
+input{
+  font:inherit;
+}
+
+button{
+  cursor:pointer;
+}
+
+a{
+  color:inherit;
+}
+
+body{
+  overflow-x:hidden;
+}
+
+/* ================= HEADER ================= */
+
+.header{
+  position:sticky;
+  top:0;
+  z-index:1000;
+
+  height:74px;
+  padding:0 32px;
+
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+
+  background:rgba(2,9,20,.88);
+  backdrop-filter:blur(18px);
+
+  border-bottom:1px solid var(--border);
+}
+
+.logo{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:210px;
+}
+
+.logo-icon{
+  width:45px;
+  height:45px;
+
+  display:grid;
+  place-items:center;
+
+  border:2px solid var(--cyan);
+  border-radius:13px;
+
+  color:var(--cyan);
+  font-size:25px;
+  font-weight:900;
+
+  box-shadow:
+    0 0 20px rgba(0,234,255,.2);
+}
+
+.logo-text{
+  font-size:27px;
+  font-weight:900;
+  letter-spacing:1px;
+}
+
+.logo-text span{
+  color:var(--cyan);
+}
+
+.logo-sub{
+  display:block;
+  margin-top:-3px;
+
+  color:#b5c8d5;
+  font-size:8px;
+  letter-spacing:4px;
+}
+
+.nav{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.nav button{
+  border:0;
+  background:transparent;
+  color:#c5d5df;
+
+  padding:12px 16px;
+  border-radius:12px;
+
+  font-size:14px;
+}
+
+.nav button:hover,
+.nav button.active{
+  color:var(--cyan);
+  background:rgba(0,234,255,.08);
+}
+
+.menu-btn{
+  display:none;
+
+  width:43px;
+  height:43px;
+
+  border:1px solid var(--border);
+  border-radius:50%;
+
+  background:transparent;
+  color:var(--cyan);
+
+  font-size:22px;
+}
+
+/* ================= HERO ================= */
+
+.hero{
+  position:relative;
+
+  min-height:500px;
+  padding:70px 20px 30px;
+
+  overflow:hidden;
+
+  text-align:center;
+}
+
+.hero::after{
+  content:"";
+
+  position:absolute;
+
+  left:50%;
+  bottom:-300px;
+
+  transform:translateX(-50%);
+
+  width:1200px;
+  height:500px;
+
+  border-radius:50%;
+
+  background:
+    radial-gradient(
+      ellipse,
+      rgba(0,225,255,.35),
+      rgba(0,100,180,.08) 45%,
+      transparent 70%
+    );
+
+  border-top:2px solid rgba(0,238,255,.7);
+
+  pointer-events:none;
+}
+
+.hero-content{
+  position:relative;
+  z-index:2;
+
+  max-width:1100px;
+  margin:auto;
+}
+
+.hero-title{
+  font-size:clamp(45px,8vw,82px);
+
+  font-weight:950;
+  letter-spacing:3px;
+
+  text-shadow:
+    0 0 35px rgba(0,234,255,.3);
+}
+
+.hero-title span{
+  color:var(--cyan);
+}
+
+.hero-sub{
+  margin-top:5px;
+
+  color:#c5d8e4;
+  font-size:13px;
+  letter-spacing:7px;
+}
+
+/* ================= SEARCH ================= */
+
+.search-box{
+  width:min(850px,100%);
+  margin:35px auto 20px;
+
+  display:flex;
+
+  border:1.5px solid var(--cyan);
+  border-radius:50px;
+
+  overflow:hidden;
+
+  background:rgba(2,16,28,.92);
+
+  box-shadow:
+    0 0 35px rgba(0,234,255,.12);
+}
+
+.search-box input{
+  flex:1;
+  min-width:0;
+
+  border:0;
+  outline:0;
+
+  background:transparent;
+  color:white;
+
+  padding:20px 25px;
+
+  font-size:16px;
+}
+
+.search-box input::placeholder{
+  color:#7791a2;
+}
+
+.search-btn{
+  width:78px;
+
+  border:0;
+
+  background:var(--cyan);
+  color:#00131b;
+
+  font-size:23px;
+  font-weight:900;
+}
+
+.search-btn:hover{
+  background:#68f5ff;
+}
+
+/* ================= MODES ================= */
+
+.modes{
+  display:flex;
+  justify-content:center;
+  flex-wrap:wrap;
+  gap:10px;
+
+  position:relative;
+  z-index:3;
+}
+
+.mode{
+  border:1px solid rgba(0,234,255,.4);
+
+  background:rgba(4,25,40,.85);
+  color:#d9edf6;
+
+  padding:11px 19px;
+
+  border-radius:30px;
+
+  font-size:13px;
+}
+
+.mode:hover,
+.mode.active{
+  color:#00131b;
+  background:var(--cyan);
+}
+
+/* ================= TRENDING ================= */
+
+.trending{
+  position:relative;
+  z-index:4;
+
+  margin:28px auto 0;
+
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+
+  max-width:1000px;
+}
+
+.trending-title{
+  width:100%;
+  margin-bottom:5px;
+
+  color:var(--cyan);
+  font-weight:700;
+}
+
+.trend{
+  padding:8px 15px;
+
+  border-radius:20px;
+
+  background:rgba(0,234,255,.06);
+  border:1px solid rgba(0,234,255,.2);
+
+  color:#b8ced9;
+  font-size:12px;
+}
+
+.trend:hover{
+  color:var(--cyan);
+  border-color:var(--cyan);
+}
+
+/* ================= CONTENT ================= */
+
+.content{
+  position:relative;
+  z-index:10;
+
+  max-width:1450px;
+  margin:-20px auto 50px;
+
+  padding:0 25px;
+
+  display:grid;
+
+  grid-template-columns:
+    minmax(250px,.95fr)
+    minmax(350px,1.25fr)
+    minmax(250px,.95fr);
+
+  gap:18px;
+}
+
+.card{
+  background:
+    linear-gradient(
+      145deg,
+      rgba(8,32,49,.95),
+      rgba(3,15,27,.95)
+    );
+
+  border:1px solid var(--border);
+  border-radius:17px;
+
+  overflow:hidden;
+
+  box-shadow:
+    0 15px 40px rgba(0,0,0,.25);
+}
+
+.card-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+
+  padding:17px 18px;
+
+  border-bottom:1px solid rgba(255,255,255,.06);
+}
+
+.card-head h2{
+  font-size:17px;
+}
+
+.card-head button,
+.card-head span{
+  color:var(--cyan);
+  font-size:12px;
+
+  background:transparent;
+  border:0;
+}
+
+/* ================= REAL NEWS ================= */
+
+.news-list{
+  min-height:100px;
+}
+
+.news-loading,
+.news-empty{
+  padding:30px 18px;
+
+  color:var(--muted);
+
+  font-size:12px;
+  text-align:center;
+}
+
+.news-item{
+  display:flex;
+  gap:12px;
+
+  padding:13px 17px;
+
+  border-bottom:1px solid rgba(255,255,255,.06);
+}
+
+.news-item:last-child{
+  border-bottom:0;
+}
+
+.news-img{
+  width:90px;
+  height:65px;
+
+  flex-shrink:0;
+
+  border-radius:9px;
+
+  object-fit:cover;
+
+  background:
+    linear-gradient(
+      135deg,
+      #073a53,
+      #05121d
+    );
+}
+
+.news-source{
+  color:var(--cyan);
+  font-size:10px;
+}
+
+.news-title{
+  margin-top:5px;
+
+  font-size:13px;
+  line-height:1.35;
+}
+
+.news-title a{
+  text-decoration:none;
+}
+
+.news-title a:hover{
+  color:var(--cyan);
+}
+
+.news-time{
+  margin-top:5px;
+
+  color:var(--muted);
+  font-size:10px;
+}
+
+/* ================= FEATURE ================= */
+
+.feature{
+  min-height:350px;
+
+  position:relative;
+
+  background:
+    radial-gradient(
+      circle at 25% 25%,
+      rgba(0,234,255,.23),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 80% 20%,
+      rgba(0,100,255,.18),
+      transparent 30%
+    ),
+    linear-gradient(
+      135deg,
+      #06253a,
+      #020d18
+    );
+}
+
+.feature::before{
+  content:"HEXORA";
+
+  position:absolute;
+
+  right:-30px;
+  top:35px;
+
+  font-size:70px;
+  font-weight:950;
+
+  color:rgba(0,234,255,.045);
+
+  transform:rotate(-10deg);
+}
+
+.feature-content{
+  position:absolute;
+
+  bottom:0;
+  left:0;
+  right:0;
+
+  padding:25px;
+
+  background:
+    linear-gradient(
+      transparent,
+      rgba(0,0,0,.8)
+    );
+}
+
+.badge{
+  display:inline-block;
+
+  padding:7px 12px;
+
+  background:var(--cyan);
+  color:#00131b;
+
+  border-radius:8px;
+
+  font-size:11px;
+  font-weight:900;
+}
+
+.feature h2{
+  margin-top:12px;
+
+  font-size:23px;
+}
+
+.feature p{
+  margin-top:7px;
+
+  color:#c2d4dd;
+  font-size:13px;
+}
+
+/* ================= MAP CARD ================= */
+
+.map-preview{
+  margin:12px;
+
+  height:220px;
+
+  border-radius:13px;
+
+  overflow:hidden;
+
+  position:relative;
+
+  background:#071723;
+}
+
+#mapPreview{
+  width:100%;
+  height:100%;
+}
+
+.map-open{
+  position:absolute;
+
+  right:12px;
+  bottom:12px;
+
+  z-index:10;
+
+  border:1px solid var(--cyan);
+
+  background:rgba(2,9,20,.9);
+
+  color:var(--cyan);
+
+  padding:9px 13px;
+
+  border-radius:10px;
+
+  font-size:10px;
+}
+
+/* ================= QUICK ================= */
+
+.quick-grid{
+  display:grid;
+
+  grid-template-columns:1fr 1fr;
+
+  gap:10px;
+
+  padding:12px;
+}
+
+.quick{
+  min-height:80px;
+
+  border:1px solid rgba(0,234,255,.16);
+  border-radius:12px;
+
+  background:rgba(0,234,255,.035);
+
+  padding:13px;
+
+  color:white;
+
+  text-align:left;
+}
+
+.quick:hover{
+  border-color:var(--cyan);
+  background:rgba(0,234,255,.08);
+}
+
+.quick-icon{
+  color:var(--cyan);
+  font-size:21px;
+}
+
+.quick strong{
+  display:block;
+  margin-top:7px;
+
+  font-size:12px;
+}
+
+.quick small{
+  color:var(--muted);
+  font-size:10px;
+}
+
+/* ================= SEARCH RESULTS ================= */
+
+#searchView{
+  display:none;
+
+  width:min(1000px,92%);
+
+  margin:0 auto;
+
+  padding:25px 0 70px;
+}
+
+#searchView.active{
+  display:block;
+}
+
+.result-meta{
+  color:var(--muted);
+
+  font-size:11px;
+
+  margin-bottom:15px;
+}
+
+.result{
+  padding:20px 0;
+
+  border-bottom:1px solid rgba(255,255,255,.08);
+}
+
+.result h2{
+  font-size:19px;
+
+  margin-bottom:6px;
+}
+
+.result h2 a{
+  color:#6cefff;
+  text-decoration:none;
+}
+
+.result h2 a:hover{
+  text-decoration:underline;
+}
+
+.result-url{
+  color:#6f8998;
+
+  font-size:10px;
+
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.result-description{
+  margin-top:8px;
+
+  color:#9fb2bf;
+
+  font-size:12px;
+
+  line-height:1.6;
+}
+
+.result-image{
+  width:105px;
+  height:75px;
+
+  float:right;
+
+  margin-left:15px;
+
+  border-radius:10px;
+
+  object-fit:cover;
+}
+
+.empty{
+  padding:55px 20px;
+
+  text-align:center;
+
+  color:var(--muted);
+
+  border:1px dashed rgba(0,234,255,.16);
+
+  border-radius:16px;
+}
+
+/* ================= MAP VIEW ================= */
+
+#mapView{
+  display:none;
+
+  position:relative;
+
+  width:100%;
+
+  min-height:700px;
+
+  border-top:1px solid var(--border);
+
+  background:#061019;
+}
+
+#mapView.active{
+  display:block;
+}
+
+#hexoraMap{
+  width:100%;
+  height:700px;
+}
+
+.map-search-panel{
+  position:absolute;
+
+  z-index:50;
+
+  top:16px;
+  left:50%;
+
+  transform:translateX(-50%);
+
+  width:min(700px,92%);
+
+  display:flex;
+
+  padding:6px;
+
+  border:1px solid rgba(0,234,255,.3);
+
+  border-radius:15px;
+
+  background:rgba(2,9,20,.92);
+
+  backdrop-filter:blur(15px);
+}
+
+.map-search-panel input{
+  flex:1;
+
+  min-width:0;
+
+  border:0;
+  outline:0;
+
+  background:transparent;
+
+  color:white;
+
+  padding:12px;
+
+  font-size:13px;
+}
+
+.map-search-panel button{
+  border:0;
+
+  border-radius:10px;
+
+  padding:0 15px;
+
+  background:var(--cyan);
+
+  color:#00131b;
+
+  font-weight:800;
+
+  font-size:11px;
+}
+
+.map-tools{
+  position:absolute;
+
+  z-index:50;
+
+  left:16px;
+  bottom:20px;
+
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+
+.map-tools button{
+  min-width:130px;
+
+  padding:11px 13px;
+
+  border-radius:11px;
+
+  border:1px solid rgba(0,234,255,.25);
+
+  background:rgba(2,9,20,.9);
+
+  color:#e6faff;
+
+  font-size:10px;
+
+  text-align:left;
+}
+
+.map-tools button:hover{
+  border-color:var(--cyan);
+  color:var(--cyan);
+}
+
+.map-info{
+  display:none;
+
+  position:absolute;
+
+  z-index:50;
+
+  right:16px;
+  bottom:20px;
+
+  max-width:330px;
+
+  padding:15px;
+
+  border-radius:13px;
+
+  background:rgba(2,9,20,.94);
+
+  border:1px solid var(--border);
+
+  font-size:11px;
+
+  line-height:1.5;
+}
+
+.map-info.show{
+  display:block;
+}
+
+/* ================= MOBILE ================= */
+
+@media(max-width:900px){
+
+  .header{
+    height:65px;
+    padding:0 15px;
+  }
+
+  .logo{
+    min-width:auto;
+  }
+
+  .logo-text{
+    font-size:21px;
+  }
+
+  .logo-icon{
+    width:39px;
+    height:39px;
+  }
+
+  .logo-sub{
+    font-size:6px;
+    letter-spacing:3px;
+  }
+
+  .nav{
+    display:none;
+  }
+
+  .menu-btn{
+    display:block;
+  }
+
+  .hero{
+    min-height:auto;
+    padding:48px 14px 25px;
+  }
+
+  .hero-title{
+    font-size:46px;
+  }
+
+  .hero-sub{
+    font-size:8px;
+    letter-spacing:4px;
+  }
+
+  .search-box{
+    margin-top:25px;
+  }
+
+  .search-box input{
+    padding:16px;
+    font-size:14px;
+  }
+
+  .search-btn{
+    width:58px;
+  }
+
+  .modes{
+    justify-content:flex-start;
+
+    overflow-x:auto;
+    flex-wrap:nowrap;
+
+    padding:5px 2px 8px;
+
+    scrollbar-width:none;
+  }
+
+  .modes::-webkit-scrollbar{
+    display:none;
+  }
+
+  .mode{
+    flex-shrink:0;
+    padding:9px 14px;
+  }
+
+  .trending{
+    justify-content:flex-start;
+
+    overflow-x:auto;
+    flex-wrap:nowrap;
+
+    padding-bottom:5px;
+
+    scrollbar-width:none;
+  }
+
+  .trending::-webkit-scrollbar{
+    display:none;
+  }
+
+  .trending-title{
+    display:none;
+  }
+
+  .trend{
+    flex-shrink:0;
+  }
+
+  .content{
+    margin-top:0;
+
+    padding:0 12px;
+
+    display:flex;
+    flex-direction:column;
+
+    gap:13px;
+  }
+
+  .feature{
+    min-height:270px;
+    order:-1;
+  }
+
+  .news-img{
+    width:75px;
+    height:57px;
+  }
+
+  .feature h2{
+    font-size:19px;
+  }
+
+  #hexoraMap{
+    height:620px;
+  }
+
+  .map-tools{
+    left:10px;
+    bottom:10px;
+  }
+
+  .map-tools button{
+    min-width:auto;
+
+    width:46px;
+    height:46px;
+
+    padding:0;
+
+    border-radius:50%;
+
+    display:grid;
+    place-items:center;
+  }
+
+  .map-tools button span{
+    display:none;
+  }
+
+  .map-info{
+    left:10px;
+    right:10px;
+    bottom:10px;
+  }
+
+}
+
+@media(max-width:480px){
+
+  .logo-text{
+    font-size:18px;
+  }
+
+  .logo-icon{
+    width:35px;
+    height:35px;
+  }
+
+  .hero{
+    padding-top:38px;
+  }
+
+  .hero-title{
+    font-size:40px;
+  }
+
+  .search-box{
+    height:52px;
+  }
+
+  .search-box input{
+    padding:14px;
+    font-size:13px;
+  }
+
+  .search-btn{
+    width:52px;
+  }
+
+  .feature{
+    min-height:250px;
+  }
+
+  .quick-grid{
+    grid-template-columns:1fr 1fr;
+  }
+
+}
+
+</style>
 </head>
+
 
 <body>
 
-  <!-- =========================
-       HEADER
-  ========================= -->
+<header class="header">
 
-  <header>
-    <div class="logo">
-      <div class="logo-icon">H</div>
-      <span>HEXORA</span>
+  <div class="logo">
+
+    <div class="logo-icon">H</div>
+
+    <div>
+      <div class="logo-text">
+        HEX<span>ORA</span>
+      </div>
+
+      <small class="logo-sub">
+        SEARCH THE WORLD
+      </small>
     </div>
 
-    <nav>
-      <button class="nav-mode active" data-mode="web" onclick="setMode('web')">
-        Web
-      </button>
+  </div>
 
-      <button class="nav-mode" data-mode="news" onclick="setMode('news')">
-        News
-      </button>
 
-      <button class="nav-mode" data-mode="images" onclick="setMode('images')">
-        Images
-      </button>
+  <nav class="nav">
 
-      <button class="nav-mode" data-mode="maps" onclick="setMode('maps')">
-        Maps
-      </button>
-    </nav>
-  </header>
+    <button class="active" data-nav="home">
+      ⌂ Home
+    </button>
 
-  <!-- =========================
-       HERO
-  ========================= -->
+    <button data-nav="web">
+      ◎ Web
+    </button>
 
-  <section class="hero">
+    <button data-nav="images">
+      ▣ Images
+    </button>
 
-    <h1>HEXORA</h1>
+    <button data-nav="news">
+      ▤ News
+    </button>
 
-    <div class="tagline">
-      SEARCH BEYOND LIMITS
+    <button data-nav="maps">
+      ⌖ Maps
+    </button>
+
+    <button data-nav="more">
+      ⋮ More
+    </button>
+
+  </nav>
+
+
+  <button
+    class="menu-btn"
+    id="menuBtn"
+    type="button"
+  >
+    ☰
+  </button>
+
+</header>
+
+
+<section class="hero" id="hero">
+
+  <div class="hero-content">
+
+    <h1 class="hero-title">
+      HEX<span>ORA</span>
+    </h1>
+
+    <div class="hero-sub">
+      SEARCH THE WORLD
     </div>
 
-    <div class="search-wrap">
 
-      <form class="search-box" id="searchForm">
+    <form
+      class="search-box"
+      id="searchForm"
+    >
 
-        <span class="search-icon">⌕</span>
-
-        <input
-          id="searchInput"
-          type="search"
-          autocomplete="off"
-          placeholder="Search the web..."
-          aria-label="Search HEXORA"
-        />
-
-        <button class="search-btn" type="submit">
-          Search
-        </button>
-
-      </form>
-
-    </div>
-
-    <div class="categories">
+      <input
+        id="searchInput"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Search anything..."
+      >
 
       <button
-        class="category active"
-        data-mode="web"
-        onclick="setMode('web')"
+        class="search-btn"
+        type="submit"
+        aria-label="Search"
       >
-        Web
+        ⌕
       </button>
 
-      <button
-        class="category"
-        data-mode="images"
-        onclick="setMode('images')"
-      >
-        Images
+    </form>
+
+
+    <div class="modes">
+
+      <button class="mode active" data-mode="web">
+        ◉ Web
       </button>
 
-      <button
-        class="category"
-        data-mode="news"
-        onclick="setMode('news')"
-      >
-        News
+      <button class="mode" data-mode="images">
+        ▧ Images
       </button>
 
-      <button
-        class="category"
-        data-mode="maps"
-        onclick="setMode('maps')"
-      >
-        Maps
+      <button class="mode" data-mode="news">
+        ▤ News
       </button>
 
-      <button
-        class="category"
-        data-mode="videos"
-        onclick="setMode('videos')"
-      >
-        Videos
+      <button class="mode" data-mode="maps">
+        ⌖ Maps
+      </button>
+
+      <button class="mode" data-mode="videos">
+        ▶ Videos
+      </button>
+
+      <button class="mode" data-mode="shopping">
+        🛍 Shopping
       </button>
 
     </div>
+
 
     <div class="trending">
-      <button class="trend" onclick="quickSearch('Assam')">
-        #Assam
+
+      <div class="trending-title">
+        ↗ Trending Searches
+      </div>
+
+      <button class="trend">
+        Assam news
       </button>
 
-      <button class="trend" onclick="quickSearch('India news')">
-        #IndiaNews
+      <button class="trend">
+        India vs Australia
       </button>
 
-      <button class="trend" onclick="quickSearch('AI')">
-        #AI
+      <button class="trend">
+        Python tutorial
       </button>
 
-      <button class="trend" onclick="quickSearch('Python')">
-        #Python
+      <button class="trend">
+        AI tools
       </button>
 
-      <button class="trend" onclick="quickSearch('Cricket')">
-        #Cricket
+      <button class="trend">
+        Travel Assam
       </button>
+
+      <button class="trend">
+        Education
+      </button>
+
+      <button class="trend">
+        Cricket
+      </button>
+
+    </div>
+
+  </div>
+
+</section>
+
+
+<main
+  class="content"
+  id="homeContent"
+>
+
+
+  <!-- REAL NEWS -->
+
+  <section class="card">
+
+    <div class="card-head">
+
+      <h2>
+        ▤ Latest News
+      </h2>
+
+      <button
+        type="button"
+        id="viewNewsBtn"
+      >
+        View all →
+      </button>
+
+    </div>
+
+    <div
+      id="newsList"
+      class="news-list"
+    >
+
+      <div class="news-loading">
+        Loading real indexed news...
+      </div>
+
     </div>
 
   </section>
 
-  <!-- =========================
-       MAIN
-  ========================= -->
 
-  <main>
+  <!-- HEXORA DISCOVERY -->
 
-    <!-- HOME -->
-    <section id="homeSection">
+  <section class="card feature">
 
-      <div class="section-title">
-        Explore HEXORA
-      </div>
+    <div class="feature-content">
 
-      <div class="home-grid">
+      <span class="badge">
+        HEXORA
+      </span>
 
-        <div class="card">
-          <h3>🌐 Web Search</h3>
-          <p>
-            Search indexed webpages using the HEXORA search engine.
-          </p>
-        </div>
+      <h2>
+        Explore the world with HEXORA
+      </h2>
 
-        <div class="card">
-          <h3>📰 Latest News</h3>
-          <p>
-            Find current news and information from indexed sources.
-          </p>
-        </div>
+      <p>
+        Search webpages, discover information,
+        explore places and find real indexed content.
+      </p>
 
-        <div class="card">
-          <h3>🗺️ HEXORA Maps</h3>
-          <p>
-            Explore real map data, roads, places and your location.
-          </p>
-        </div>
-
-      </div>
-
-    </section>
-
-    <!-- MAP -->
-    <section id="mapSection">
-
-      <div class="results-header">
-        <div>
-          <div id="resultsTitle">
-            HEXORA Maps
-          </div>
-          <div id="resultCount">
-            Real map data
-          </div>
-        </div>
-      </div>
-
-      <div class="map-shell">
-
-        <div id="hexoraMap"></div>
-
-        <div class="map-topbar">
-
-          <div class="map-brand">
-            HEXORA MAP
-          </div>
-
-          <div class="map-controls">
-
-            <button
-              class="map-control"
-              id="locationBtn"
-              onclick="findMyLocation()"
-            >
-              📍 My location
-            </button>
-
-            <button
-              class="map-control"
-              id="roadBtn"
-              onclick="setMapStyle('road')"
-            >
-              🛣️ Road
-            </button>
-
-            <button
-              class="map-control"
-              id="satelliteBtn"
-              onclick="setMapStyle('satellite')"
-            >
-              🛰️ Satellite
-            </button>
-
-            <button
-              class="map-control"
-              id="resetMapBtn"
-              onclick="resetMapView()"
-            >
-              ⟳ Reset
-            </button>
-
-            <button
-              class="map-control"
-              onclick="toggleFullscreenMap()"
-            >
-              ⛶
-            </button>
-
-          </div>
-
-        </div>
-
-        <div
-          class="map-search-status"
-          id="mapStatus"
-        ></div>
-
-        <div class="map-legend">
-          © OpenStreetMap contributors
-        </div>
-
-      </div>
-
-    </section>
-
-    <!-- SEARCH RESULTS -->
-    <section id="resultsSection">
-
-      <div class="results-header">
-
-        <div>
-          <div id="resultsTitle">
-            Search Results
-          </div>
-
-          <div id="resultCount">
-            0 results
-          </div>
-        </div>
-
-      </div>
-
-      <div id="resultsContainer"></div>
-
-    </section>
-
-  </main>
-
-  <!-- =========================
-       FOOTER
-  ========================= -->
-
-  <footer>
-    <div>
-      © 2026 HEXORA — SEARCH BEYOND LIMITS
     </div>
-  </footer>
 
-  <!-- MapLibre -->
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  </section>
 
-  <script>
-    /* =====================================================
-       HEXORA FRONTEND STATE
-    ===================================================== */
 
-    let currentMode = "web";
-    let hexoraMap = null;
-    let mapInitialized = false;
-    let userMarker = null;
-    let searchMarkers = [];
+  <!-- MAP + QUICK -->
 
-    const DEFAULT_CENTER = [92.9376, 26.2006];
-    const DEFAULT_ZOOM = 5.3;
+  <section>
 
-    /* =====================================================
-       ELEMENTS
-    ===================================================== */
+    <div class="card">
 
-    const searchForm = document.getElementById("searchForm");
-    const searchInput = document.getElementById("searchInput");
-    const resultsSection = document.getElementById("resultsSection");
-    const resultsContainer = document.getElementById("resultsContainer");
-    const resultsTitle = document.getElementById("resultsTitle");
-    const resultCount = document.getElementById("resultCount");
-    const homeSection = document.getElementById("homeSection");
-    const mapSection = document.getElementById("mapSection");
-    const mapStatus = document.getElementById("mapStatus");
+      <div class="card-head">
 
-    /* =====================================================
-       MODE
-    ===================================================== */
+        <h2>
+          ⌖ World Map
+        </h2>
 
-    function setMode(mode) {
-      currentMode = mode;
+        <button
+          type="button"
+          id="openMapBtn"
+        >
+          Explore →
+        </button>
 
-      document.querySelectorAll(".category").forEach((button) => {
-        button.classList.toggle(
-          "active",
-          button.dataset.mode === mode
-        );
-      });
+      </div>
 
-      document.querySelectorAll(".nav-mode").forEach((button) => {
-        button.classList.toggle(
-          "active",
-          button.dataset.mode === mode
-        );
-      });
 
-      if (mode === "maps") {
-        homeSection.style.display = "none";
-        resultsSection.style.display = "none";
-        mapSection.style.display = "block";
+      <div class="map-preview">
 
-        initializeHexoraMap();
+        <div id="mapPreview"></div>
 
-        setTimeout(() => {
-          if (hexoraMap) {
-            hexoraMap.resize();
-          }
-        }, 150);
+        <button
+          class="map-open"
+          id="mapPreviewBtn"
+          type="button"
+        >
+          Open HEXORA Map
+        </button>
 
-        return;
-      }
+      </div>
 
-      mapSection.style.display = "none";
+    </div>
 
-      if (!searchInput.value.trim()) {
-        resultsSection.style.display = "none";
-        homeSection.style.display = "block";
-      }
 
-      if (mode === "images") {
-        searchInput.placeholder = "Search images...";
-      } else if (mode === "news") {
-        searchInput.placeholder = "Search news...";
-      } else if (mode === "videos") {
-        searchInput.placeholder = "Search videos...";
-      } else {
-        searchInput.placeholder = "Search the web...";
-      }
-    }
+    <div
+      class="card"
+      style="margin-top:13px;"
+    >
 
-    /* =====================================================
-       SEARCH FORM
-    ===================================================== */
+      <div class="card-head">
 
-    searchForm.addEventListener("submit", function (event) {
-      event.preventDefault();
+        <h2>
+          ⚡ Quick Actions
+        </h2>
 
-      performSearch();
-    });
+      </div>
 
-    searchInput.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        performSearch();
-      }
-    });
 
-    /* =====================================================
-       QUICK SEARCH
-    ===================================================== */
+      <div class="quick-grid">
 
-    function quickSearch(query) {
-      searchInput.value = query;
-      currentMode = "web";
+        <button
+          class="quick"
+          data-quick="location"
+          type="button"
+        >
 
-      setMode("web");
-
-      performSearch();
-    }
-
-    /* =====================================================
-       SEARCH
-    ===================================================== */
-
-    async function performSearch() {
-      const query = searchInput.value.trim();
-
-      if (!query) {
-        searchInput.focus();
-        return;
-      }
-
-      if (currentMode === "maps") {
-        await performMapSearch(query);
-        return;
-      }
-
-      homeSection.style.display = "none";
-      mapSection.style.display = "none";
-      resultsSection.style.display = "block";
-
-      resultsTitle.textContent =
-        currentMode === "news"
-          ? "News Results"
-          : currentMode === "images"
-          ? "Image Results"
-          : currentMode === "videos"
-          ? "Video Results"
-          : "Web Results";
-
-      resultCount.textContent = "Searching...";
-
-      resultsContainer.innerHTML = `
-        <div class="loading">
-          <div class="spinner"></div>
-          Searching HEXORA...
-        </div>
-      `;
-
-      try {
-        const url =
-          "/search?q=" +
-          encodeURIComponent(query) +
-          "&mode=" +
-          encodeURIComponent(currentMode) +
-          "&page=1&limit=20";
-
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            "Accept": "application/json"
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error(
-            "Search request failed: " + response.status
-          );
-        }
-
-        const data = await response.json();
-
-        renderSearchResults(data);
-
-      } catch (error) {
-        console.error("HEXORA search error:", error);
-
-        resultCount.textContent = "Search error";
-
-        resultsContainer.innerHTML = `
-          <div class="empty">
-            HEXORA search service is temporarily unavailable.
-            <br><br>
-            Please try again.
+          <div class="quick-icon">
+            ⌖
           </div>
-        `;
-      }
-    }
 
-    /* =====================================================
-       SEARCH RESULT NORMALIZATION
-    ===================================================== */
+          <strong>
+            Current Location
+          </strong>
 
-    function getResultsArray(data) {
-      if (Array.isArray(data)) {
-        return data;
-      }
+          <small>
+            Get your device location
+          </small>
 
-      if (Array.isArray(data.results)) {
-        return data.results;
-      }
+        </button>
 
-      if (Array.isArray(data.data)) {
-        return data.data;
-      }
 
-      if (Array.isArray(data.items)) {
-        return data.items;
-      }
+        <button
+          class="quick"
+          data-quick="place"
+          type="button"
+        >
 
-      return [];
-    }
-
-    /* =====================================================
-       RENDER SEARCH
-    ===================================================== */
-
-    function renderSearchResults(data) {
-      const results = getResultsArray(data);
-
-      resultCount.textContent =
-        results.length +
-        (results.length === 1 ? " result" : " results");
-
-      if (!results.length) {
-        resultsContainer.innerHTML = `
-          <div class="empty">
-            No indexed results found for
-            "<strong>${escapeHtml(searchInput.value)}</strong>".
+          <div class="quick-icon">
+            ⌕
           </div>
-        `;
 
-        return;
-      }
+          <strong>
+            Place Search
+          </strong>
 
-      if (currentMode === "images") {
-        renderImages(results);
-        return;
-      }
+          <small>
+            Find a real place
+          </small>
 
-      if (currentMode === "news") {
-        renderNews(results);
-        return;
-      }
+        </button>
 
-      if (currentMode === "videos") {
-        renderVideos(results);
-        return;
-      }
 
-      renderWeb(results);
-    }
+        <button
+          class="quick"
+          data-quick="directions"
+          type="button"
+        >
 
-    /* =====================================================
-       WEB
-    ===================================================== */
-
-    function renderWeb(results) {
-      resultsContainer.className = "results-list";
-
-      resultsContainer.innerHTML = results
-        .map((item) => {
-
-          const title =
-            item.title ||
-            item.name ||
-            "Untitled";
-
-          const url =
-            item.url ||
-            item.link ||
-            "#";
-
-          const description =
-            item.description ||
-            item.snippet ||
-            item.content ||
-            "";
-
-          return `
-            <article class="result-card">
-
-              <div class="result-url">
-                ${escapeHtml(url)}
-              </div>
-
-              <a
-                class="result-title"
-                href="${safeUrl(url)}"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                ${escapeHtml(title)}
-              </a>
-
-              <div class="result-description">
-                ${escapeHtml(
-                  String(description).slice(0, 500)
-                )}
-              </div>
-
-            </article>
-          `;
-        })
-        .join("");
-    }
-
-    /* =====================================================
-       IMAGES
-    ===================================================== */
-
-    function renderImages(results) {
-      resultsContainer.className = "image-grid";
-
-      const cards = results
-        .map((item) => {
-
-          const image =
-            item.image ||
-            item.image_url ||
-            item.thumbnail ||
-            item.thumbnail_url ||
-            "";
-
-          const title =
-            item.title ||
-            item.name ||
-            "HEXORA Image";
-
-          const url =
-            item.url ||
-            item.link ||
-            "#";
-
-          if (!image) {
-            return "";
-          }
-
-          return `
-            <a
-              class="image-card"
-              href="${safeUrl(url)}"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-
-              <img
-                src="${safeUrl(image)}"
-                alt="${escapeHtml(title)}"
-                loading="lazy"
-                onerror="this.style.display='none'"
-              />
-
-              <div class="image-card-info">
-                <div class="image-card-title">
-                  ${escapeHtml(title)}
-                </div>
-              </div>
-
-            </a>
-          `;
-        })
-        .filter(Boolean)
-        .join("");
-
-      resultsContainer.innerHTML =
-        cards ||
-        `
-          <div class="empty">
-            No image results found.
+          <div class="quick-icon">
+            ➤
           </div>
-        `;
-    }
-
-    /* =====================================================
-       NEWS
-    ===================================================== */
-
-    function renderNews(results) {
-      resultsContainer.className = "results-list";
-
-      resultsContainer.innerHTML = results
-        .map((item) => {
-
-          const title =
-            item.title ||
-            item.name ||
-            "News";
-
-          const url =
-            item.url ||
-            item.link ||
-            "#";
-
-          const description =
-            item.description ||
-            item.snippet ||
-            item.content ||
-            "";
-
-          const source =
-            item.source ||
-            item.publisher ||
-            item.domain ||
-            "";
-
-          return `
-            <article class="result-card">
-
-              <div class="result-url">
-                ${escapeHtml(source)}
-              </div>
-
-              <a
-                class="result-title"
-                href="${safeUrl(url)}"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                ${escapeHtml(title)}
-              </a>
-
-              <div class="result-description">
-                ${escapeHtml(
-                  String(description).slice(0, 600)
-                )}
-              </div>
-
-              <div class="result-meta">
-                ${escapeHtml(
-                  item.published_at ||
-                  item.date ||
-                  ""
-                )}
-              </div>
-
-            </article>
-          `;
-        })
-        .join("");
-    }
-
-    /* =====================================================
-       VIDEOS
-    ===================================================== */
-
-    function renderVideos(results) {
-      resultsContainer.className = "results-list";
-
-      resultsContainer.innerHTML = results
-        .map((item) => {
-
-          const title =
-            item.title ||
-            item.name ||
-            "Video";
-
-          const url =
-            item.url ||
-            item.link ||
-            "#";
-
-          const description =
-            item.description ||
-            item.snippet ||
-            "";
-
-          return `
-            <article class="result-card">
-
-              <a
-                class="result-title"
-                href="${safeUrl(url)}"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                ${escapeHtml(title)}
-              </a>
-
-              <div class="result-description">
-                ${escapeHtml(
-                  String(description).slice(0, 500)
-                )}
-              </div>
-
-            </article>
-          `;
-        })
-        .join("");
-    }
-
-    /* =====================================================
-       HEXORA MAP INITIALIZATION
-    ===================================================== */
-
-    function initializeHexoraMap() {
-      if (mapInitialized && hexoraMap) {
-        return;
-      }
-
-      if (typeof maplibregl === "undefined") {
-        showMapStatus(
-          "HEXORA Map library could not be loaded."
-        );
-        return;
-      }
-
-      hexoraMap = new maplibregl.Map({
-        container: "hexoraMap",
-
-        style: {
-          version: 8,
-
-          sources: {
-            "hexora-osm": {
-              type: "raster",
-
-              tiles: [
-                "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-              ],
-
-              tileSize: 256,
-
-              attribution:
-                "© OpenStreetMap contributors"
-            }
-          },
-
-          layers: [
-            {
-              id: "hexora-osm-layer",
-
-              type: "raster",
-
-              source: "hexora-osm",
-
-              minzoom: 0,
-
-              maxzoom: 19
-            }
-          ]
-        },
-
-        center: DEFAULT_CENTER,
-
-        zoom: DEFAULT_ZOOM,
-
-        attributionControl: true
-      });
-
-      hexoraMap.addControl(
-        new maplibregl.NavigationControl({
-          visualizePitch: true
-        }),
-        "bottom-right"
-      );
-
-      hexoraMap.on("load", function () {
-        mapInitialized = true;
-
-        showMapStatus(
-          "HEXORA Map ready — search a place or use My location."
-        );
-
-        setTimeout(() => {
-          hideMapStatus();
-        }, 3500);
-      });
-
-      hexoraMap.on("error", function (event) {
-        console.error(
-          "HEXORA Map error:",
-          event
-        );
-      });
-    }
-
-    /* =====================================================
-       MAP SEARCH
-    ===================================================== */
-
-    async function performMapSearch(query) {
-      mapSection.style.display = "block";
-      homeSection.style.display = "none";
-      resultsSection.style.display = "none";
-
-      initializeHexoraMap();
-
-      showMapStatus(
-        "Searching location: " + query
-      );
-
-      try {
-        /*
-         * Initial real geocoding layer.
-         *
-         * For production HEXORA infrastructure,
-         * this can later be moved to the HEXORA backend
-         * with our own geocoder.
-         */
-
-        const url =
-          "https://nominatim.openstreetmap.org/search" +
-          "?format=jsonv2" +
-          "&q=" +
-          encodeURIComponent(query) +
-          "&limit=8" +
-          "&addressdetails=1";
-
-        const response = await fetch(url, {
-          headers: {
-            "Accept": "application/json"
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error(
-            "Map search failed: " +
-            response.status
-          );
-        }
-
-        const places = await response.json();
-
-        if (!places.length) {
-          showMapStatus(
-            "No location found for: " + query
-          );
-
-          return;
-        }
-
-        clearSearchMarkers();
-
-        const bounds =
-          new maplibregl.LngLatBounds();
-
-        places.forEach((place) => {
-
-          const lat = Number(place.lat);
-          const lon = Number(place.lon);
-
-          if (
-            !Number.isFinite(lat) ||
-            !Number.isFinite(lon)
-          ) {
-            return;
-          }
-
-          const marker =
-            new maplibregl.Marker({
-              color: "#6555f7"
-            })
-              .setLngLat([lon, lat])
-              .setPopup(
-                new maplibregl.Popup({
-                  offset: 25
-                }).setHTML(`
-                  <div style="font-family:Arial,sans-serif;max-width:260px;">
-                    <strong>
-                      ${escapeHtml(
-                        place.display_name ||
-                        place.name ||
-                        query
-                      )}
-                    </strong>
-                  </div>
-                `)
-              )
-              .addTo(hexoraMap);
-
-          searchMarkers.push(marker);
-
-          bounds.extend([lon, lat]);
-        });
-
-        if (!bounds.isEmpty()) {
-          hexoraMap.fitBounds(bounds, {
-            padding: 80,
-            maxZoom: 16,
-            duration: 900
-          });
-        }
-
-        showMapStatus(
-          places.length +
-          " location result" +
-          (places.length === 1 ? "" : "s") +
-          " found."
-        );
-
-      } catch (error) {
-
-        console.error(
-          "HEXORA map search error:",
-          error
-        );
-
-        showMapStatus(
-          "Map search failed. Please try again."
-        );
-      }
-    }
-
-    /* =====================================================
-       MAP MARKERS
-    ===================================================== */
-
-    function clearSearchMarkers() {
-      searchMarkers.forEach((marker) => {
-        marker.remove();
-      });
-
-      searchMarkers = [];
-    }
-
-    /* =====================================================
-       MY LOCATION
-    ===================================================== */
-
-    function findMyLocation() {
-      if (!navigator.geolocation) {
-        showMapStatus(
-          "Your browser does not support location."
-        );
-
-        return;
-      }
-
-      initializeHexoraMap();
-
-      showMapStatus(
-        "Getting your real device location..."
-      );
-
-      navigator.geolocation.getCurrentPosition(
-        function (position) {
-
-          const latitude =
-            position.coords.latitude;
-
-          const longitude =
-            position.coords.longitude;
-
-          const accuracy =
-            position.coords.accuracy;
-
-          if (userMarker) {
-            userMarker.remove();
-          }
-
-          const markerElement =
-            document.createElement("div");
-
-          markerElement.className =
-            "location-marker";
-
-          userMarker =
-            new maplibregl.Marker({
-              element: markerElement
-            })
-              .setLngLat([
-                longitude,
-                latitude
-              ])
-              .setPopup(
-                new maplibregl.Popup({
-                  offset: 18
-                }).setHTML(`
-                  <strong>HEXORA</strong><br>
-                  Your current device location
-                `)
-              )
-              .addTo(hexoraMap);
-
-          hexoraMap.flyTo({
-            center: [
-              longitude,
-              latitude
-            ],
-
-            zoom: 15,
-
-            speed: 1.2
-          });
-
-          showMapStatus(
-            "Your real device location found. Accuracy: approximately " +
-            Math.round(accuracy) +
-            " m."
-          );
-        },
-
-        function (error) {
-
-          console.error(
-            "Geolocation error:",
-            error
-          );
-
-          let message =
-            "Unable to get your location.";
-
-          if (error.code === 1) {
-            message =
-              "Location permission was denied. Please allow location access in your browser.";
-          }
-
-          if (error.code === 2) {
-            message =
-              "Your device location is currently unavailable.";
-          }
-
-          if (error.code === 3) {
-            message =
-              "Location request timed out.";
-          }
-
-          showMapStatus(message);
-        },
-
-        {
-          enableHighAccuracy: true,
-
-          timeout: 15000,
-
-          maximumAge: 0
-        }
-      );
-    }
-
-    /* =====================================================
-       MAP RESET
-    ===================================================== */
-
-    function resetMapView() {
-      initializeHexoraMap();
-
-      clearSearchMarkers();
-
-      hexoraMap.flyTo({
-        center: DEFAULT_CENTER,
-        zoom: DEFAULT_ZOOM,
-        bearing: 0,
-        pitch: 0,
-        speed: 1.2
-      });
-
-      showMapStatus(
-        "HEXORA Map reset."
-      );
-    }
-
-    /* =====================================================
-       MAP STYLE
-    ===================================================== */
-
-    function setMapStyle(styleType) {
-
-      if (!hexoraMap) {
-        initializeHexoraMap();
-      }
-
-      if (styleType === "road") {
-
-        hexoraMap.setStyle({
-          version: 8,
-
-          sources: {
-            "hexora-osm": {
-              type: "raster",
-
-              tiles: [
-                "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-              ],
-
-              tileSize: 256,
-
-              attribution:
-                "© OpenStreetMap contributors"
-            }
-          },
-
-          layers: [
-            {
-              id: "hexora-osm-layer",
-
-              type: "raster",
-
-              source: "hexora-osm",
-
-              minzoom: 0,
-
-              maxzoom: 19
-            }
-          ]
-        });
-
-        document
-          .getElementById("roadBtn")
-          .classList.add("active");
-
-        document
-          .getElementById("satelliteBtn")
-          .classList.remove("active");
-
-        showMapStatus(
-          "HEXORA Road Map"
-        );
-
-        return;
-      }
-
-      /*
-       * Satellite layer is intentionally not faked.
-       * A licensed satellite imagery source can be
-       * connected here later.
-       */
-
-      showMapStatus(
-        "Satellite imagery source will be connected in the next HEXORA Map layer."
-      );
-    }
-
-    /* =====================================================
-       FULLSCREEN
-    ===================================================== */
-
-    function toggleFullscreenMap() {
-
-      const mapShell =
-        document.querySelector(".map-shell");
-
-      if (!document.fullscreenElement) {
-
-        if (mapShell.requestFullscreen) {
-          mapShell.requestFullscreen();
-        }
-
-      } else {
-
-        if (document.exitFullscreen) {
-          document.exitFullscreen();
-        }
-      }
-
-      setTimeout(() => {
-
-        if (hexoraMap) {
-          hexoraMap.resize();
-        }
-
-      }, 300);
-    }
-
-    document.addEventListener(
-      "fullscreenchange",
-      function () {
-
-        setTimeout(() => {
-
-          if (hexoraMap) {
-            hexoraMap.resize();
-          }
-
-        }, 250);
-      }
-    );
-
-    /* =====================================================
-       MAP STATUS
-    ===================================================== */
-
-    function showMapStatus(message) {
-
-      mapStatus.textContent = message;
-
-      mapStatus.style.display = "block";
-    }
-
-    function hideMapStatus() {
-
-      mapStatus.style.display = "none";
-    }
-
-    /* =====================================================
-       SECURITY
-    ===================================================== */
-
-    function escapeHtml(value) {
-
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    }
-
-    function safeUrl(value) {
-
-      try {
-
-        const url =
-          new URL(
-            String(value || "#"),
-            window.location.origin
-          );
-
-        if (
-          url.protocol === "http:" ||
-          url.protocol === "https:"
-        ) {
-          return escapeHtml(url.href);
-        }
-
-        return "#";
-
-      } catch {
-
-        return "#";
-      }
-    }
-
-    /* =====================================================
-       STARTUP
-    ===================================================== */
-
-    document.addEventListener(
-      "DOMContentLoaded",
-      function () {
-
-        setMode("web");
-
-        searchInput.focus();
-
-      }
-    );
-  </script>
+
+          <strong>
+            Directions
+          </strong>
+
+          <small>
+            Explore map routes
+          </small>
+
+        </button>
+
+
+        <button
+          class="quick"
+          data-quick="satellite"
+          type="button"
+        >
+
+          <div class="quick-icon">
+            ▱
+          </div>
+
+          <strong>
+            Satellite View
+          </strong>
+
+          <small>
+            Real imagery when configured
+          </small>
+
+        </button>
+
+      </div>
+
+    </div>
+
+  </section>
+
+</main>
+
+
+<!-- SEARCH RESULTS -->
+
+<section
+  id="searchView"
+>
+
+  <div
+    id="resultMeta"
+    class="result-meta"
+  ></div>
+
+  <div id="results"></div>
+
+</section>
+
+
+<!-- MAP -->
+
+<section
+  id="mapView"
+>
+
+  <div class="map-search-panel">
+
+    <input
+      id="mapSearchInput"
+      type="search"
+      autocomplete="off"
+      placeholder="Search a place..."
+    >
+
+    <button
+      id="mapSearchBtn"
+      type="button"
+    >
+      Search
+    </button>
+
+  </div>
+
+
+  <div id="hexoraMap"></div>
+
+
+  <div class="map-tools">
+
+    <button
+      id="locateBtn"
+      type="button"
+    >
+      ⌖ <span>My Location</span>
+    </button>
+
+    <button
+      id="resetMapBtn"
+      type="button"
+    >
+      ↺ <span>Reset</span>
+    </button>
+
+    <button
+      id="fullscreenMapBtn"
+      type="button"
+    >
+      ⛶ <span>Fullscreen</span>
+    </button>
+
+  </div>
+
+
+  <div
+    id="mapInfo"
+    class="map-info"
+  ></div>
+
+</section>
+
+
+<script src="/main.js"></script>
 
 </body>
 </html>
