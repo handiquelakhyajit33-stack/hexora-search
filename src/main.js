@@ -1294,7 +1294,546 @@
     );
 
   }
+  /* ==================================================
+     HEXORA REAL MAP ENGINE
+  ================================================== */
 
+  let hexoraMap = null;
+  let hexoraMapReady = false;
+
+  const MAP_CENTER = [91.7362, 26.1445]; // Assam / Guwahati
+  const MAP_ZOOM = 5;
+
+  function initializeHexoraMap() {
+
+    if (hexoraMapReady && hexoraMap) {
+      setTimeout(() => {
+        hexoraMap.resize();
+      }, 100);
+      return;
+    }
+
+    const mapElement =
+      document.getElementById("hexoraMap");
+
+    if (!mapElement) {
+      console.warn("[HEXORA MAP] #hexoraMap not found");
+      return;
+    }
+
+    if (typeof maplibregl === "undefined") {
+      console.error(
+        "[HEXORA MAP] MapLibre GL JS is not loaded"
+      );
+      return;
+    }
+
+    hexoraMap = new maplibregl.Map({
+      container: "hexoraMap",
+
+      style: {
+        version: 8,
+
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: [
+              "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            ],
+            tileSize: 256,
+            attribution:
+              "© OpenStreetMap contributors"
+          },
+
+          satellite: {
+            type: "raster",
+            tiles: [
+              "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            ],
+            tileSize: 256,
+            attribution:
+              "Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+          }
+        },
+
+        layers: [
+          {
+            id: "osm-layer",
+            type: "raster",
+            source: "osm"
+          }
+        ]
+      },
+
+      center: MAP_CENTER,
+      zoom: MAP_ZOOM,
+      pitch: 0,
+      bearing: 0
+    });
+
+    hexoraMap.addControl(
+      new maplibregl.NavigationControl(),
+      "bottom-right"
+    );
+
+    hexoraMap.on("load", () => {
+
+      hexoraMapReady = true;
+
+      console.log(
+        "[HEXORA MAP] Real map loaded"
+      );
+
+      setTimeout(() => {
+        hexoraMap.resize();
+      }, 200);
+    });
+
+    hexoraMap.on("error", event => {
+      console.error(
+        "[HEXORA MAP ERROR]",
+        event
+      );
+    });
+  }
+
+
+  function setHexoraMapView(type) {
+
+    if (!hexoraMap) {
+      initializeHexoraMap();
+      return;
+    }
+
+    const streetLayer =
+      hexoraMap.getLayer("osm-layer");
+
+    const satelliteLayer =
+      hexoraMap.getLayer("satellite-layer");
+
+    if (type === "satellite") {
+
+      if (!satelliteLayer) {
+
+        hexoraMap.addLayer({
+          id: "satellite-layer",
+          type: "raster",
+          source: "satellite"
+        });
+
+      } else {
+
+        hexoraMap.setLayoutProperty(
+          "satellite-layer",
+          "visibility",
+          "visible"
+        );
+      }
+
+      if (streetLayer) {
+        hexoraMap.setLayoutProperty(
+          "osm-layer",
+          "visibility",
+          "none"
+        );
+      }
+
+      return;
+    }
+
+    if (satelliteLayer) {
+      hexoraMap.setLayoutProperty(
+        "satellite-layer",
+        "visibility",
+        "none"
+      );
+    }
+
+    if (streetLayer) {
+      hexoraMap.setLayoutProperty(
+        "osm-layer",
+        "visibility",
+        "visible"
+      );
+    }
+  }
+
+
+  function setHexora3D(high = false) {
+
+    if (!hexoraMap) return;
+
+    hexoraMap.easeTo({
+      pitch: high ? 65 : 45,
+      bearing: high ? -15 : 0,
+      duration: 900
+    });
+  }
+
+
+  function resetHexoraMap() {
+
+    if (!hexoraMap) return;
+
+    hexoraMap.flyTo({
+      center: MAP_CENTER,
+      zoom: MAP_ZOOM,
+      pitch: 0,
+      bearing: 0,
+      duration: 900
+    });
+  }
+
+
+  function locateHexoraUser() {
+
+    if (!hexoraMap) return;
+
+    if (!navigator.geolocation) {
+      alert("Location is not supported by this browser.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      position => {
+
+        const lng =
+          position.coords.longitude;
+
+        const lat =
+          position.coords.latitude;
+
+        hexoraMap.flyTo({
+          center: [lng, lat],
+          zoom: 14,
+          pitch: 35,
+          duration: 1200
+        });
+
+        new maplibregl.Marker({
+          color: "#00dfff"
+        })
+          .setLngLat([lng, lat])
+          .addTo(hexoraMap);
+      },
+
+      error => {
+        console.error(
+          "[HEXORA LOCATION]",
+          error
+        );
+
+        alert(
+          "Could not access your location."
+        );
+      },
+
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 30000
+      }
+    );
+  }
+
+
+  async function searchHexoraMapPlace(query) {
+
+    query =
+      cleanQuery(query);
+
+    if (!query || !hexoraMap) {
+      return;
+    }
+
+    try {
+
+      const response =
+        await fetch(
+          "https://nominatim.openstreetmap.org/search" +
+          "?format=jsonv2&limit=1&q=" +
+          encodeURIComponent(query),
+          {
+            headers: {
+              Accept:
+                "application/json"
+            }
+          }
+        );
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      const data =
+        await response.json();
+
+      if (!Array.isArray(data) || !data.length) {
+
+        const info =
+          document.getElementById("mapInfo");
+
+        if (info) {
+          info.textContent =
+            `No place found for "${query}"`;
+          info.style.display = "block";
+        }
+
+        return;
+      }
+
+      const place = data[0];
+
+      const lng =
+        Number(place.lon);
+
+      const lat =
+        Number(place.lat);
+
+      hexoraMap.flyTo({
+        center: [lng, lat],
+        zoom: 13,
+        pitch: 35,
+        duration: 1200
+      });
+
+      new maplibregl.Marker({
+        color: "#00dfff"
+      })
+        .setLngLat([lng, lat])
+        .addTo(hexoraMap);
+
+      const info =
+        document.getElementById("mapInfo");
+
+      if (info) {
+        info.textContent =
+          place.display_name || query;
+
+        info.style.display = "block";
+      }
+
+    } catch (error) {
+
+      console.error(
+        "[HEXORA MAP SEARCH]",
+        error
+      );
+    }
+  }
+
+
+  function setupHexoraMapControls() {
+
+    const openMapBtn =
+      document.getElementById(
+        "openMapBtn"
+      );
+
+    if (openMapBtn) {
+
+      openMapBtn.addEventListener(
+        "click",
+        event => {
+
+          event.preventDefault();
+
+          showMap();
+
+          setTimeout(() => {
+            initializeHexoraMap();
+          }, 100);
+        }
+      );
+    }
+
+
+    const earthBtn =
+      document.getElementById(
+        "earthMapBtn"
+      );
+
+    if (earthBtn) {
+      earthBtn.addEventListener(
+        "click",
+        () => {
+          setHexoraMapView("earth");
+        }
+      );
+    }
+
+
+    const satelliteBtn =
+      document.getElementById(
+        "satelliteMapBtn"
+      );
+
+    if (satelliteBtn) {
+      satelliteBtn.addEventListener(
+        "click",
+        () => {
+          showMap();
+
+          setTimeout(() => {
+            initializeHexoraMap();
+            setHexoraMapView(
+              "satellite"
+            );
+          }, 100);
+        }
+      );
+    }
+
+
+    const streetBtn =
+      document.getElementById(
+        "streetMapBtn"
+      );
+
+    if (streetBtn) {
+      streetBtn.addEventListener(
+        "click",
+        () => {
+          setHexoraMapView("earth");
+        }
+      );
+    }
+
+
+    const terrainBtn =
+      document.getElementById(
+        "3dMapBtn"
+      );
+
+    if (terrainBtn) {
+      terrainBtn.addEventListener(
+        "click",
+        () => {
+          setHexora3D(false);
+        }
+      );
+    }
+
+
+    const high3dBtn =
+      document.getElementById(
+        "high3dMapBtn"
+      );
+
+    if (high3dBtn) {
+      high3dBtn.addEventListener(
+        "click",
+        () => {
+          setHexora3D(true);
+        }
+      );
+    }
+
+
+    const locateBtn =
+      document.getElementById(
+        "locateBtn"
+      );
+
+    if (locateBtn) {
+      locateBtn.addEventListener(
+        "click",
+        () => {
+          locateHexoraUser();
+        }
+      );
+    }
+
+
+    const resetBtn =
+      document.getElementById(
+        "resetMapBtn"
+      );
+
+    if (resetBtn) {
+      resetBtn.addEventListener(
+        "click",
+        () => {
+          resetHexoraMap();
+        }
+      );
+    }
+
+
+    const fullscreenBtn =
+      document.getElementById(
+        "fullscreenMapBtn"
+      );
+
+    if (fullscreenBtn) {
+
+      fullscreenBtn.addEventListener(
+        "click",
+        async () => {
+
+          const mapElement =
+            document.getElementById(
+              "mapView"
+            );
+
+          if (!document.fullscreenElement) {
+
+            if (
+              mapElement &&
+              mapElement.requestFullscreen
+            ) {
+              await mapElement.requestFullscreen();
+            }
+
+          } else {
+
+            await document.exitFullscreen();
+          }
+
+          setTimeout(() => {
+
+            if (hexoraMap) {
+              hexoraMap.resize();
+            }
+
+          }, 300);
+        }
+      );
+    }
+
+
+    const mapSearchForm =
+      document.querySelector(
+        ".map-search"
+      );
+
+    if (mapSearchForm) {
+
+      mapSearchForm.addEventListener(
+        "submit",
+        event => {
+
+          event.preventDefault();
+
+          const input =
+            document.getElementById(
+              "mapSearchInput"
+            );
+
+          const query =
+            input
+              ? input.value
+              : "";
+
+          searchHexoraMapPlace(
+            query
+          );
+        }
+      );
+    }
+  }
   /* ==================================================
      INITIALIZE
   ================================================== */
