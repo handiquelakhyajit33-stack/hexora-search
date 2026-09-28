@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -48,8 +47,7 @@ body{
   -webkit-text-size-adjust:100%;
 }
 
-button,
-input{
+button,input{
   font:inherit;
 }
 
@@ -322,7 +320,6 @@ img{
   inset:0;
   opacity:.6;
   pointer-events:none;
-
   background-image:
     radial-gradient(circle at 7% 22%,#fff 0 1px,transparent 1.5px),
     radial-gradient(circle at 18% 13%,#7eeaff 0 1px,transparent 1.5px),
@@ -342,7 +339,6 @@ img{
   width:min(940px,92vw);
   height:460px;
   border-radius:50%;
-
   background:
     radial-gradient(
       ellipse at 48% 46%,
@@ -355,12 +351,10 @@ img{
       rgba(0,220,255,.18),
       transparent 62%
     );
-
   box-shadow:
     0 -35px 90px rgba(0,188,255,.18),
     inset 0 25px 45px rgba(0,221,255,.10),
     inset 0 -55px 90px rgba(0,0,0,.85);
-
   opacity:.98;
 }
 
@@ -369,7 +363,6 @@ img{
   position:absolute;
   inset:3% 2%;
   border-radius:50%;
-
   background:
     radial-gradient(
       ellipse at 40% 37%,
@@ -396,7 +389,6 @@ img{
       rgba(17,106,69,.22),
       transparent 14%
     );
-
   filter:blur(5px);
 }
 
@@ -408,5 +400,1807 @@ img{
   border:2px solid rgba(0,229,255,.55);
   box-shadow:
     0 0 35px rgba(0,217,255,.30),
-    0 0 100px rgba
-```
+    0 0 100px rgba(0,143,255,.18);
+}
+
+.hero-content{
+  position:relative;
+  z-index:3;
+  width:min(1000px,100%);
+}
+
+.kicker{
+  display:inline-flex;
+  gap:8px;
+  align-items:center;
+  justify-content:center;
+  padding:7px 12px;
+  border-radius:999px;
+  border:1px solid rgba(0,221,255,.16);
+  background:rgba(0,18,30,.58);
+  color:#8fefff;
+  font-size:11px;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+}
+
+.hero-title{
+  margin:24px 0 0;
+  font-size:clamp(58px,9vw,112px);
+  line-height:.88;
+  font-weight:1000;
+  letter-spacing:-.07em;
+  background:
+    linear-gradient(
+      115deg,
+      #fff 20%,
+      #d9faff 44%,
+      #00dfff 67%,
+      #8afaff
+    );
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+  filter:drop-shadow(0 0 26px rgba(0,218,255,.15));
+}
+
+.hero-tag{
+  margin:12px 0 28px;
+  font-size:14px;
+  letter-spacing:.25em;
+  font-weight:700;
+  color:#dcebf5;
+}
+
+.search-box{
+  width:min(760px,100%);
+  margin:auto;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:6px;
+  border:1px solid rgba(0,220,255,.43);
+  border-radius:18px;
+  background:rgba(2,12,20,.82);
+  box-shadow:
+    0 12px 45px rgba(0,0,0,.42),
+    0 0 30px rgba(0,210,255,.08);
+}
+
+.search-icon{
+  width:45px;
+  color:#9ab0c3;
+  font-size:24px;
+  flex:none;
+}
+
+#searchInput{
+  flex:1;
+  min-width:0;
+  height:48px;
+  border:0;
+  background:transparent;
+  color:#fff;
+  font-size:15px;
+}
+
+#searchInput::placeholder{
+  color:#71879b;
+}
+
+.search-btn{
+  height:48px;
+  border:0;
+  border-radius:13px;
+  padding:0 23px;
+  color:#00131a;
+  background:linear-gradient(135deg,#00dfff,#50f5ff);
+  font-weight:900;
+  box-shadow:0 0 22px rgba(0,224,255,.18);
+  flex:none;
+}
+
+.search-modes{
+  display:flex;
+  justify-content:center;
+  gap:26px;
+  margin-top:16px;
+  flex-wrap:wrap;
+}
+
+.mode{
+  border:0;
+  background:transparent;
+  color:#8fa5b8;
+  padding:4px 0;
+  font-size:12px;
+  white-space:nowrap;
+}
+
+.mode:hover,
+.mode.active{
+  color:#00eaff;
+}
+
+/* ================= QUICK CARDS ================= */
+
+.content{
+  width:min(var(--max),calc(100% - 42px));
+  margin:auto;
+  padding:0 0 65px;
+}
+
+.quick-grid{
+  display:grid;
+  grid-template-columns:repeat(6,1fr);
+  gap:12px;
+  margin-top:-4px;
+  position:relative;
+  z-index:5;
+}
+
+.quick-card{
+  min-height:82px;
+  border:1px solid rgba(45,173,255,.13);
+  border-radius:16px;
+  background:
+    linear-gradient(
+      145deg,
+      rgba(8,31,50,.82),
+      rgba(4,15,26,.82)
+    );
+  padding:15px;
+  transition:.2s ease;
+  color:#fff;
+  text-align:left;
+}
+
+.quick-card:hover{
+  transform:translateY(-3px);
+  border-color:rgba(0,224,255,.35);
+  box-shadow:0 15px 35px rgba(0,0,0,.25);
+}
+
+.quick-icon{
+  font-size:20px;
+  color:#00eaff;
+}
+
+.quick-card b{
+  display:block;
+  margin-top:7px;
+  font-size:13px;
+}
+
+.quick-card span{
+  display:block;
+  color:#71879b;
+  font-size:10px;
+  margin-top:3px;
+}
+
+/* ================= PANELS ================= */
+
+.panels{
+  display:grid;
+  grid-template-columns:1.12fr .95fr 1fr;
+  gap:14px;
+  margin-top:32px;
+}
+
+.panel{
+  min-width:0;
+  border:1px solid rgba(71,203,255,.13);
+  border-radius:17px;
+  background:
+    linear-gradient(
+      145deg,
+      rgba(6,22,37,.86),
+      rgba(3,13,23,.82)
+    );
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+
+.panel-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  padding:17px 17px 13px;
+  border-bottom:1px solid rgba(255,255,255,.05);
+}
+
+.panel-title{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  font-size:15px;
+  font-weight:800;
+  min-width:0;
+}
+
+.panel-title i{
+  color:#00eaff;
+  font-style:normal;
+  flex:none;
+}
+
+.panel-link{
+  border:0;
+  background:transparent;
+  color:#00dfff;
+  font-size:11px;
+  white-space:nowrap;
+}
+
+.panel-body{
+  padding:5px 17px 14px;
+}
+
+.data-empty{
+  padding:27px 5px;
+  color:#71879b;
+  font-size:12px;
+  line-height:1.6;
+}
+
+/* ================= MAP ================= */
+
+.map-section{
+  margin-top:32px;
+}
+
+.map-card{
+  height:360px;
+  border-radius:20px;
+  overflow:hidden;
+  border:1px solid rgba(0,220,255,.18);
+  position:relative;
+  background:#030a11;
+  box-shadow:var(--shadow);
+}
+
+#mapPreview{
+  position:absolute;
+  inset:0;
+}
+
+.map-cover{
+  position:absolute;
+  inset:0;
+  z-index:4;
+  pointer-events:none;
+  display:flex;
+  align-items:flex-end;
+  padding:22px;
+  background:
+    linear-gradient(
+      180deg,
+      transparent 48%,
+      rgba(2,8,13,.93) 100%
+    );
+}
+
+.map-cover-content{
+  max-width:600px;
+}
+
+.map-cover h2{
+  margin:0 0 6px;
+  font-size:22px;
+}
+
+.map-cover p{
+  margin:0;
+  color:#8da3b8;
+  font-size:12px;
+  line-height:1.5;
+}
+
+.map-actions{
+  display:flex;
+  gap:8px;
+  margin-top:13px;
+  pointer-events:auto;
+  flex-wrap:wrap;
+}
+
+.primary,
+.secondary{
+  border-radius:11px;
+  padding:10px 14px;
+  font-size:12px;
+  font-weight:800;
+}
+
+.primary{
+  border:0;
+  color:#00131a;
+  background:#00dfff;
+}
+
+.secondary{
+  border:1px solid rgba(255,255,255,.12);
+  color:#fff;
+  background:rgba(3,12,20,.72);
+}
+
+/* ================= SEARCH VIEW ================= */
+
+#searchView{
+  display:none;
+  width:min(1050px,calc(100% - 42px));
+  margin:auto;
+  padding:35px 0 70px;
+}
+
+#searchView.active{
+  display:block;
+}
+
+.results-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:20px;
+}
+
+#resultMeta{
+  font-size:12px;
+  color:#8195a8;
+}
+
+#results{
+  display:grid;
+  gap:12px;
+  min-width:0;
+}
+
+.search-result{
+  border:1px solid rgba(71,203,255,.12);
+  border-radius:15px;
+  background:rgba(5,20,33,.78);
+  padding:18px;
+  min-width:0;
+  overflow:hidden;
+}
+
+.result-source{
+  font-size:10px;
+  color:#45eaff;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.result-title{
+  margin:6px 0;
+  font-size:19px;
+  overflow-wrap:anywhere;
+}
+
+.result-title a:hover{
+  color:#00eaff;
+}
+
+.result-url{
+  font-size:11px;
+  color:#4ecbd7;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.result-description{
+  margin:10px 0 0;
+  color:#91a6b8;
+  font-size:13px;
+  line-height:1.6;
+  overflow-wrap:anywhere;
+}
+
+.result-date{
+  margin-top:8px;
+  color:#60778a;
+  font-size:10px;
+}
+
+.state{
+  padding:35px;
+  border:1px dashed rgba(71,203,255,.15);
+  border-radius:16px;
+  color:#7d91a4;
+  background:rgba(5,18,30,.55);
+  font-size:13px;
+  line-height:1.6;
+}
+
+/* ================= FULL MAP ================= */
+
+#mapView{
+  display:none;
+  position:fixed;
+  inset:72px 0 0 252px;
+  z-index:800;
+  background:#02070b;
+}
+
+#mapView.active{
+  display:block;
+}
+
+#hexoraMap{
+  position:absolute;
+  inset:0;
+}
+
+.map-ui{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+}
+
+.map-search{
+  position:absolute;
+  top:18px;
+  left:18px;
+  width:min(520px,calc(100% - 36px));
+  display:flex;
+  gap:6px;
+  padding:7px;
+  border:1px solid rgba(0,221,255,.22);
+  border-radius:14px;
+  background:rgba(2,12,20,.83);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+  pointer-events:auto;
+}
+
+#mapSearchInput{
+  flex:1;
+  min-width:0;
+  border:0;
+  background:transparent;
+  color:#fff;
+  height:40px;
+  padding:0 8px;
+}
+
+#mapSearchInput::placeholder{
+  color:#71879b;
+}
+
+#mapSearchBtn{
+  border:0;
+  border-radius:10px;
+  padding:0 14px;
+  background:#00dfff;
+  color:#00131a;
+  font-weight:850;
+  flex:none;
+}
+
+.map-tools{
+  position:absolute;
+  top:82px;
+  left:18px;
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  pointer-events:auto;
+  max-width:calc(100% - 36px);
+}
+
+.map-tool{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(3,13,21,.78);
+  color:#d7e6f1;
+  padding:9px 11px;
+  font-size:11px;
+  white-space:nowrap;
+}
+
+.map-tool:hover{
+  border-color:#00dfff;
+  color:#00eaff;
+}
+
+.map-label{
+  position:absolute;
+  right:18px;
+  top:18px;
+  padding:9px 11px;
+  border:1px solid rgba(0,221,255,.18);
+  background:rgba(2,12,20,.72);
+  border-radius:10px;
+  color:#8ff7ff;
+  font-size:10px;
+  letter-spacing:.12em;
+}
+
+#mapInfo{
+  display:none;
+  position:absolute;
+  left:18px;
+  bottom:18px;
+  max-width:650px;
+  padding:10px 13px;
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;
+  background:rgba(2,9,15,.82);
+  color:#c4d5e2;
+  font-size:11px;
+  pointer-events:none;
+}
+
+/* ================= FOOTER ================= */
+
+footer{
+  padding:28px;
+  text-align:center;
+  color:#53687a;
+  font-size:10px;
+}
+
+/* ================= MOBILE HEADER ================= */
+
+.mobile-top{
+  display:none;
+}
+
+/* ================= TABLET ================= */
+
+@media(max-width:1050px){
+
+  .sidebar{
+    width:215px;
+  }
+
+  .main{
+    margin-left:215px;
+    width:calc(100% - 215px);
+  }
+
+  #mapView{
+    left:215px;
+  }
+
+  .quick-grid{
+    grid-template-columns:repeat(3,1fr);
+  }
+
+  .panels{
+    grid-template-columns:1fr;
+  }
+
+  .content{
+    width:calc(100% - 30px);
+  }
+}
+
+/* ================= MOBILE ================= */
+
+@media(max-width:760px){
+
+  html,
+  body{
+    width:100%;
+    min-width:0;
+  }
+
+  body{
+    overflow-x:hidden;
+  }
+
+  .app{
+    width:100%;
+    min-height:100vh;
+    min-height:100dvh;
+  }
+
+  .sidebar{
+    display:none;
+  }
+
+  .main{
+    margin-left:0;
+    width:100%;
+    min-height:100vh;
+    min-height:100dvh;
+  }
+
+  .mobile-top{
+    display:flex;
+    width:100%;
+    height:62px;
+    position:sticky;
+    top:0;
+    z-index:1000;
+    align-items:center;
+    justify-content:space-between;
+    padding:
+      0
+      max(14px,env(safe-area-inset-right))
+      0
+      max(14px,env(safe-area-inset-left));
+    border-bottom:1px solid rgba(255,255,255,.06);
+    background:rgba(2,8,14,.88);
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+  }
+
+  .mobile-brand{
+    font-size:18px;
+    font-weight:950;
+    letter-spacing:.04em;
+  }
+
+  .mobile-top .icon-btn{
+    min-width:42px;
+    min-height:40px;
+    padding:8px 11px;
+  }
+
+  .topbar{
+    display:none;
+  }
+
+  .hero{
+    width:100%;
+    min-height:calc(100svh - 62px);
+    min-height:calc(100dvh - 62px);
+    padding:
+      48px
+      max(14px,env(safe-area-inset-right))
+      38px
+      max(14px,env(safe-area-inset-left));
+  }
+
+  .hero-content{
+    width:100%;
+  }
+
+  .kicker{
+    max-width:100%;
+    font-size:9px;
+    line-height:1.4;
+    padding:7px 10px;
+  }
+
+  .earth-glow{
+    width:780px;
+    max-width:none;
+    height:390px;
+  }
+
+  .hero-title{
+    font-size:clamp(48px,17vw,70px);
+    letter-spacing:-.075em;
+  }
+
+  .hero-tag{
+    font-size:10px;
+    letter-spacing:.17em;
+    margin-bottom:25px;
+  }
+
+  .search-box{
+    width:100%;
+    max-width:100%;
+    padding:5px;
+    border-radius:16px;
+  }
+
+  .search-icon{
+    width:34px;
+    font-size:21px;
+  }
+
+  #searchInput{
+    width:100%;
+    height:47px;
+    font-size:14px;
+  }
+
+  #searchInput::placeholder{
+    font-size:12px;
+  }
+
+  .search-btn{
+    height:47px;
+    padding:0 14px;
+    border-radius:12px;
+    font-size:13px;
+  }
+
+  .search-modes{
+    width:100%;
+    gap:0;
+    justify-content:space-between;
+    margin-top:15px;
+    padding:0 4px;
+  }
+
+  .mode{
+    font-size:11px;
+    padding:6px 3px;
+  }
+
+  .content{
+    width:calc(100% - 24px);
+    max-width:none;
+    padding-bottom:40px;
+  }
+
+  .quick-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:8px;
+    width:100%;
+  }
+
+  .quick-card{
+    min-height:78px;
+    padding:12px;
+    border-radius:14px;
+  }
+
+  .quick-icon{
+    font-size:18px;
+  }
+
+  .quick-card b{
+    font-size:12px;
+  }
+
+  .quick-card span{
+    font-size:9px;
+  }
+
+  .panels{
+    grid-template-columns:1fr;
+    gap:10px;
+    margin-top:22px;
+  }
+
+  .panel{
+    border-radius:15px;
+  }
+
+  .panel-head{
+    padding:14px;
+  }
+
+  .panel-body{
+    padding:4px 14px 12px;
+  }
+
+  .map-section{
+    margin-top:24px;
+  }
+
+  .map-card{
+    height:330px;
+    border-radius:16px;
+  }
+
+  .map-cover{
+    padding:16px;
+  }
+
+  .map-cover h2{
+    font-size:20px;
+  }
+
+  .map-cover p{
+    font-size:11px;
+  }
+
+  .map-actions{
+    gap:6px;
+  }
+
+  .primary,
+  .secondary{
+    padding:9px 11px;
+    font-size:11px;
+  }
+
+  footer{
+    padding:
+      22px
+      14px
+      calc(22px + env(safe-area-inset-bottom));
+  }
+
+  /* SEARCH RESULTS */
+
+  #searchView{
+    width:100%;
+    max-width:none;
+    padding:
+      20px
+      max(12px,env(safe-area-inset-right))
+      50px
+      max(12px,env(safe-area-inset-left));
+  }
+
+  .results-toolbar{
+    align-items:center;
+    margin-bottom:14px;
+  }
+
+  #resultMeta{
+    font-size:11px;
+    min-width:0;
+  }
+
+  .results-toolbar .secondary{
+    flex:none;
+  }
+
+  .search-result{
+    padding:14px;
+    border-radius:13px;
+  }
+
+  .result-title{
+    font-size:16px;
+  }
+
+  .result-description{
+    font-size:12px;
+    line-height:1.55;
+  }
+
+  /* IMAGE RESULT GRID */
+
+  #results > div[style*="grid-template-columns"]{
+    grid-template-columns:
+      repeat(2,minmax(0,1fr)) !important;
+    gap:8px !important;
+  }
+
+  #results article img{
+    max-width:100%;
+  }
+
+  /* FULL MAP */
+
+  #mapView{
+    inset:62px 0 0 0;
+    width:100%;
+    height:calc(100dvh - 62px);
+  }
+
+  .map-search{
+    top:12px;
+    left:12px;
+    width:calc(100% - 24px);
+    max-width:none;
+  }
+
+  .map-search input{
+    font-size:13px;
+  }
+
+  #mapSearchBtn{
+    padding:0 12px;
+    font-size:12px;
+  }
+
+  .map-tools{
+    top:72px;
+    left:12px;
+    right:12px;
+    max-width:none;
+    gap:5px;
+  }
+
+  .map-tool{
+    padding:8px 9px;
+    font-size:10px;
+  }
+
+  .map-label{
+    top:132px;
+    right:12px;
+    font-size:9px;
+  }
+
+  #mapInfo{
+    left:12px;
+    right:12px;
+    bottom:12px;
+    max-width:none;
+    font-size:10px;
+  }
+}
+
+/* ================= SMALL MOBILE ================= */
+
+@media(max-width:430px){
+
+  .mobile-top{
+    height:58px;
+  }
+
+  .hero{
+    min-height:calc(100svh - 58px);
+    min-height:calc(100dvh - 58px);
+    padding-top:38px;
+  }
+
+  .hero-title{
+    font-size:49px;
+  }
+
+  .hero-tag{
+    font-size:9px;
+    letter-spacing:.13em;
+  }
+
+  .search-box{
+    gap:3px;
+  }
+
+  .search-icon{
+    width:30px;
+    font-size:19px;
+  }
+
+  #searchInput{
+    font-size:13px;
+  }
+
+  #searchInput::placeholder{
+    font-size:10px;
+  }
+
+  .search-btn{
+    padding:0 12px;
+    font-size:12px;
+  }
+
+  .search-modes{
+    gap:0;
+  }
+
+  .mode{
+    font-size:10px;
+  }
+
+  .quick-grid{
+    gap:7px;
+  }
+
+  .quick-card{
+    min-height:72px;
+    padding:10px;
+  }
+
+  .quick-card b{
+    font-size:11px;
+  }
+
+  .quick-card span{
+    font-size:8px;
+  }
+
+  .map-card{
+    height:300px;
+  }
+
+  .map-actions{
+    max-width:100%;
+  }
+
+  .primary,
+  .secondary{
+    padding:8px 10px;
+    font-size:10px;
+  }
+
+  #results > div[style*="grid-template-columns"]{
+    grid-template-columns:
+      repeat(2,minmax(0,1fr)) !important;
+  }
+}
+
+/* ================= VERY SMALL DEVICES ================= */
+
+@media(max-width:350px){
+
+  .hero-title{
+    font-size:43px;
+  }
+
+  .hero-tag{
+    letter-spacing:.08em;
+  }
+
+  .search-btn{
+    padding:0 9px;
+  }
+
+  .mode{
+    font-size:9px;
+  }
+
+  .content{
+    width:calc(100% - 18px);
+  }
+
+  .quick-card{
+    padding:9px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="app">
+
+  <!-- MOBILE HEADER -->
+  <header class="mobile-top">
+
+    <div class="mobile-brand">
+      HEXORA
+    </div>
+
+    <button class="icon-btn" data-home>
+      ⌂
+    </button>
+
+  </header>
+
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+
+    <a href="#" class="brand" data-home>
+
+      <span class="brand-logo">
+        H
+      </span>
+
+      <span>
+
+        <span class="brand-name">
+          HEXORA
+        </span>
+
+        <span class="brand-sub">
+          SEARCH BEYOND LIMITS
+        </span>
+
+      </span>
+
+    </a>
+
+
+    <nav class="side-nav">
+
+      <button class="side-btn active" data-home>
+        <span class="ico">⌂</span>
+        Home
+      </button>
+
+      <button class="side-btn" data-mode="web">
+        <span class="ico">⌕</span>
+        Search
+      </button>
+
+      <button class="side-btn" data-mode="ai">
+        <span class="ico">✦</span>
+        AI
+      </button>
+
+      <button class="side-btn" data-mode="images">
+        <span class="ico">▧</span>
+        Images
+      </button>
+
+      <button class="side-btn" data-mode="news">
+        <span class="ico">▤</span>
+        News
+      </button>
+
+      <button class="side-btn" data-mode="videos">
+        <span class="ico">▷</span>
+        Videos
+      </button>
+
+      <button class="side-btn" data-mode="maps">
+        <span class="ico">⌖</span>
+        Maps
+      </button>
+
+      <button class="side-btn" data-mode="engine">
+        <span class="ico">◉</span>
+        Engine
+      </button>
+
+      <button class="side-btn" data-mode="workspace">
+        <span class="ico">▣</span>
+        Workspace
+      </button>
+
+      <button class="side-btn" data-mode="profile">
+        <span class="ico">◎</span>
+        Profile
+      </button>
+
+    </nav>
+
+
+    <div class="ai-card">
+
+      <div class="ai-orb">
+        ✦
+      </div>
+
+      <b>
+        HEXORA AI
+      </b>
+
+      <p>
+        Smarter search. Real information. A brighter future.
+      </p>
+
+      <button class="ai-open" data-mode="ai">
+        Explore AI →
+      </button>
+
+    </div>
+
+  </aside>
+
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <header class="topbar">
+
+      <div class="top-status">
+
+        <span class="dot"></span>
+
+        <span>
+          REAL SEARCH · REAL INFORMATION · REAL WORLD
+        </span>
+
+      </div>
+
+
+      <div class="top-actions">
+
+        <button class="signin" data-mode="profile">
+          ♙ &nbsp;Sign In
+        </button>
+
+        <button class="icon-btn">
+          ⚙
+        </button>
+
+        <button class="icon-btn">
+          ☾
+        </button>
+
+      </div>
+
+    </header>
+
+
+    <!-- HOME -->
+
+    <section id="homeView">
+
+      <div class="hero">
+
+        <div class="stars"></div>
+
+        <div class="earth-glow"></div>
+
+
+        <div class="hero-content">
+
+          <div class="kicker">
+            ✦ Real Results · Real Information · Real World
+          </div>
+
+
+          <h1 class="hero-title">
+            HEXORA
+          </h1>
+
+
+          <div class="hero-tag">
+            SEARCH BEYOND LIMITS
+          </div>
+
+
+          <form
+            id="searchForm"
+            class="search-box"
+            autocomplete="off"
+          >
+
+            <div class="search-icon">
+              ⌕
+            </div>
+
+
+            <input
+              id="searchInput"
+              name="q"
+              type="search"
+              placeholder="Search the web, images, news, videos and more..."
+              autocomplete="off"
+              enterkeyhint="search"
+            >
+
+
+            <button
+              class="search-btn"
+              type="submit"
+            >
+              Search
+            </button>
+
+          </form>
+
+
+          <div class="search-modes">
+
+            <button
+              class="mode active"
+              data-mode="web"
+            >
+              ◉ Web
+            </button>
+
+            <button
+              class="mode"
+              data-mode="images"
+            >
+              ▧ Images
+            </button>
+
+            <button
+              class="mode"
+              data-mode="news"
+            >
+              ▤ News
+            </button>
+
+            <button
+              class="mode"
+              data-mode="videos"
+            >
+              ▷ Videos
+            </button>
+
+            <button
+              class="mode"
+              data-mode="maps"
+            >
+              ⌖ Maps
+            </button>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <div class="content">
+
+
+        <!-- QUICK ACCESS -->
+
+        <div class="quick-grid">
+
+          <button
+            class="quick-card"
+            data-mode="web"
+          >
+
+            <div class="quick-icon">
+              ◉
+            </div>
+
+            <b>
+              Explore
+            </b>
+
+            <span>
+              The Web
+            </span>
+
+          </button>
+
+
+          <button
+            class="quick-card"
+            data-mode="ai"
+          >
+
+            <div class="quick-icon">
+              ✦
+            </div>
+
+            <b>
+              AI Assistant
+            </b>
+
+            <span>
+              Ask Anything
+            </span>
+
+          </button>
+
+
+          <button
+            class="quick-card"
+            data-mode="maps"
+          >
+
+            <div class="quick-icon">
+              ⌖
+            </div>
+
+            <b>
+              Maps
+            </b>
+
+            <span>
+              Real Places
+            </span>
+
+          </button>
+
+
+          <button
+            class="quick-card"
+            data-mode="images"
+          >
+
+            <div class="quick-icon">
+              ▧
+            </div>
+
+            <b>
+              Images
+            </b>
+
+            <span>
+              Visual Discovery
+            </span>
+
+          </button>
+
+
+          <button
+            class="quick-card"
+            data-mode="videos"
+          >
+
+            <div class="quick-icon">
+              ▷
+            </div>
+
+            <b>
+              Videos
+            </b>
+
+            <span>
+              Watch Now
+            </span>
+
+          </button>
+
+
+          <button
+            class="quick-card"
+            data-mode="news"
+          >
+
+            <div class="quick-icon">
+              ▤
+            </div>
+
+            <b>
+              News
+            </b>
+
+            <span>
+              Latest Updates
+            </span>
+
+          </button>
+
+        </div>
+
+
+        <!-- DATA PANELS -->
+
+        <div class="panels">
+
+
+          <!-- NEWS -->
+
+          <article class="panel">
+
+            <div class="panel-head">
+
+              <div class="panel-title">
+                <i>▤</i>
+                Latest News
+              </div>
+
+              <button
+                class="panel-link"
+                data-mode="news"
+              >
+                View All →
+              </button>
+
+            </div>
+
+
+            <div
+              id="newsList"
+              class="panel-body"
+            >
+
+              <div class="data-empty">
+
+                Real news from the HEXORA news
+                service will appear here.
+                No sample or fabricated stories
+                are displayed.
+
+              </div>
+
+            </div>
+
+          </article>
+
+
+          <!-- TRENDING -->
+
+          <article class="panel">
+
+            <div class="panel-head">
+
+              <div class="panel-title">
+                <i>♨</i>
+                Trending Searches
+              </div>
+
+              <button
+                class="panel-link"
+                data-mode="web"
+              >
+                Search →
+              </button>
+
+            </div>
+
+
+            <div class="panel-body">
+
+              <div class="data-empty">
+
+                Trending data will appear when
+                a real HEXORA trending-data
+                source is connected.
+
+              </div>
+
+            </div>
+
+          </article>
+
+
+          <!-- IMAGES -->
+
+          <article class="panel">
+
+            <div class="panel-head">
+
+              <div class="panel-title">
+                <i>▧</i>
+                Images
+              </div>
+
+              <button
+                class="panel-link"
+                data-mode="images"
+              >
+                View All →
+              </button>
+
+            </div>
+
+
+            <div class="panel-body">
+
+              <div class="data-empty">
+
+                Real indexed image results will
+                appear after HEXORA's image
+                index returns matching data.
+
+              </div>
+
+            </div>
+
+          </article>
+
+        </div>
+
+
+        <!-- HEXORA MAP -->
+
+        <div class="map-section">
+
+          <div
+            class="panel-head"
+            style="padding-left:0;padding-right:0;border:0"
+          >
+
+            <div>
+
+              <div class="panel-title">
+
+                <i>🌍</i>
+
+                Explore the world with
+                HEXORA Maps
+
+              </div>
+
+
+              <div
+                style="
+                color:#71879b;
+                font-size:11px;
+                margin-top:5px
+                "
+              >
+
+                3D Earth · Satellite · Real Terrain · Live Location
+
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <div class="map-card">
+
+            <div id="mapPreview"></div>
+
+
+            <div class="map-cover">
+
+              <div class="map-cover-content">
+
+                <h2>
+                  HEXORA Earth
+                </h2>
+
+                <p>
+
+                  Interactive real-world map
+                  experience. Open the full map
+                  to search places, use your
+                  location and switch map views.
+
+                </p>
+
+
+                <div class="map-actions">
+
+                  <button
+                    class="primary"
+                    id="openMapBtn"
+                  >
+                    Open Maps →
+                  </button>
+
+
+                  <button
+                    class="secondary"
+                    id="satelliteMapBtn"
+                  >
+                    Satellite
+                  </button>
+
+
+                  <button
+                    class="secondary"
+                    id="3dMapBtn"
+                  >
+                    3D
+                  </button>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <footer>
+        HEXORA © 2026 · Search Beyond Limits
+      </footer>
+
+    </section>
+
+
+    <!-- SEARCH RESULTS -->
+
+    <section id="searchView">
+
+      <div class="results-toolbar">
+
+        <div id="resultMeta">
+          HEXORA Search
+        </div>
+
+        <button
+          class="secondary"
+          data-home
+        >
+          ← Home
+        </button>
+
+      </div>
+
+
+      <div id="results"></div>
+
+    </section>
+
+
+    <!-- FULL MAP -->
+
+    <section id="mapView">
+
+      <div id="hexoraMap"></div>
+
+
+      <div class="map-ui">
+
+
+        <form
+          class="map-search"
+          autocomplete="off"
+        >
+
+          <input
+            id="mapSearchInput"
+            type="search"
+            placeholder="Search a real place..."
+            autocomplete="off"
+          >
+
+          <button
+            id="mapSearchBtn"
+            type="submit"
+          >
+            Search
+          </button>
+
+        </form>
+
+
+        <div class="map-tools">
+
+          <button
+            class="map-tool"
+            id="earthMapBtn"
+          >
+            🌍 Earth
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="satelliteMapBtn"
+          >
+            🛰 Satellite
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="streetMapBtn"
+          >
+            🗺 Street
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="3dMapBtn"
+          >
+            🏔 3D Terrain
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="high3dMapBtn"
+          >
+            ⛰ High 3D
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="locateBtn"
+          >
+            📍 My Location
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="resetMapBtn"
+          >
+            ↺ Reset
+          </button>
+
+
+          <button
+            class="map-tool"
+            id="fullscreenMapBtn"
+          >
+            ⛶ Fullscreen
+          </button>
+
+
+          <button
+            class="map-tool"
+            data-home
+          >
+            ✕ Close
+          </button>
+
+        </div>
+
+
+        <div class="map-label">
+          HEXORA EARTH
+        </div>
+
+
+        <div id="mapInfo"></div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+</div>
+
+<script src="/main.js?v=20260928-4" defer></script>
+
+</body>
+</html>
