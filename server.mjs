@@ -622,10 +622,6 @@ async function searchWeb(
 
   let rows = [];
 
-  /* =====================================================
-     STEP 1: POSTGRES FULL TEXT SEARCH
-  ===================================================== */
-
   try {
     const {
       data,
@@ -677,10 +673,6 @@ async function searchWeb(
       error
     );
   }
-
-  /* =====================================================
-     STEP 2: SAFE FALLBACK
-  ===================================================== */
 
   if (!rows.length) {
     try {
@@ -784,10 +776,6 @@ async function searchWeb(
     }
   }
 
-  /* =====================================================
-     STEP 3: DEDUPLICATE
-  ===================================================== */
-
   const seen =
     new Set();
 
@@ -816,10 +804,6 @@ async function searchWeb(
       return true;
     });
 
-  /* =====================================================
-     STEP 4: SHORT QUERY PROTECTION
-  ===================================================== */
-
   if (
     isShortQuery(query)
   ) {
@@ -831,10 +815,6 @@ async function searchWeb(
         )
       );
   }
-
-  /* =====================================================
-     STEP 5: RANKING
-  ===================================================== */
 
   const ranked =
     rows
@@ -884,41 +864,31 @@ async function searchWeb(
       )
       .map(row => ({
         id: row.id,
-
         url: row.url,
-
         title:
           row.title ||
           "Untitled",
-
         description:
           row.description ||
           "",
-
         author:
           row.author ||
           null,
-
         image_url:
           row.image_url ||
           null,
-
         published_at:
           row.published_at ||
           null,
-
         last_crawled_at:
           row.last_crawled_at ||
           null,
-
         score:
           Math.round(
             row.score * 100
           ) / 100,
-
         matched_words:
           row.matchedWords,
-
         coverage:
           row.coverage
       }));
@@ -940,6 +910,7 @@ async function searchWeb(
 
 /* =======================================================
    IMAGE SEARCH
+   FIXED VERSION
 ======================================================= */
 
 function calculateImageScore(
@@ -949,16 +920,23 @@ function calculateImageScore(
   const words =
     uniqueTokens(query);
 
-  const text =
-    normalizeText(
-      `${item.title || ""} ${
-        item.alt_text || ""
-      } ${
-        item.source_domain || ""
-      } ${
-        item.page_url || ""
-      }`
-    );
+  const title =
+    item.title || "";
+
+  const alt =
+    item.alt_text || "";
+
+  const domain =
+    item.source_domain || "";
+
+  const pageUrl =
+    item.page_url || "";
+
+  const imageUrl =
+    item.image_url || "";
+
+  const combined =
+    `${title} ${alt} ${domain} ${pageUrl} ${imageUrl}`;
 
   let score = 0;
   let matched = 0;
@@ -966,45 +944,137 @@ function calculateImageScore(
   for (
     const word of words
   ) {
-    if (
-      hasWholeWord(
-        text,
+    let wordMatched = false;
+
+    const titleCount =
+      countWholeWordOccurrences(
+        title,
         word
-      )
-    ) {
+      );
+
+    const altCount =
+      countWholeWordOccurrences(
+        alt,
+        word
+      );
+
+    const domainCount =
+      countWholeWordOccurrences(
+        domain,
+        word
+      );
+
+    const pageCount =
+      countWholeWordOccurrences(
+        pageUrl,
+        word
+      );
+
+    const imageCount =
+      countWholeWordOccurrences(
+        imageUrl,
+        word
+      );
+
+    if (titleCount > 0) {
+      score += 120;
+      score +=
+        Math.min(
+          titleCount,
+          5
+        ) * 10;
+      wordMatched = true;
+    }
+
+    if (altCount > 0) {
+      score += 100;
+      score +=
+        Math.min(
+          altCount,
+          5
+        ) * 8;
+      wordMatched = true;
+    }
+
+    if (domainCount > 0) {
+      score += 30;
+      wordMatched = true;
+    }
+
+    if (pageCount > 0) {
+      score += 25;
+      wordMatched = true;
+    }
+
+    if (imageCount > 0) {
+      score += 15;
+      wordMatched = true;
+    }
+
+    if (wordMatched) {
       matched++;
-      score += 50;
     }
   }
 
+  const normalizedQuery =
+    normalizeText(query);
+
   if (
-    query &&
     hasExactPhrase(
-      item.title,
-      query
+      title,
+      normalizedQuery
     )
   ) {
-    score += 100;
+    score += 250;
   }
 
   if (
-    query &&
     hasExactPhrase(
-      item.alt_text,
-      query
+      alt,
+      normalizedQuery
     )
   ) {
-    score += 70;
+    score += 220;
+  }
+
+  if (
+    hasExactPhrase(
+      pageUrl,
+      normalizedQuery
+    )
+  ) {
+    score += 60;
+  }
+
+  if (
+    normalizeText(title) ===
+    normalizedQuery
+  ) {
+    score += 350;
+  }
+
+  if (
+    normalizeText(alt) ===
+    normalizedQuery
+  ) {
+    score += 300;
   }
 
   const coverage =
-    words.length
-      ? matched /
-        words.length
+    words.length > 0
+      ? matched / words.length
       : 0;
 
   score +=
-    coverage * 100;
+    coverage * 150;
+
+  if (
+    normalizeText(combined).includes(
+      normalizedQuery
+    )
+  ) {
+    score += 80;
+  }
 
   return {
     score,
@@ -1021,29 +1091,175 @@ async function searchImages(
   query =
     cleanQuery(query);
 
-  let rows = [];
+  if (!query) {
+    return {
+      ok: true,
+      mode: "images",
+      query,
+      total: 0,
+      page: pageNumber,
+      limit,
+      results: []
+    };
+  }
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("images")
-      .select(`
-        id,
-        page_url,
-        image_url,
-        alt_text,
-        title,
-        source_domain,
-        created_at,
-        updated_at
-      `)
-      .limit(1000);
+  console.log(
+    `[HEXORA IMAGE SEARCH] query="${query}" page=${pageNumber} limit=${limit}`
+  );
 
-  if (error) {
+  /*
+   * IMPORTANT:
+   * Previous version downloaded the first 1000
+   * images and THEN searched them.
+   *
+   * That was the bug.
+   *
+   * With 436K+ image records, Python records may
+   * be outside that first 1000 rows.
+   *
+   * Now Supabase searches the database first.
+   */
+
+  const words =
+    uniqueTokens(query)
+      .filter(
+        word =>
+          word.length >= 1
+      )
+      .slice(0, 12);
+
+  if (!words.length) {
+    return {
+      ok: true,
+      mode: "images",
+      query,
+      total: 0,
+      page: pageNumber,
+      limit,
+      results: []
+    };
+  }
+
+  /*
+   * Build database-level OR search.
+   *
+   * Search:
+   * - title
+   * - alt_text
+   * - page_url
+   * - image_url
+   * - source_domain
+   */
+
+  const orParts = [];
+
+  for (
+    const word of words
+  ) {
+    const safeWord =
+      String(word)
+        .replace(
+          /[%_(),]/g,
+          " "
+        )
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
+
+    if (!safeWord) {
+      continue;
+    }
+
+    orParts.push(
+      `title.ilike.%${safeWord}%`
+    );
+
+    orParts.push(
+      `alt_text.ilike.%${safeWord}%`
+    );
+
+    orParts.push(
+      `page_url.ilike.%${safeWord}%`
+    );
+
+    orParts.push(
+      `image_url.ilike.%${safeWord}%`
+    );
+
+    orParts.push(
+      `source_domain.ilike.%${safeWord}%`
+    );
+  }
+
+  if (!orParts.length) {
+    return {
+      ok: true,
+      mode: "images",
+      query,
+      total: 0,
+      page: pageNumber,
+      limit,
+      results: []
+    };
+  }
+
+  let data = [];
+  let count = null;
+
+  try {
+    const response =
+      await supabase
+        .from("images")
+        .select(
+          `
+            id,
+            page_url,
+            image_url,
+            alt_text,
+            title,
+            source_domain,
+            created_at,
+            updated_at
+          `,
+          {
+            count: "exact"
+          }
+        )
+        .or(
+          orParts.join(",")
+        )
+        .limit(1000);
+
+    data =
+      response.data || [];
+
+    count =
+      response.count;
+
+    if (response.error) {
+      console.error(
+        "[HEXORA IMAGE SEARCH ERROR]",
+        response.error
+      );
+
+      return {
+        ok: false,
+        mode: "images",
+        query,
+        total: 0,
+        page: pageNumber,
+        limit,
+        results: [],
+        error:
+          response.error.message ||
+          "Image search failed"
+      };
+    }
+  } catch (error) {
     console.error(
-      "Image search error:",
+      "[HEXORA IMAGE SEARCH EXCEPTION]",
       error
     );
 
@@ -1056,46 +1272,17 @@ async function searchImages(
       limit,
       results: [],
       error:
+        error?.message ||
         "Image search failed"
     };
   }
 
-  if (
-    Array.isArray(data)
-  ) {
-    rows = data;
-  }
-
-  const words =
-    uniqueTokens(query);
-
-  if (words.length) {
-    rows =
-      rows.filter(item => {
-        const text =
-          normalizeText(
-            `${item.title || ""} ${
-              item.alt_text || ""
-            } ${
-              item.source_domain ||
-              ""
-            } ${
-              item.page_url || ""
-            }`
-          );
-
-        return words.some(
-          word =>
-            hasWholeWord(
-              text,
-              word
-            )
-        );
-      });
-  }
+  /*
+   * Extra relevance filtering/ranking.
+   */
 
   const ranked =
-    rows
+    data
       .map(item => ({
         ...item,
         ...calculateImageScore(
@@ -1103,24 +1290,125 @@ async function searchImages(
           query
         )
       }))
-      .sort(
-        (a, b) =>
-          b.score -
+      .filter(
+        item =>
+          item.matchedWords > 0 &&
+          item.score > 0
+      )
+      .sort((a, b) => {
+        if (
+          b.score !==
           a.score
-      );
+        ) {
+          return (
+            b.score -
+            a.score
+          );
+        }
+
+        return String(
+          b.created_at || ""
+        ).localeCompare(
+          String(
+            a.created_at || ""
+          )
+        );
+      });
+
+  /*
+   * Remove duplicate image URLs.
+   */
+
+  const seenImages =
+    new Set();
+
+  const unique =
+    ranked.filter(item => {
+      const key =
+        String(
+          item.image_url || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      if (!key) {
+        return false;
+      }
+
+      if (
+        seenImages.has(key)
+      ) {
+        return false;
+      }
+
+      seenImages.add(key);
+
+      return true;
+    });
+
+  /*
+   * Because count comes from the database query,
+   * use the ranked/unique result count when the
+   * returned candidate set is smaller.
+   */
 
   const total =
-    ranked.length;
+    unique.length;
 
   const start =
     (pageNumber - 1) *
     limit;
 
   const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
+    unique
+      .slice(
+        start,
+        start + limit
+      )
+      .map(item => ({
+        id: item.id,
+
+        page_url:
+          item.page_url,
+
+        image_url:
+          item.image_url,
+
+        alt_text:
+          item.alt_text ||
+          "",
+
+        title:
+          item.title ||
+          "",
+
+        source_domain:
+          item.source_domain ||
+          "",
+
+        created_at:
+          item.created_at ||
+          null,
+
+        updated_at:
+          item.updated_at ||
+          null,
+
+        score:
+          Math.round(
+            item.score * 100
+          ) / 100,
+
+        matched_words:
+          item.matchedWords,
+
+        coverage:
+          item.coverage
+      }));
+
+  console.log(
+    `[HEXORA IMAGE RESULT] query="${query}" db_matches=${count ?? 0} ranked=${unique.length} returned=${results.length}`
+  );
 
   return {
     ok: true,
@@ -1954,16 +2242,12 @@ const server =
             200,
             {
               ok: true,
-
               service:
                 "HEXORA",
-
               index:
                 "Supabase",
-
               status:
                 "online",
-
               port: PORT
             }
           );
