@@ -1,42 +1,30 @@
-/* =========================================================
-   HEXORA SEARCH ENGINE
-   main.js
-   Category Search: Web / Images / News / Videos / Maps
-   ========================================================= */
-
 (() => {
   "use strict";
 
-  /* -------------------------------------------------------
-     Prevent duplicate script initialization
-  ------------------------------------------------------- */
+  const API_ENDPOINT = "/api/search";
 
-  if (window.__HEXORA_MAIN_LOADED__) {
-    console.warn("[HEXORA] main.js already loaded.");
-    return;
-  }
+  const SEARCH_MODES = [
+    "web",
+    "images",
+    "news",
+    "videos",
+    "maps"
+  ];
 
-  window.__HEXORA_MAIN_LOADED__ = true;
+  const SPECIAL_MODES = [
+    "ai",
+    "engine",
+    "workspace",
+    "profile"
+  ];
 
-  /* -------------------------------------------------------
-     CONFIG
-  ------------------------------------------------------- */
-
-  const CONFIG = {
-    apiEndpoint: "/api/search",
-
-    modes: [
-      "web",
-      "images",
-      "news",
-      "videos",
-      "maps"
-    ]
+  const MODE_NAMES = {
+    web: "Web",
+    images: "Images",
+    news: "News",
+    videos: "Videos",
+    maps: "Maps"
   };
-
-  /* -------------------------------------------------------
-     STATE
-  ------------------------------------------------------- */
 
   const state = {
     mode: "web",
@@ -44,17 +32,42 @@
     searching: false
   };
 
-  /* -------------------------------------------------------
-     DOM HELPERS
-  ------------------------------------------------------- */
+  const searchForm =
+    document.getElementById("searchForm");
 
-  const $ = (selector, root = document) =>
-    root.querySelector(selector);
+  const searchInput =
+    document.getElementById("searchInput");
 
-  const $$ = (selector, root = document) =>
-    Array.from(root.querySelectorAll(selector));
+  const searchView =
+    document.getElementById("searchView");
 
-  function escapeHtml(value) {
+  const homeView =
+    document.getElementById("homeView");
+
+  const mapView =
+    document.getElementById("mapView");
+
+  const results =
+    document.getElementById("results");
+
+  const resultMeta =
+    document.getElementById("resultMeta");
+
+  /* ==================================================
+     HELPERS
+  ================================================== */
+
+  function cleanQuery(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isSearchMode(mode) {
+    return SEARCH_MODES.includes(mode);
+  }
+
+  function escapeHTML(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -63,1218 +76,978 @@
       .replace(/'/g, "&#039;");
   }
 
-  function safeUrl(value) {
+  function safeURL(value) {
+    const raw =
+      String(value || "").trim();
+
+    if (!raw) return "";
+
     try {
-      const url = new URL(value, window.location.origin);
+      const url =
+        new URL(
+          raw,
+          window.location.origin
+        );
 
       if (
         url.protocol !== "http:" &&
         url.protocol !== "https:"
       ) {
-        return null;
+        return "";
       }
 
       return url.href;
+    } catch {
+      return "";
+    }
+  }
+
+  function getModeFromURL() {
+    try {
+      const params =
+        new URLSearchParams(
+          window.location.search
+        );
+
+      const mode =
+        params.get("mode");
+
+      return isSearchMode(mode)
+        ? mode
+        : null;
     } catch {
       return null;
     }
   }
 
-  function hostname(value) {
+  function getQueryFromURL() {
     try {
-      return new URL(value).hostname;
+      const params =
+        new URLSearchParams(
+          window.location.search
+        );
+
+      return cleanQuery(
+        params.get("q")
+      );
     } catch {
       return "";
     }
   }
 
-  /* -------------------------------------------------------
-     FIND ELEMENTS
-  ------------------------------------------------------- */
+  function updateURL() {
+    try {
+      const params =
+        new URLSearchParams();
 
-  const searchForm = $("#searchForm");
-  const searchInput = $("#searchInput");
-  const resultsEl = $("#results");
-  const resultMeta = $("#resultMeta");
-  const searchView = $("#searchView");
-
-  /* -------------------------------------------------------
-     MODE NAMES
-  ------------------------------------------------------- */
-
-  function modeName(mode) {
-    switch (mode) {
-      case "images":
-        return "images";
-
-      case "news":
-        return "news";
-
-      case "videos":
-        return "videos";
-
-      case "maps":
-        return "maps";
-
-      case "web":
-      default:
-        return "web";
-    }
-  }
-
-  function modeLabel(mode) {
-    switch (mode) {
-      case "images":
-        return "Images";
-
-      case "news":
-        return "News";
-
-      case "videos":
-        return "Videos";
-
-      case "maps":
-        return "Maps";
-
-      case "web":
-      default:
-        return "Web";
-    }
-  }
-
-  /* -------------------------------------------------------
-     BUTTON TYPE FIX
-     Prevent data-mode buttons from submitting forms
-  ------------------------------------------------------- */
-
-  function prepareModeButtons() {
-    $$("[data-mode]").forEach((button) => {
-      if (
-        button.tagName === "BUTTON" &&
-        !button.getAttribute("type")
-      ) {
-        button.setAttribute(
-          "type",
-          "button"
+      if (state.query) {
+        params.set(
+          "q",
+          state.query
         );
       }
-    });
+
+      params.set(
+        "mode",
+        state.mode
+      );
+
+      window.history.replaceState(
+        {},
+        "",
+        `${window.location.pathname}?${params.toString()}`
+      );
+    } catch {
+      // Ignore
+    }
   }
 
-  /* -------------------------------------------------------
-     MODE BUTTON UI
-  ------------------------------------------------------- */
+  /* ==================================================
+     VIEW CONTROL
+  ================================================== */
 
-  function updateModeButtons() {
-    $$("[data-mode]").forEach((button) => {
-      const buttonMode =
-        button.dataset.mode;
-
-      if (
-        CONFIG.modes.includes(buttonMode)
-      ) {
-        button.classList.toggle(
-          "active",
-          buttonMode === state.mode
-        );
-
-        button.setAttribute(
-          "aria-selected",
-          buttonMode === state.mode
-            ? "true"
-            : "false"
-        );
-      }
-    });
-  }
-
-  /* -------------------------------------------------------
-     SEARCH / HOME VIEW
-  ------------------------------------------------------- */
-
-  function showSearchView() {
-    if (searchView) {
-      searchView.classList.add("active");
+  function showHome() {
+    if (homeView) {
+      homeView.style.display = "";
     }
 
-    const homeElements = [
-      "[data-home-view]",
-      "#homeView",
-      ".hero"
-    ];
-
-    homeElements.forEach((selector) => {
-      $$(selector).forEach((element) => {
-        if (
-          element !== searchView &&
-          !element.closest("#searchView")
-        ) {
-          element.classList.add(
-            "hexora-hidden-home"
-          );
-        }
-      });
-    });
-  }
-
-  function showHomeView() {
     if (searchView) {
       searchView.classList.remove("active");
+      searchView.style.display = "none";
     }
 
-    $$(".hexora-hidden-home").forEach(
-      (element) => {
-        element.classList.remove(
-          "hexora-hidden-home"
+    if (mapView) {
+      mapView.classList.remove("active");
+      mapView.style.display = "none";
+    }
+  }
+
+  function showSearch() {
+    if (homeView) {
+      homeView.style.display = "none";
+    }
+
+    if (searchView) {
+      searchView.classList.add("active");
+      searchView.style.display = "block";
+    }
+
+    if (mapView) {
+      mapView.classList.remove("active");
+      mapView.style.display = "none";
+    }
+  }
+
+  function showMap() {
+    if (homeView) {
+      homeView.style.display = "none";
+    }
+
+    if (searchView) {
+      searchView.classList.remove("active");
+      searchView.style.display = "none";
+    }
+
+    if (mapView) {
+      mapView.classList.add("active");
+      mapView.style.display = "block";
+    }
+  }
+
+  /* ==================================================
+     ACTIVE TAB
+  ================================================== */
+
+  function updateActiveTabs() {
+    const buttons =
+      document.querySelectorAll(
+        "[data-mode]"
+      );
+
+    buttons.forEach(button => {
+      const mode =
+        button.getAttribute(
+          "data-mode"
         );
+
+      /*
+       * Only actual search modes can
+       * become active search tabs.
+       */
+      if (!isSearchMode(mode)) {
+        return;
       }
-    );
+
+      button.classList.toggle(
+        "active",
+        mode === state.mode
+      );
+
+      button.setAttribute(
+        "aria-selected",
+        mode === state.mode
+          ? "true"
+          : "false"
+      );
+    });
   }
 
-  /* -------------------------------------------------------
-     SEARCH INPUT
-  ------------------------------------------------------- */
+  /* ==================================================
+     LOADING
+  ================================================== */
 
-  function getSearchQuery() {
-    if (!searchInput) {
-      return "";
-    }
+  function showLoading() {
+    if (!results) return;
 
-    return String(
-      searchInput.value || ""
-    ).trim();
-  }
-
-  /* -------------------------------------------------------
-     LOADING UI
-  ------------------------------------------------------- */
-
-  function renderLoading(query, mode) {
-    if (!resultsEl) return;
-
-    const label =
-      modeLabel(mode);
+    const name =
+      MODE_NAMES[state.mode] ||
+      "Web";
 
     if (resultMeta) {
       resultMeta.textContent =
-        `HEXORA Search • ${label}`;
+        `HEXORA ${name} Search`;
     }
 
-    resultsEl.innerHTML = `
-      <div class="hexora-loading">
-        <div class="hexora-loading-logo">
-          H
+    results.innerHTML = `
+      <div class="state">
+        <div style="
+          font-size:22px;
+          margin-bottom:10px;
+          color:#00eaff;
+        ">
+          ◌
         </div>
 
-        <div class="hexora-loading-text">
-          <strong>
-            HEXORA is searching ${escapeHtml(
-              label.toLowerCase()
-            )}...
-          </strong>
+        <div style="
+          color:#dffaff;
+          font-weight:800;
+          margin-bottom:6px;
+        ">
+          HEXORA is searching ${escapeHTML(name)}…
+        </div>
 
-          <span>
-            Searching for "${escapeHtml(
-              query
-            )}"
-          </span>
+        <div>
+          Searching for
+          “${escapeHTML(state.query)}”
         </div>
       </div>
     `;
   }
 
-  /* -------------------------------------------------------
-     NO RECORD UI
-  ------------------------------------------------------- */
+  function showNoResults() {
+    if (!results) return;
 
-  function renderNoRecord(query, mode) {
-    if (!resultsEl) return;
-
-    const label =
-      modeLabel(mode);
+    const name =
+      MODE_NAMES[state.mode] ||
+      "Web";
 
     if (resultMeta) {
       resultMeta.textContent =
-        `HEXORA • ${label}`;
+        `HEXORA ${name} Search`;
     }
 
-    resultsEl.innerHTML = `
-      <div class="hexora-empty">
-        <div class="hexora-empty-icon">
+    results.innerHTML = `
+      <div class="state">
+        <div style="
+          font-size:28px;
+          color:#00eaff;
+          margin-bottom:8px;
+        ">
           ⌕
         </div>
 
-        <h2>No record found</h2>
+        <strong style="
+          display:block;
+          color:#fff;
+          margin-bottom:7px;
+        ">
+          No record found
+        </strong>
 
-        <p>
+        <span>
           HEXORA could not find matching
-          ${escapeHtml(
-            label.toLowerCase()
-          )}
-          records for
-          "<strong>${escapeHtml(
-            query
-          )}</strong>".
-        </p>
+          ${escapeHTML(name.toLowerCase())}
+          data for
+          “${escapeHTML(state.query)}”.
+        </span>
       </div>
     `;
   }
 
-  /* -------------------------------------------------------
-     ERROR UI
-  ------------------------------------------------------- */
+  function showError(message) {
+    if (!results) return;
 
-  function renderError(message) {
-    if (!resultsEl) return;
+    results.innerHTML = `
+      <div class="state">
+        <strong style="
+          display:block;
+          color:#ff8c8c;
+          margin-bottom:7px;
+        ">
+          HEXORA Search Error
+        </strong>
 
-    resultsEl.innerHTML = `
-      <div class="hexora-error">
-        <div class="hexora-error-icon">
-          !
-        </div>
-
-        <h2>Search error</h2>
-
-        <p>
-          ${escapeHtml(
-            message ||
-              "HEXORA could not complete the search."
-          )}
-        </p>
-
-        <button
-          type="button"
-          class="secondary"
-          id="hexoraRetryBtn"
-        >
-          Try again
-        </button>
+        <span>
+          ${escapeHTML(message)}
+        </span>
       </div>
     `;
-
-    const retry =
-      $("#hexoraRetryBtn");
-
-    if (retry) {
-      retry.addEventListener(
-        "click",
-        () => {
-          if (state.query) {
-            doSearch(
-              state.query,
-              state.mode
-            );
-          }
-        }
-      );
-    }
   }
 
-  /* -------------------------------------------------------
-     RESPONSE NORMALIZATION
-  ------------------------------------------------------- */
+  /* ==================================================
+     WEB
+  ================================================== */
 
-  function normalizeResponse(data) {
-    if (!data) {
-      return {
-        total: 0,
-        results: []
-      };
-    }
+  function renderWeb(data) {
+    const rows =
+      Array.isArray(data?.results)
+        ? data.results
+        : [];
 
-    let results = [];
-
-    if (Array.isArray(data.results)) {
-      results = data.results;
-    } else if (Array.isArray(data.data)) {
-      results = data.data;
-    } else if (Array.isArray(data.items)) {
-      results = data.items;
-    } else if (
-      Array.isArray(data.rows)
-    ) {
-      results = data.rows;
-    }
-
-    let total;
-
-    if (
-      typeof data.total === "number"
-    ) {
-      total = data.total;
-    } else {
-      total = results.length;
-    }
-
-    return {
-      total,
-      results,
-      raw: data
-    };
-  }
-
-  /* -------------------------------------------------------
-     WEB RESULT RENDERER
-  ------------------------------------------------------- */
-
-  function renderWebResults(
-    results,
-    total
-  ) {
-    if (!resultsEl) return;
-
-    if (!results.length) {
-      renderNoRecord(
-        state.query,
-        "web"
-      );
+    if (!rows.length) {
+      showNoResults();
       return;
     }
 
     if (resultMeta) {
       resultMeta.textContent =
-        `${total} ${
-          total === 1
-            ? "result"
-            : "results"
-        } found`;
+        `HEXORA Web · ${data.total ?? rows.length} results`;
     }
 
-    resultsEl.innerHTML =
-      results
-        .map((item) => {
-          const url =
-            safeUrl(
-              item.url ||
-              item.page_url ||
-              item.link
-            );
+    results.innerHTML =
+      rows.map(item => {
 
-          const title =
-            item.title ||
-            item.name ||
-            "Untitled result";
+        const url =
+          safeURL(
+            item.url ||
+            item.page_url ||
+            item.canonical_url ||
+            item.link
+          );
 
-          const description =
-            item.description ||
-            item.snippet ||
-            item.content ||
-            "";
+        const title =
+          item.title ||
+          item.name ||
+          item.page_title ||
+          "Untitled";
 
-          const domain =
-            item.source_domain ||
-            (url
-              ? hostname(url)
-              : "");
+        const description =
+          item.description ||
+          item.snippet ||
+          item.content ||
+          item.text ||
+          "";
 
-          if (!url) {
-            return `
-              <article class="hexora-web-result">
-                <h2>
-                  ${escapeHtml(title)}
-                </h2>
+        const domain =
+          item.source_domain ||
+          item.domain ||
+          "";
 
-                <p>
-                  ${escapeHtml(
-                    description
-                  )}
-                </p>
-              </article>
-            `;
-          }
+        return `
+          <article class="search-result">
 
-          return `
-            <article class="hexora-web-result">
+            <div class="result-source">
+              ${escapeHTML(domain)}
+            </div>
 
-              <div class="hexora-result-domain">
-                ${escapeHtml(domain)}
-              </div>
-
-              <h2>
-                <a
-                  href="${escapeHtml(url)}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  ${escapeHtml(title)}
-                </a>
-              </h2>
-
-              <div class="hexora-result-url">
-                ${escapeHtml(url)}
-              </div>
-
+            <div class="result-title">
               ${
-                description
-                  ? `
-                    <p>
-                      ${escapeHtml(
-                        description
-                      )}
-                    </p>
-                  `
-                  : ""
-              }
-
-            </article>
-          `;
-        })
-        .join("");
-  }
-
-  /* -------------------------------------------------------
-     IMAGE RESULT RENDERER
-  ------------------------------------------------------- */
-
-  function renderImageResults(
-    results,
-    total
-  ) {
-    if (!resultsEl) return;
-
-    if (!results.length) {
-      renderNoRecord(
-        state.query,
-        "images"
-      );
-      return;
-    }
-
-    if (resultMeta) {
-      resultMeta.textContent =
-        `${total} ${
-          total === 1
-            ? "image"
-            : "images"
-        } found`;
-    }
-
-    resultsEl.innerHTML = `
-      <div class="hexora-image-grid">
-
-        ${results
-          .map((item) => {
-            const imageUrl =
-              safeUrl(
-                item.image_url ||
-                item.url ||
-                item.src
-              );
-
-            const pageUrl =
-              safeUrl(
-                item.page_url ||
-                item.source_url ||
-                item.link
-              );
-
-            if (!imageUrl) {
-              return "";
-            }
-
-            const title =
-              item.title ||
-              item.alt_text ||
-              item.alt ||
-              item.name ||
-              state.query;
-
-            const domain =
-              item.source_domain ||
-              (pageUrl
-                ? hostname(pageUrl)
-                : "");
-
-            return `
-              <article class="hexora-image-card">
-
-                <a
-                  href="${
-                    pageUrl ||
-                    imageUrl
-                  }"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="hexora-image-link"
-                >
-
-                  <div class="hexora-image-box">
-
-                    <img
-                      src="${escapeHtml(
-                        imageUrl
-                      )}"
-                      alt="${escapeHtml(
-                        title
-                      )}"
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      onerror="this.closest('.hexora-image-card')?.remove();"
-                    />
-
-                  </div>
-
-                </a>
-
-                <div class="hexora-image-info">
-
-                  <strong>
-                    ${escapeHtml(
-                      title
-                    )}
-                  </strong>
-
-                  ${
-                    domain
-                      ? `
-                        <span>
-                          ${escapeHtml(
-                            domain
-                          )}
-                        </span>
-                      `
-                      : ""
-                  }
-
-                </div>
-
-              </article>
-            `;
-          })
-          .join("")}
-
-      </div>
-    `;
-  }
-
-  /* -------------------------------------------------------
-     NEWS RESULT RENDERER
-  ------------------------------------------------------- */
-
-  function renderNewsResults(
-    results,
-    total
-  ) {
-    if (!resultsEl) return;
-
-    if (!results.length) {
-      renderNoRecord(
-        state.query,
-        "news"
-      );
-      return;
-    }
-
-    if (resultMeta) {
-      resultMeta.textContent =
-        `${total} ${
-          total === 1
-            ? "news result"
-            : "news results"
-        } found`;
-    }
-
-    resultsEl.innerHTML =
-      results
-        .map((item) => {
-          const url =
-            safeUrl(
-              item.url ||
-              item.page_url ||
-              item.link
-            );
-
-          const imageUrl =
-            safeUrl(
-              item.image_url ||
-              item.thumbnail_url
-            );
-
-          const title =
-            item.title ||
-            "Untitled news";
-
-          const description =
-            item.description ||
-            item.snippet ||
-            "";
-
-          const source =
-            item.source_name ||
-            item.source_domain ||
-            (url
-              ? hostname(url)
-              : "");
-
-          const date =
-            item.published_at ||
-            item.date ||
-            item.created_at ||
-            "";
-
-          let formattedDate = "";
-
-          if (date) {
-            try {
-              formattedDate =
-                new Date(date)
-                  .toLocaleDateString(
-                    undefined,
-                    {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric"
-                    }
-                  );
-            } catch {
-              formattedDate =
-                String(date);
-            }
-          }
-
-          return `
-            <article class="hexora-news-card">
-
-              ${
-                imageUrl
+                url
                   ? `
                     <a
-                      href="${
-                        url ||
-                        imageUrl
-                      }"
+                      href="${escapeHTML(url)}"
                       target="_blank"
                       rel="noopener noreferrer"
-                      class="hexora-news-image"
                     >
-                      <img
-                        src="${escapeHtml(
-                          imageUrl
-                        )}"
-                        alt="${escapeHtml(
-                          title
-                        )}"
-                        loading="lazy"
-                        referrerpolicy="no-referrer"
-                      />
+                      ${escapeHTML(title)}
                     </a>
                   `
-                  : ""
+                  : escapeHTML(title)
               }
+            </div>
 
-              <div class="hexora-news-body">
+            ${
+              url
+                ? `
+                  <div class="result-url">
+                    ${escapeHTML(url)}
+                  </div>
+                `
+                : ""
+            }
 
-                <div class="hexora-news-source">
-                  ${escapeHtml(
-                    source
-                  )}
+            ${
+              description
+                ? `
+                  <div class="result-description">
+                    ${escapeHTML(description)}
+                  </div>
+                `
+                : ""
+            }
 
-                  ${
-                    formattedDate
-                      ? `
-                        <span>
-                          • ${escapeHtml(
-                            formattedDate
-                          )}
-                        </span>
-                      `
-                      : ""
-                  }
-                </div>
+            ${
+              item.created_at
+                ? `
+                  <div class="result-date">
+                    ${escapeHTML(
+                      item.created_at
+                    )}
+                  </div>
+                `
+                : ""
+            }
 
-                <h2>
-                  ${
-                    url
-                      ? `
-                        <a
-                          href="${escapeHtml(
-                            url
-                          )}"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          ${escapeHtml(
-                            title
-                          )}
-                        </a>
-                      `
-                      : escapeHtml(
-                          title
-                        )
-                  }
-                </h2>
-
-                ${
-                  description
-                    ? `
-                      <p>
-                        ${escapeHtml(
-                          description
-                        )}
-                      </p>
-                    `
-                    : ""
-                }
-
-              </div>
-
-            </article>
-          `;
-        })
-        .join("");
+          </article>
+        `;
+      }).join("");
   }
 
-  /* -------------------------------------------------------
-     VIDEO RESULT RENDERER
-  ------------------------------------------------------- */
+  /* ==================================================
+     IMAGES
+  ================================================== */
 
-  function renderVideoResults(
-    results,
-    total
-  ) {
-    if (!resultsEl) return;
+  function renderImages(data) {
+    const rows =
+      Array.isArray(data?.results)
+        ? data.results
+        : [];
 
-    if (!results.length) {
-      renderNoRecord(
-        state.query,
-        "videos"
-      );
+    if (!rows.length) {
+      showNoResults();
       return;
     }
 
     if (resultMeta) {
       resultMeta.textContent =
-        `${total} ${
-          total === 1
-            ? "video"
-            : "videos"
-        } found`;
+        `HEXORA Images · ${data.total ?? rows.length} results`;
     }
 
-    resultsEl.innerHTML =
-      results
-        .map((item) => {
-          const videoUrl =
-            safeUrl(
-              item.video_url ||
+    results.innerHTML = `
+      <div style="
+        display:grid;
+        grid-template-columns:
+          repeat(auto-fill,minmax(190px,1fr));
+        gap:14px;
+      ">
+
+        ${rows.map(item => {
+
+          const imageURL =
+            safeURL(
+              item.image_url ||
               item.url ||
-              item.link
+              item.src
             );
 
-          const pageUrl =
-            safeUrl(
+          const pageURL =
+            safeURL(
               item.page_url ||
               item.source_url
             );
 
-          const thumbnail =
-            safeUrl(
-              item.thumbnail_url ||
-              item.image_url
-            );
-
           const title =
             item.title ||
-            state.query;
+            item.alt_text ||
+            "HEXORA Image";
 
-          const description =
-            item.description ||
-            "";
-
-          if (!videoUrl) {
+          if (!imageURL) {
             return "";
           }
 
           return `
-            <article class="hexora-video-card">
+            <article style="
+              overflow:hidden;
+              border:1px solid rgba(71,203,255,.13);
+              border-radius:15px;
+              background:rgba(5,20,33,.78);
+            ">
 
-              <div class="hexora-video-player">
+              ${
+                pageURL
+                  ? `
+                    <a
+                      href="${escapeHTML(pageURL)}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                  `
+                  : ""
+              }
 
-                ${
-                  thumbnail
-                    ? `
-                      <a
-                        href="${escapeHtml(
-                          videoUrl
-                        )}"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <img
-                          src="${escapeHtml(
-                            thumbnail
-                          )}"
-                          alt="${escapeHtml(
-                            title
-                          )}"
-                          loading="lazy"
-                          referrerpolicy="no-referrer"
-                        />
+              <img
+                src="${escapeHTML(imageURL)}"
+                alt="${escapeHTML(title)}"
+                loading="lazy"
+                style="
+                  display:block;
+                  width:100%;
+                  height:190px;
+                  object-fit:cover;
+                  background:#06111d;
+                "
+                onerror="
+                  this.closest('article').style.display='none'
+                "
+              >
 
-                        <span class="hexora-play">
-                          ▶
-                        </span>
-                      </a>
-                    `
-                    : `
-                      <a
-                        href="${escapeHtml(
-                          videoUrl
-                        )}"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="hexora-video-open"
-                      >
-                        ▶ Watch video
-                      </a>
-                    `
-                }
+              <div style="
+                padding:11px;
+              ">
 
-              </div>
-
-              <div class="hexora-video-body">
-
-                <h2>
-                  <a
-                    href="${escapeHtml(
-                      videoUrl
-                    )}"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    ${escapeHtml(
-                      title
-                    )}
-                  </a>
-                </h2>
+                <div style="
+                  font-size:13px;
+                  font-weight:700;
+                  white-space:nowrap;
+                  overflow:hidden;
+                  text-overflow:ellipsis;
+                ">
+                  ${escapeHTML(title)}
+                </div>
 
                 ${
-                  description
+                  item.source_domain
                     ? `
-                      <p>
-                        ${escapeHtml(
-                          description
-                        )}
-                      </p>
-                    `
-                    : ""
-                }
-
-                ${
-                  pageUrl
-                    ? `
-                      <span class="hexora-video-source">
-                        ${escapeHtml(
-                          hostname(
-                            pageUrl
-                          )
-                        )}
-                      </span>
-                    `
-                    : ""
-                }
-
-              </div>
-
-            </article>
-          `;
-        })
-        .join("");
-  }
-
-  /* -------------------------------------------------------
-     MAP RESULT RENDERER
-  ------------------------------------------------------- */
-
-  function renderMapResults(
-    results,
-    total
-  ) {
-    if (!resultsEl) return;
-
-    if (!results.length) {
-      renderNoRecord(
-        state.query,
-        "maps"
-      );
-      return;
-    }
-
-    if (resultMeta) {
-      resultMeta.textContent =
-        `${total} ${
-          total === 1
-            ? "place"
-            : "places"
-        } found`;
-    }
-
-    resultsEl.innerHTML =
-      results
-        .map((item) => {
-          const pageUrl =
-            safeUrl(
-              item.page_url ||
-              item.url ||
-              item.link
-            );
-
-          const name =
-            item.name ||
-            item.title ||
-            "Unnamed place";
-
-          const address =
-            item.address ||
-            [
-              item.city,
-              item.district,
-              item.state,
-              item.country
-            ]
-              .filter(Boolean)
-              .join(", ");
-
-          const latitude =
-            Number(item.latitude);
-
-          const longitude =
-            Number(item.longitude);
-
-          let mapUrl = null;
-
-          if (
-            Number.isFinite(latitude) &&
-            Number.isFinite(longitude)
-          ) {
-            mapUrl =
-              `https://www.openstreetmap.org/?mlat=${encodeURIComponent(
-                latitude
-              )}&mlon=${encodeURIComponent(
-                longitude
-              )}#map=16/${encodeURIComponent(
-                latitude
-              )}/${encodeURIComponent(
-                longitude
-              )}`;
-          }
-
-          return `
-            <article class="hexora-map-card">
-
-              <div class="hexora-map-icon">
-                ⌖
-              </div>
-
-              <div class="hexora-map-body">
-
-                <h2>
-                  ${
-                    pageUrl
-                      ? `
-                        <a
-                          href="${escapeHtml(
-                            pageUrl
-                          )}"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          ${escapeHtml(
-                            name
-                          )}
-                        </a>
-                      `
-                      : escapeHtml(
-                          name
-                        )
-                  }
-                </h2>
-
-                ${
-                  address
-                    ? `
-                      <p>
-                        ${escapeHtml(
-                          address
-                        )}
-                      </p>
-                    `
-                    : ""
-                }
-
-                ${
-                  Number.isFinite(
-                    latitude
-                  ) &&
-                  Number.isFinite(
-                    longitude
-                  )
-                    ? `
-                      <div class="hexora-coordinates">
-                        ${escapeHtml(
-                          latitude
-                        )},
-                        ${escapeHtml(
-                          longitude
+                      <div style="
+                        margin-top:5px;
+                        font-size:10px;
+                        color:#71879b;
+                      ">
+                        ${escapeHTML(
+                          item.source_domain
                         )}
                       </div>
                     `
                     : ""
                 }
 
+              </div>
+
+              ${
+                pageURL
+                  ? "</a>"
+                  : ""
+              }
+
+            </article>
+          `;
+        }).join("")}
+
+      </div>
+    `;
+  }
+
+  /* ==================================================
+     NEWS
+  ================================================== */
+
+  function renderNews(data) {
+    const rows =
+      Array.isArray(data?.results)
+        ? data.results
+        : [];
+
+    if (!rows.length) {
+      showNoResults();
+      return;
+    }
+
+    if (resultMeta) {
+      resultMeta.textContent =
+        `HEXORA News · ${data.total ?? rows.length} results`;
+    }
+
+    results.innerHTML =
+      rows.map(item => {
+
+        const url =
+          safeURL(
+            item.url ||
+            item.link ||
+            item.page_url
+          );
+
+        const image =
+          safeURL(
+            item.image_url ||
+            item.image ||
+            item.thumbnail
+          );
+
+        const title =
+          item.title ||
+          item.headline ||
+          "News";
+
+        const description =
+          item.description ||
+          item.snippet ||
+          "";
+
+        return `
+          <article class="search-result">
+
+            ${
+              image
+                ? `
+                  <img
+                    src="${escapeHTML(image)}"
+                    alt=""
+                    loading="lazy"
+                    style="
+                      width:150px;
+                      height:90px;
+                      object-fit:cover;
+                      border-radius:10px;
+                      float:left;
+                      margin:0 14px 8px 0;
+                    "
+                    onerror="
+                      this.style.display='none'
+                    "
+                  >
+                `
+                : ""
+            }
+
+            <div class="result-source">
+              ${escapeHTML(
+                item.source_domain ||
+                item.source ||
+                ""
+              )}
+            </div>
+
+            <div class="result-title">
+              ${
+                url
+                  ? `
+                    <a
+                      href="${escapeHTML(url)}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      ${escapeHTML(title)}
+                    </a>
+                  `
+                  : escapeHTML(title)
+              }
+            </div>
+
+            ${
+              description
+                ? `
+                  <div class="result-description">
+                    ${escapeHTML(description)}
+                  </div>
+                `
+                : ""
+            }
+
+            <div style="clear:both"></div>
+
+          </article>
+        `;
+      }).join("");
+  }
+
+  /* ==================================================
+     VIDEOS
+  ================================================== */
+
+  function renderVideos(data) {
+    const rows =
+      Array.isArray(data?.results)
+        ? data.results
+        : [];
+
+    if (!rows.length) {
+      showNoResults();
+      return;
+    }
+
+    if (resultMeta) {
+      resultMeta.textContent =
+        `HEXORA Videos · ${data.total ?? rows.length} results`;
+    }
+
+    results.innerHTML =
+      rows.map(item => {
+
+        const videoURL =
+          safeURL(
+            item.video_url ||
+            item.url ||
+            item.link
+          );
+
+        const thumbnail =
+          safeURL(
+            item.thumbnail ||
+            item.thumbnail_url ||
+            item.image_url
+          );
+
+        const title =
+          item.title ||
+          item.name ||
+          "Video";
+
+        return `
+          <article class="search-result">
+
+            <div style="
+              display:flex;
+              gap:14px;
+            ">
+
+              ${
+                thumbnail
+                  ? `
+                    <img
+                      src="${escapeHTML(thumbnail)}"
+                      alt=""
+                      loading="lazy"
+                      style="
+                        width:160px;
+                        height:95px;
+                        object-fit:cover;
+                        border-radius:10px;
+                        flex:none;
+                      "
+                      onerror="
+                        this.style.display='none'
+                      "
+                    >
+                  `
+                  : ""
+              }
+
+              <div>
+
+                <div class="result-source">
+                  ${escapeHTML(
+                    item.source_domain ||
+                    item.source ||
+                    ""
+                  )}
+                </div>
+
+                <div class="result-title">
+
+                  ${
+                    videoURL
+                      ? `
+                        <a
+                          href="${escapeHTML(videoURL)}"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          ▶ ${escapeHTML(title)}
+                        </a>
+                      `
+                      : `
+                        ▶ ${escapeHTML(title)}
+                      `
+                  }
+
+                </div>
+
                 ${
-                  mapUrl
+                  item.description ||
+                  item.snippet
                     ? `
-                      <a
-                        href="${escapeHtml(
-                          mapUrl
-                        )}"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="secondary hexora-map-link"
-                      >
-                        Open map
-                      </a>
+                      <div class="result-description">
+                        ${escapeHTML(
+                          item.description ||
+                          item.snippet ||
+                          ""
+                        )}
+                      </div>
                     `
                     : ""
                 }
 
               </div>
 
-            </article>
-          `;
-        })
-        .join("");
+            </div>
+
+          </article>
+        `;
+      }).join("");
   }
 
-  /* -------------------------------------------------------
-     RENDER RESULT BASED ON MODE
-  ------------------------------------------------------- */
+  /* ==================================================
+     MAP RESULTS
+  ================================================== */
 
-  function renderResults(
-    mode,
-    results,
-    total
-  ) {
-    switch (mode) {
-      case "images":
-        renderImageResults(
-          results,
-          total
-        );
-        break;
+  function renderMaps(data) {
+    const rows =
+      Array.isArray(data?.results)
+        ? data.results
+        : [];
 
-      case "news":
-        renderNewsResults(
-          results,
-          total
-        );
-        break;
-
-      case "videos":
-        renderVideoResults(
-          results,
-          total
-        );
-        break;
-
-      case "maps":
-        renderMapResults(
-          results,
-          total
-        );
-        break;
-
-      case "web":
-      default:
-        renderWebResults(
-          results,
-          total
-        );
-        break;
-    }
-  }
-
-  /* -------------------------------------------------------
-     SEARCH API
-  ------------------------------------------------------- */
-
-  async function doSearch(
-    query,
-    mode = state.mode
-  ) {
-    const cleanQuery =
-      String(query || "").trim();
-
-    if (!cleanQuery) {
+    if (!rows.length) {
+      showNoResults();
       return;
     }
 
-    if (
-      !CONFIG.modes.includes(mode)
-    ) {
-      mode = "web";
+    if (resultMeta) {
+      resultMeta.textContent =
+        `HEXORA Maps · ${data.total ?? rows.length} places`;
     }
 
-    state.query =
-      cleanQuery;
+    results.innerHTML =
+      rows.map(item => {
 
-    state.mode =
-      mode;
+        const url =
+          safeURL(
+            item.url ||
+            item.page_url
+          );
 
+        const name =
+          item.name ||
+          item.title ||
+          "Place";
+
+        const address =
+          item.address ||
+          item.formatted_address ||
+          "";
+
+        return `
+          <article class="search-result">
+
+            <div style="
+              display:flex;
+              gap:13px;
+            ">
+
+              <div style="
+                font-size:27px;
+                color:#00eaff;
+              ">
+                ⌖
+              </div>
+
+              <div>
+
+                <div class="result-title">
+
+                  ${
+                    url
+                      ? `
+                        <a
+                          href="${escapeHTML(url)}"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          ${escapeHTML(name)}
+                        </a>
+                      `
+                      : escapeHTML(name)
+                  }
+
+                </div>
+
+                ${
+                  address
+                    ? `
+                      <div class="result-description">
+                        ${escapeHTML(address)}
+                      </div>
+                    `
+                    : ""
+                }
+
+              </div>
+
+            </div>
+
+          </article>
+        `;
+      }).join("");
+  }
+
+  /* ==================================================
+     RENDER ROUTER
+  ================================================== */
+
+  function renderResults(data, mode) {
+
+    /*
+     * VERY IMPORTANT:
+     * Always use the mode saved BEFORE fetch.
+     */
+
+    if (mode === "images") {
+      renderImages(data);
+      return;
+    }
+
+    if (mode === "news") {
+      renderNews(data);
+      return;
+    }
+
+    if (mode === "videos") {
+      renderVideos(data);
+      return;
+    }
+
+    if (mode === "maps") {
+      renderMaps(data);
+      return;
+    }
+
+    renderWeb(data);
+  }
+
+  /* ==================================================
+     SEARCH
+  ================================================== */
+
+  async function doSearch(
+    query,
+    selectedMode
+  ) {
+
+    query =
+      cleanQuery(query);
+
+    /*
+     * Never allow undefined/null mode
+     * to silently become another tab.
+     */
+
+    const mode =
+      isSearchMode(selectedMode)
+        ? selectedMode
+        : "web";
+
+    state.query = query;
+    state.mode = mode;
     state.searching = true;
 
-    updateModeButtons();
-    prepareModeButtons();
+    updateActiveTabs();
+    updateURL();
 
-    showSearchView();
+    /*
+     * MAP SEARCH
+     */
 
-    if (searchInput) {
-      searchInput.value =
-        cleanQuery;
+    if (mode === "maps") {
+      showMap();
+    } else {
+      showSearch();
+      showLoading();
     }
 
-    renderLoading(
-      cleanQuery,
-      mode
-    );
+    if (!query) {
+      state.searching = false;
+
+      if (results) {
+        results.innerHTML = "";
+      }
+
+      return;
+    }
 
     try {
-      /*
-       * IMPORTANT:
-       * mode is ALWAYS sent to backend.
-       *
-       * This prevents Images/News/Videos
-       * from accidentally receiving Web results.
-       */
 
-      const url =
-        `${CONFIG.apiEndpoint}` +
-        `?q=${encodeURIComponent(
-          cleanQuery
-        )}` +
-        `&mode=${encodeURIComponent(
+      const requestURL =
+        `${API_ENDPOINT}?q=${encodeURIComponent(
+          query
+        )}&mode=${encodeURIComponent(
           mode
         )}`;
 
       console.log(
-        "[HEXORA] Searching:",
-        url
+        "[HEXORA SEARCH]",
+        {
+          query,
+          mode,
+          url: requestURL
+        }
       );
 
       const response =
-        await fetch(url, {
-          method: "GET",
-          headers: {
-            Accept:
-              "application/json"
-          },
-          cache: "no-store"
-        });
+        await fetch(
+          requestURL,
+          {
+            method: "GET",
+            headers: {
+              Accept:
+                "application/json"
+            },
+            cache: "no-store"
+          }
+        );
 
       if (!response.ok) {
         throw new Error(
-          `Search request failed (${response.status})`
+          `HTTP ${response.status}`
         );
       }
 
@@ -1282,810 +1055,352 @@
         await response.json();
 
       /*
-       * Ignore stale responses if the user
-       * starts another search before this one ends.
-       */
-      if (
-        state.query !== cleanQuery ||
-        state.mode !== mode
-      ) {
-        return;
-      }
-
-      const normalized =
-        normalizeResponse(data);
-
-      const results =
-        Array.isArray(
-          normalized.results
-        )
-          ? normalized.results
-          : [];
-
-      const total =
-        Number.isFinite(
-          normalized.total
-        )
-          ? normalized.total
-          : results.length;
-
-      /*
-       * Strict category behaviour:
+       * CRITICAL:
+       * Backend response can NEVER
+       * change the selected frontend tab.
        *
-       * Images -> ONLY image renderer
-       * News   -> ONLY news renderer
-       * Videos -> ONLY video renderer
-       * Maps   -> ONLY map renderer
-       * Web    -> ONLY web renderer
-       *
-       * No fallback to another category.
+       * We continue using `mode`.
        */
 
-      if (results.length === 0) {
-        renderNoRecord(
-          cleanQuery,
-          mode
-        );
+      state.mode = mode;
+      state.query = query;
+
+      updateActiveTabs();
+      updateURL();
+
+      if (mode === "maps") {
+        showMap();
       } else {
-        renderResults(
-          mode,
-          results,
-          total
-        );
+        showSearch();
       }
+
+      renderResults(
+        data,
+        mode
+      );
+
     } catch (error) {
+
       console.error(
-        "[HEXORA] Search error:",
+        "[HEXORA SEARCH ERROR]",
         error
       );
 
-      renderError(
-        error?.message ||
-          "Unable to connect to HEXORA search server."
+      if (mode !== state.mode) {
+        state.mode = mode;
+        updateActiveTabs();
+      }
+
+      showError(
+        "Could not connect to HEXORA search server."
       );
+
     } finally {
       state.searching = false;
     }
   }
 
-  /* -------------------------------------------------------
-     SET MODE
-  ------------------------------------------------------- */
-
-  function setMode(
-    mode,
-    options = {}
-  ) {
-    if (
-      !CONFIG.modes.includes(mode)
-    ) {
-      return;
-    }
-
-    state.mode = mode;
-
-    updateModeButtons();
-
-    const shouldSearch =
-      options.search !== false;
-
-    const query =
-      getSearchQuery();
-
-    /*
-     * If there is already a query,
-     * selecting a category immediately searches
-     * that category.
-     */
-
-    if (
-      shouldSearch &&
-      query
-    ) {
-      doSearch(
-        query,
-        mode
-      );
-    } else if (
-      searchView &&
-      searchView.classList.contains(
-        "active"
-      )
-    ) {
-      /*
-       * If search page is already open but
-       * no query exists, show category name.
-       */
-
-      if (resultMeta) {
-        resultMeta.textContent =
-          `HEXORA • ${modeLabel(
-            mode
-          )}`;
-      }
-
-      if (resultsEl) {
-        resultsEl.innerHTML = `
-          <div class="hexora-empty">
-            <div class="hexora-empty-icon">
-              ⌕
-            </div>
-
-            <h2>
-              Search ${escapeHtml(
-                modeLabel(mode)
-              )}
-            </h2>
-
-            <p>
-              Enter a search query to search
-              HEXORA ${escapeHtml(
-                modeLabel(mode)
-              ).toLowerCase()}.
-            </p>
-          </div>
-        `;
-      }
-    }
-  }
-
-  /* -------------------------------------------------------
-     SEARCH FORM
-  ------------------------------------------------------- */
-
-  if (searchForm) {
-    searchForm.addEventListener(
-      "submit",
-      (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        const query =
-          getSearchQuery();
-
-        if (!query) {
-          if (searchInput) {
-            searchInput.focus();
-          }
-
-          return;
-        }
-
-        doSearch(
-          query,
-          state.mode
-        );
-      }
-    );
-  }
-
-  /* -------------------------------------------------------
-     MODE CLICK HANDLER
-  ------------------------------------------------------- */
-
-  /*
-   * Capture phase is used so another old listener
-   * cannot accidentally reset the selected mode.
-   */
+  /* ==================================================
+     MODE CLICK
+  ================================================== */
 
   document.addEventListener(
     "click",
-    (event) => {
-      const target =
-        event.target instanceof Element
-          ? event.target
-          : null;
-
-      if (!target) return;
+    event => {
 
       const button =
-        target.closest(
+        event.target.closest(
           "[data-mode]"
         );
 
-      if (!button) return;
+      if (!button) {
+        return;
+      }
 
       const mode =
-        button.dataset.mode;
+        button.getAttribute(
+          "data-mode"
+        );
 
       /*
-       * Only handle actual HEXORA search modes.
-       * AI / Engine / Workspace / Profile etc.
-       * are left for their own application handlers.
+       * AI / Engine / Workspace /
+       * Profile are NOT search modes.
        */
 
-      if (
-        !CONFIG.modes.includes(mode)
-      ) {
+      if (!isSearchMode(mode)) {
         return;
       }
 
       event.preventDefault();
-      event.stopImmediatePropagation();
+      event.stopPropagation();
 
-      setMode(mode);
+      /*
+       * SAVE THE MODE IMMEDIATELY.
+       */
+
+      state.mode = mode;
+
+      updateActiveTabs();
+      updateURL();
+
+      /*
+       * If user already typed a query,
+       * immediately search using the
+       * newly selected mode.
+       */
+
+      const query =
+        cleanQuery(
+          searchInput
+            ? searchInput.value
+            : state.query
+        );
+
+      state.query = query;
+
+      if (mode === "maps") {
+        showMap();
+      } else {
+        showSearch();
+      }
+
+      if (query) {
+        doSearch(
+          query,
+          mode
+        );
+      }
 
     },
     true
   );
 
-  /* -------------------------------------------------------
-     HOME BUTTON
-  ------------------------------------------------------- */
+  /* ==================================================
+     HOME CLICK
+  ================================================== */
 
   document.addEventListener(
     "click",
-    (event) => {
-      const target =
-        event.target instanceof Element
-          ? event.target
-          : null;
+    event => {
 
-      if (!target) return;
-
-      const homeButton =
-        target.closest(
+      const button =
+        event.target.closest(
           "[data-home]"
         );
 
-      if (!homeButton) return;
-
-      /*
-       * Do not interfere with links.
-       */
-      if (
-        homeButton.tagName === "A" &&
-        homeButton.getAttribute("href")
-      ) {
+      if (!button) {
         return;
       }
 
       event.preventDefault();
+      event.stopPropagation();
 
-      showHomeView();
-    }
-  );
+      state.query = "";
+      state.mode = "web";
+      state.searching = false;
 
-  /* -------------------------------------------------------
-     KEYBOARD SHORTCUT
-  ------------------------------------------------------- */
-
-  document.addEventListener(
-    "keydown",
-    (event) => {
-      /*
-       * "/" focuses search box.
-       */
-
-      if (
-        event.key === "/" &&
-        document.activeElement !==
-          searchInput
-      ) {
-        event.preventDefault();
-
-        if (searchInput) {
-          searchInput.focus();
-        }
+      if (searchInput) {
+        searchInput.value = "";
       }
 
-      /*
-       * Escape clears search view.
-       */
-
-      if (
-        event.key === "Escape" &&
-        document.activeElement ===
-          searchInput
-      ) {
-        if (searchInput) {
-          searchInput.blur();
-        }
-      }
-    }
-  );
-
-  /* -------------------------------------------------------
-     DYNAMIC CSS
-     Only adds styles needed by result renderers.
-  ------------------------------------------------------- */
-
-  function injectStyles() {
-    if (
-      document.getElementById(
-        "hexora-main-js-styles"
-      )
-    ) {
-      return;
-    }
-
-    const style =
-      document.createElement("style");
-
-    style.id =
-      "hexora-main-js-styles";
-
-    style.textContent = `
-      .hexora-hidden-home {
-        display: none !important;
-      }
-
-      .hexora-loading {
-        min-height: 260px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        text-align: center;
-        padding: 40px 20px;
-      }
-
-      .hexora-loading-logo {
-        width: 58px;
-        height: 58px;
-        border-radius: 18px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 25px;
-        font-weight: 900;
-        border: 1px solid rgba(0,255,255,.45);
-        box-shadow:
-          0 0 24px rgba(0,255,255,.18);
-        animation:
-          hexoraPulse 1.2s ease-in-out infinite;
-      }
-
-      .hexora-loading-text {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .hexora-loading-text strong {
-        font-size: 17px;
-      }
-
-      .hexora-loading-text span {
-        opacity: .65;
-        font-size: 13px;
-      }
-
-      @keyframes hexoraPulse {
-        0%,100% {
-          transform: scale(1);
-          opacity: .7;
-        }
-
-        50% {
-          transform: scale(1.08);
-          opacity: 1;
-        }
-      }
-
-      .hexora-empty,
-      .hexora-error {
-        min-height: 260px;
-        padding: 50px 20px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-      }
-
-      .hexora-empty-icon,
-      .hexora-error-icon {
-        width: 52px;
-        height: 52px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(0,255,255,.35);
-        margin-bottom: 15px;
-        font-size: 24px;
-      }
-
-      .hexora-empty h2,
-      .hexora-error h2 {
-        margin: 0 0 8px;
-      }
-
-      .hexora-empty p,
-      .hexora-error p {
-        max-width: 560px;
-        opacity: .7;
-        line-height: 1.6;
-      }
-
-      .hexora-web-result {
-        padding: 18px 0;
-        border-bottom: 1px solid rgba(255,255,255,.08);
-      }
-
-      .hexora-result-domain {
-        font-size: 12px;
-        opacity: .55;
-        margin-bottom: 5px;
-      }
-
-      .hexora-web-result h2 {
-        margin: 4px 0;
-        font-size: 20px;
-      }
-
-      .hexora-web-result h2 a {
-        text-decoration: none;
-      }
-
-      .hexora-web-result h2 a:hover {
-        text-decoration: underline;
-      }
-
-      .hexora-result-url {
-        font-size: 12px;
-        opacity: .5;
-        word-break: break-all;
-        margin-bottom: 7px;
-      }
-
-      .hexora-web-result p {
-        margin: 5px 0 0;
-        opacity: .72;
-        line-height: 1.6;
-      }
-
-      .hexora-image-grid {
-        display: grid;
-        grid-template-columns:
-          repeat(auto-fill, minmax(190px, 1fr));
-        gap: 16px;
-        padding: 16px 0;
-      }
-
-      .hexora-image-card {
-        overflow: hidden;
-        border: 1px solid rgba(255,255,255,.08);
-        border-radius: 16px;
-        background: rgba(255,255,255,.025);
-      }
-
-      .hexora-image-link {
-        display: block;
-      }
-
-      .hexora-image-box {
-        width: 100%;
-        aspect-ratio: 1 / 1;
-        overflow: hidden;
-        background: rgba(0,0,0,.25);
-      }
-
-      .hexora-image-box img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-        transition: transform .25s ease;
-      }
-
-      .hexora-image-card:hover img {
-        transform: scale(1.04);
-      }
-
-      .hexora-image-info {
-        padding: 11px;
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-      }
-
-      .hexora-image-info strong {
-        font-size: 13px;
-        line-height: 1.4;
-      }
-
-      .hexora-image-info span {
-        font-size: 11px;
-        opacity: .55;
-      }
-
-      .hexora-news-card {
-        display: grid;
-        grid-template-columns: 190px 1fr;
-        gap: 18px;
-        padding: 18px 0;
-        border-bottom: 1px solid rgba(255,255,255,.08);
-      }
-
-      .hexora-news-image {
-        display: block;
-        width: 100%;
-        aspect-ratio: 16 / 10;
-        overflow: hidden;
-        border-radius: 12px;
-        background: rgba(255,255,255,.04);
-      }
-
-      .hexora-news-image img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-
-      .hexora-news-source {
-        font-size: 12px;
-        opacity: .6;
-        margin-bottom: 7px;
-      }
-
-      .hexora-news-body h2 {
-        margin: 0 0 8px;
-        font-size: 20px;
-      }
-
-      .hexora-news-body h2 a {
-        text-decoration: none;
-      }
-
-      .hexora-news-body p {
-        margin: 0;
-        opacity: .7;
-        line-height: 1.55;
-      }
-
-      .hexora-video-card {
-        display: grid;
-        grid-template-columns: 280px 1fr;
-        gap: 18px;
-        padding: 18px 0;
-        border-bottom: 1px solid rgba(255,255,255,.08);
-      }
-
-      .hexora-video-player {
-        position: relative;
-        aspect-ratio: 16 / 9;
-        overflow: hidden;
-        border-radius: 14px;
-        background: #050505;
-      }
-
-      .hexora-video-player img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-
-      .hexora-video-player a {
-        display: block;
-        width: 100%;
-        height: 100%;
-        position: relative;
-      }
-
-      .hexora-play {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
-        width: 52px;
-        height: 52px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0,0,0,.72);
-        font-size: 20px;
-      }
-
-      .hexora-video-open {
-        display: flex !important;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        text-decoration: none;
-        font-weight: 700;
-      }
-
-      .hexora-video-body h2 {
-        margin: 0 0 8px;
-        font-size: 19px;
-      }
-
-      .hexora-video-body h2 a {
-        text-decoration: none;
-      }
-
-      .hexora-video-body p {
-        margin: 0 0 10px;
-        opacity: .7;
-        line-height: 1.5;
-      }
-
-      .hexora-video-source {
-        font-size: 12px;
-        opacity: .55;
-      }
-
-      .hexora-map-card {
-        display: flex;
-        gap: 16px;
-        padding: 18px 0;
-        border-bottom: 1px solid rgba(255,255,255,.08);
-      }
-
-      .hexora-map-icon {
-        width: 46px;
-        height: 46px;
-        min-width: 46px;
-        border-radius: 14px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(0,255,255,.25);
-        font-size: 22px;
-      }
-
-      .hexora-map-body h2 {
-        margin: 0 0 6px;
-      }
-
-      .hexora-map-body h2 a {
-        text-decoration: none;
-      }
-
-      .hexora-map-body p {
-        margin: 0 0 7px;
-        opacity: .7;
-      }
-
-      .hexora-coordinates {
-        font-size: 12px;
-        opacity: .55;
-        margin-bottom: 10px;
-      }
-
-      .hexora-map-link {
-        display: inline-block;
-        text-decoration: none;
-        padding: 7px 11px;
-        border-radius: 8px;
-      }
-
-      @media (max-width: 700px) {
-        .hexora-news-card,
-        .hexora-video-card {
-          grid-template-columns: 1fr;
-        }
-
-        .hexora-image-grid {
-          grid-template-columns:
-            repeat(2, minmax(0, 1fr));
-          gap: 10px;
-        }
-
-        .hexora-web-result h2,
-        .hexora-news-body h2 {
-          font-size: 17px;
-        }
-      }
-    `;
-
-    document.head.appendChild(style);
-  }
-
-  /* -------------------------------------------------------
-     INITIALIZATION
-  ------------------------------------------------------- */
-
-  function init() {
-    prepareModeButtons();
-    updateModeButtons();
-    injectStyles();
-
-    /*
-     * Keep initial mode as Web.
-     */
-
-    state.mode = "web";
-
-    /*
-     * If URL contains ?q=...
-     * automatically search it.
-     */
-
-    try {
-      const params =
-        new URLSearchParams(
-          window.location.search
+      updateActiveTabs();
+
+      try {
+        window.history.replaceState(
+          {},
+          "",
+          window.location.pathname
         );
+      } catch {
+        // Ignore
+      }
 
-      const q =
-        params.get("q");
+      showHome();
 
-      const mode =
-        params.get("mode");
+    },
+    true
+  );
 
-      if (
-        q &&
-        q.trim()
-      ) {
-        const validMode =
-          CONFIG.modes.includes(
-            mode
-          )
-            ? mode
-            : "web";
+  /* ==================================================
+     SEARCH FORM
+  ================================================== */
 
-        if (searchInput) {
-          searchInput.value =
-            q.trim();
-        }
+  if (searchForm) {
 
-        state.mode =
-          validMode;
+    searchForm.addEventListener(
+      "submit",
+      event => {
 
-        updateModeButtons();
+        event.preventDefault();
+        event.stopPropagation();
+
+        const query =
+          cleanQuery(
+            searchInput
+              ? searchInput.value
+              : ""
+          );
+
+        /*
+         * THIS IS THE IMPORTANT FIX.
+         *
+         * Never write:
+         *
+         * doSearch(query, "web")
+         *
+         * Always use current state.mode.
+         */
 
         doSearch(
-          q.trim(),
-          validMode
+          query,
+          state.mode
         );
+
+      },
+      true
+    );
+
+  }
+
+  /* ==================================================
+     INPUT ENTER
+  ================================================== */
+
+  if (searchInput) {
+
+    searchInput.addEventListener(
+      "keydown",
+      event => {
+
+        if (
+          event.key !== "Enter"
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+
+        const query =
+          cleanQuery(
+            searchInput.value
+          );
+
+        doSearch(
+          query,
+          state.mode
+        );
+
       }
-    } catch {
-      // Ignore invalid URL params.
+    );
+
+  }
+
+  /* ==================================================
+     INITIALIZE
+  ================================================== */
+
+  function initialize() {
+
+    const urlMode =
+      getModeFromURL();
+
+    const urlQuery =
+      getQueryFromURL();
+
+    state.mode =
+      urlMode || "web";
+
+    state.query =
+      urlQuery || "";
+
+    updateActiveTabs();
+
+    if (searchInput) {
+      searchInput.value =
+        state.query;
     }
 
-    console.log(
-      "[HEXORA] Search UI initialized."
-    );
-  }
+    if (
+      state.query &&
+      isSearchMode(state.mode)
+    ) {
 
-  /*
-   * DOM may already be ready or still loading.
-   */
-
-  if (
-    document.readyState ===
-    "loading"
-  ) {
-    document.addEventListener(
-      "DOMContentLoaded",
-      init,
-      {
-        once: true
-      }
-    );
-  } else {
-    init();
-  }
-
-  /* -------------------------------------------------------
-     OPTIONAL GLOBAL API
-     Useful for existing HEXORA UI buttons.
-  ------------------------------------------------------- */
-
-  window.HEXORA = {
-    ...(window.HEXORA || {}),
-
-    search: (
-      query,
-      mode = "web"
-    ) =>
       doSearch(
-        query,
-        mode
-      ),
+        state.query,
+        state.mode
+      );
 
-    setMode,
+    } else {
 
-    getState: () => ({
-      ...state
-    })
+      showHome();
+
+    }
+  }
+
+  /* ==================================================
+     BROWSER BACK / FORWARD
+  ================================================== */
+
+  window.addEventListener(
+    "popstate",
+    () => {
+
+      const mode =
+        getModeFromURL() ||
+        "web";
+
+      const query =
+        getQueryFromURL();
+
+      state.mode = mode;
+      state.query = query;
+
+      updateActiveTabs();
+
+      if (searchInput) {
+        searchInput.value =
+          query;
+      }
+
+      if (query) {
+        doSearch(
+          query,
+          mode
+        );
+      } else {
+        showHome();
+      }
+
+    }
+  );
+
+  /* ==================================================
+     DEBUG
+  ================================================== */
+
+  window.HEXORA_SEARCH = {
+    state,
+    doSearch,
+    setMode(mode) {
+
+      if (!isSearchMode(mode)) {
+        return;
+      }
+
+      state.mode = mode;
+
+      updateActiveTabs();
+      updateURL();
+
+      if (state.query) {
+        doSearch(
+          state.query,
+          mode
+        );
+      }
+    }
   };
+
+  initialize();
 
 })();
