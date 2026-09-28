@@ -1,543 +1,1469 @@
+"use strict";
+
 /* =========================================================
-   HEXORA SEARCH ENGINE
-   MAIN.JS — FINAL FRONTEND
-   HEXORA EARTH — REAL 3D GLOBE + SATELLITE + GPS
+   HEXORA SEARCH + HEXORA EARTH
+   REAL MAP / REAL SATELLITE / REAL LOCATION
    ========================================================= */
 
-(() => {
-  "use strict";
+const CONFIG = {
+  searchEndpoint: "/api/search",
+  newsEndpoint: "/api/news",
 
-  /* =======================================================
-     CONFIG
-     ======================================================= */
+  map: {
+    defaultCenter: [91.7362, 26.1445],
+    defaultZoom: 4,
 
-  const CONFIG = {
-    searchEndpoint: "/api/search",
-    newsEndpoint: "/api/news",
+    osmTiles:
+      "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
 
-    timeout: 20000,
+    satelliteTiles:
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
 
-    earth: {
-      longitude: 91.7362,
-      latitude: 26.1445,
-      height: 6500000,
-
-      /* Real Esri World Imagery satellite tiles */
-      satelliteTiles:
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-
-      satelliteAttribution:
-        "© Esri",
-
-      /* Real OpenStreetMap tiles */
-      streetTiles:
-        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-
-      streetAttribution:
-        "© OpenStreetMap contributors",
-
-      /* Real OpenStreetMap geocoding */
-      geocoder:
-        "https://nominatim.openstreetmap.org/search"
-    }
-  };
-
-
-  /* =======================================================
-     STATE
-     ======================================================= */
-
-  const state = {
-    mode: "web",
-    query: "",
-
-    viewer: null,
-
-    earthReady: false,
-    earthLoading: false,
-
-    satellite: true,
-
-    searchMarker: null,
-    locationMarker: null,
-
-    lastLocation: null
-  };
-
-
-  /* =======================================================
-     DOM HELPERS
-     ======================================================= */
-
-  function $(selector) {
-    return document.querySelector(selector);
+    geocoder:
+      "https://nominatim.openstreetmap.org/search"
   }
+};
 
-  function $$(selector) {
-    return Array.from(
-      document.querySelectorAll(selector)
-    );
-  }
-
-
-  /* =======================================================
-     SECURITY / TEXT HELPERS
-     ======================================================= */
-
-  function escapeHTML(value) {
-    return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
+let map = null;
+let mapMarker = null;
+let mapStyleType = "street";
+let mapReady = false;
 
 
-  function cleanQuery(value) {
-    return String(value || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+/* =========================================================
+   HELPERS
+   ========================================================= */
 
+function $(selector) {
+  return document.querySelector(selector);
+}
 
-  function safeURL(value) {
-    try {
-      const url = String(value || "").trim();
+function $$(selector) {
+  return Array.from(document.querySelectorAll(selector));
+}
 
-      if (!url) {
-        return "#";
-      }
+function escapeHTML(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
-      if (
-        url.startsWith("https://") ||
-        url.startsWith("http://")
-      ) {
-        return url;
-      }
+function safeURL(url) {
+  try {
+    const value = String(url || "").trim();
 
-      return new URL(
-        url,
-        window.location.origin
-      ).href;
-
-    } catch {
+    if (!value) {
       return "#";
     }
-  }
-
-
-  function domainFromURL(url) {
-    try {
-      return new URL(url)
-        .hostname
-        .replace(/^www\./, "");
-    } catch {
-      return "";
-    }
-  }
-
-
-  function formatDate(value) {
-    if (!value) return "";
-
-    const date = new Date(value);
 
     if (
-      Number.isNaN(
-        date.getTime()
-      )
+      value.startsWith("http://") ||
+      value.startsWith("https://")
     ) {
-      return String(value);
+      return value;
     }
 
-    return date.toLocaleDateString(
-      "en-IN",
-      {
-        day: "numeric",
-        month: "short",
-        year: "numeric"
+    return new URL(
+      value,
+      window.location.origin
+    ).href;
+  } catch {
+    return "#";
+  }
+}
+
+function formatDate(value) {
+  if (!value) return "";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+}
+
+
+/* =========================================================
+   MAPLIBRE LOADER
+   ========================================================= */
+
+function loadMapLibre() {
+  return new Promise((resolve, reject) => {
+
+    if (window.maplibregl) {
+      resolve(window.maplibregl);
+      return;
+    }
+
+    const existing = document.querySelector(
+      'script[data-hexora-maplibre="true"]'
+    );
+
+    if (existing) {
+
+      existing.addEventListener(
+        "load",
+        () => {
+          if (window.maplibregl) {
+            resolve(window.maplibregl);
+          } else {
+            reject(
+              new Error(
+                "MapLibre loaded but unavailable."
+              )
+            );
+          }
+        },
+        { once: true }
+      );
+
+      existing.addEventListener(
+        "error",
+        () => {
+          reject(
+            new Error(
+              "MapLibre failed to load."
+            )
+          );
+        },
+        { once: true }
+      );
+
+      return;
+    }
+
+    const link = document.createElement("link");
+
+    link.rel = "stylesheet";
+    link.href =
+      "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css";
+
+    link.dataset.hexoraMaplibre = "true";
+
+    document.head.appendChild(link);
+
+    const script = document.createElement("script");
+
+    script.src =
+      "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
+
+    script.async = true;
+    script.dataset.hexoraMaplibre = "true";
+
+    script.onload = () => {
+
+      if (window.maplibregl) {
+        resolve(window.maplibregl);
+      } else {
+        reject(
+          new Error(
+            "MapLibre failed to initialize."
+          )
+        );
       }
+
+    };
+
+    script.onerror = () => {
+      reject(
+        new Error(
+          "Could not load MapLibre."
+        )
+      );
+    };
+
+    document.head.appendChild(script);
+  });
+}
+
+
+/* =========================================================
+   MAP STYLES
+   ========================================================= */
+
+function streetStyle() {
+
+  return {
+    version: 8,
+
+    sources: {
+
+      hexoraOSM: {
+        type: "raster",
+
+        tiles: [
+          CONFIG.map.osmTiles
+        ],
+
+        tileSize: 256,
+
+        attribution:
+          "© OpenStreetMap contributors"
+      }
+
+    },
+
+    layers: [
+
+      {
+        id: "hexora-osm",
+
+        type: "raster",
+
+        source: "hexoraOSM"
+      }
+
+    ]
+  };
+}
+
+
+function satelliteStyle() {
+
+  return {
+    version: 8,
+
+    sources: {
+
+      hexoraSatellite: {
+        type: "raster",
+
+        tiles: [
+          CONFIG.map.satelliteTiles
+        ],
+
+        tileSize: 256,
+
+        attribution:
+          "© Esri"
+      }
+
+    },
+
+    layers: [
+
+      {
+        id: "hexora-satellite",
+
+        type: "raster",
+
+        source: "hexoraSatellite"
+      }
+
+    ]
+  };
+}
+
+
+/* =========================================================
+   MAP INITIALIZATION
+   ========================================================= */
+
+async function initializeMap() {
+
+  const container =
+    $("#hexoraMap");
+
+  if (!container) {
+    return null;
+  }
+
+  if (map) {
+    return map;
+  }
+
+  try {
+
+    const maplibregl =
+      await loadMapLibre();
+
+    map =
+      new maplibregl.Map({
+
+        container:
+          "hexoraMap",
+
+        style:
+          streetStyle(),
+
+        center:
+          CONFIG.map.defaultCenter,
+
+        zoom:
+          CONFIG.map.defaultZoom,
+
+        pitch: 0,
+
+        bearing: 0,
+
+        attributionControl:
+          true,
+
+        antialias:
+          true
+
+      });
+
+
+    /* -----------------------------------------
+       Navigation
+       ----------------------------------------- */
+
+    map.addControl(
+
+      new maplibregl.NavigationControl({
+        visualizePitch: true
+      }),
+
+      "top-right"
+
+    );
+
+
+    /* -----------------------------------------
+       Globe projection
+       ----------------------------------------- */
+
+    map.on(
+      "load",
+      () => {
+
+        mapReady = true;
+
+        try {
+
+          map.setProjection({
+            type: "globe"
+          });
+
+        } catch (error) {
+
+          console.warn(
+            "HEXORA globe projection unavailable:",
+            error
+          );
+
+        }
+
+      }
+    );
+
+
+    /* -----------------------------------------
+       Error handling
+       ----------------------------------------- */
+
+    map.on(
+      "error",
+      (event) => {
+
+        console.error(
+          "HEXORA Map error:",
+          event
+        );
+
+      }
+    );
+
+
+    return map;
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA Map loading error:",
+      error
+    );
+
+    const info =
+      $("#mapInfo");
+
+    if (info) {
+
+      info.textContent =
+        "HEXORA Earth could not be loaded.";
+
+      info.style.display =
+        "block";
+
+    }
+
+    return null;
+  }
+}
+
+
+/* =========================================================
+   OPEN MAP
+   ========================================================= */
+
+async function openMap(options = {}) {
+
+  const mapView =
+    $("#mapView");
+
+  const searchView =
+    $("#searchView");
+
+  const home =
+    $("#homeView");
+
+  if (!mapView) {
+    return null;
+  }
+
+  if (searchView) {
+    searchView.classList.remove(
+      "active"
     );
   }
 
+  if (home) {
+    home.style.display =
+      "none";
+  }
 
-  /* =======================================================
-     HTTP
-     ======================================================= */
+  mapView.classList.add(
+    "active"
+  );
 
-  async function fetchJSON(
-    url,
-    options = {}
-  ) {
-    const controller =
-      new AbortController();
+  const instance =
+    await initializeMap();
 
-    const timer =
-      setTimeout(
-        () => controller.abort(),
-        CONFIG.timeout
-      );
+  if (!instance) {
+    return null;
+  }
+
+  setTimeout(() => {
 
     try {
-      const response =
-        await fetch(
-          url,
-          {
-            ...options,
+      instance.resize();
+    } catch {}
 
-            signal:
-              controller.signal,
+    if (options.center) {
 
-            headers: {
-              Accept:
-                "application/json",
+      instance.flyTo({
 
-              ...(options.headers || {})
-            }
-          }
-        );
+        center:
+          options.center,
 
-      const text =
-        await response.text();
+        zoom:
+          options.zoom || 13,
 
-      let data = null;
+        speed:
+          1.2,
+
+        essential:
+          true
+
+      });
+
+    }
+
+  }, 200);
+
+  return instance;
+}
+
+
+/* =========================================================
+   CLOSE MAP
+   ========================================================= */
+
+function closeMap() {
+
+  const mapView =
+    $("#mapView");
+
+  if (mapView) {
+
+    mapView.classList.remove(
+      "active"
+    );
+
+  }
+}
+
+
+/* =========================================================
+   CHANGE MAP TYPE
+   ========================================================= */
+
+function changeMapStyle(type) {
+
+  if (!map) {
+    return;
+  }
+
+  const center =
+    map.getCenter().toArray();
+
+  const zoom =
+    map.getZoom();
+
+  const pitch =
+    map.getPitch();
+
+  const bearing =
+    map.getBearing();
+
+  mapStyleType =
+    type === "satellite"
+      ? "satellite"
+      : "street";
+
+  const style =
+    mapStyleType === "satellite"
+      ? satelliteStyle()
+      : streetStyle();
+
+  map.setStyle(style);
+
+  map.once(
+    "style.load",
+    () => {
 
       try {
-        data = text
-          ? JSON.parse(text)
-          : null;
 
-      } catch {
-        throw new Error(
-          "Server returned invalid JSON."
-        );
-      }
+        map.jumpTo({
 
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-          `Request failed (${response.status})`
-        );
-      }
+          center,
+          zoom,
+          pitch,
+          bearing
 
-      return data;
+        });
 
-    } catch (error) {
+        map.setProjection({
+          type: "globe"
+        });
 
-      if (
-        error.name ===
-        "AbortError"
-      ) {
-        throw new Error(
-          "Request timed out."
-        );
-      }
+      } catch {}
 
-      throw error;
-
-    } finally {
-      clearTimeout(timer);
     }
+  );
+}
+
+
+/* =========================================================
+   EARTH VIEW
+   ========================================================= */
+
+function earthView() {
+
+  if (!map) {
+    return;
+  }
+
+  try {
+
+    map.setProjection({
+      type: "globe"
+    });
+
+    map.easeTo({
+
+      zoom: 2.5,
+
+      pitch: 20,
+
+      bearing: 0,
+
+      duration: 1200
+
+    });
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA Earth view error:",
+      error
+    );
+
+  }
+}
+
+
+/* =========================================================
+   STREET VIEW
+   ========================================================= */
+
+function streetView() {
+
+  if (!map) {
+    return;
+  }
+
+  changeMapStyle(
+    "street"
+  );
+
+}
+
+
+/* =========================================================
+   SATELLITE VIEW
+   ========================================================= */
+
+function satelliteView() {
+
+  if (!map) {
+    return;
+  }
+
+  changeMapStyle(
+    "satellite"
+  );
+
+}
+
+
+/* =========================================================
+   3D CAMERA
+   ========================================================= */
+
+function enable3D() {
+
+  if (!map) {
+    return;
+  }
+
+  try {
+
+    map.easeTo({
+
+      pitch: 65,
+
+      bearing: -20,
+
+      duration: 1200,
+
+      essential: true
+
+    });
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA 3D error:",
+      error
+    );
+
+  }
+}
+
+
+/* =========================================================
+   HIGH 3D CAMERA
+   ========================================================= */
+
+function enableHigh3D() {
+
+  if (!map) {
+    return;
+  }
+
+  try {
+
+    map.easeTo({
+
+      pitch: 80,
+
+      bearing: -35,
+
+      zoom:
+        Math.max(
+          map.getZoom(),
+          10
+        ),
+
+      duration: 1400,
+
+      essential: true
+
+    });
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA High 3D error:",
+      error
+    );
+
+  }
+}
+
+
+/* =========================================================
+   MAP SEARCH
+   ========================================================= */
+
+async function searchMapPlace(query) {
+
+  const value =
+    String(query || "")
+      .trim();
+
+  if (!value) {
+    return;
+  }
+
+  const info =
+    $("#mapInfo");
+
+  if (info) {
+
+    info.textContent =
+      "Searching place...";
+
+    info.style.display =
+      "block";
+
+  }
+
+  try {
+
+    const url =
+      new URL(
+        CONFIG.map.geocoder
+      );
+
+    url.searchParams.set(
+      "q",
+      value
+    );
+
+    url.searchParams.set(
+      "format",
+      "json"
+    );
+
+    url.searchParams.set(
+      "limit",
+      "5"
+    );
+
+    url.searchParams.set(
+      "addressdetails",
+      "1"
+    );
+
+
+    const response =
+      await fetch(
+        url.toString(),
+        {
+          headers: {
+            Accept:
+              "application/json"
+          }
+        }
+      );
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        `Geocoder HTTP ${response.status}`
+      );
+
+    }
+
+
+    const places =
+      await response.json();
+
+
+    if (
+      !Array.isArray(places) ||
+      !places.length
+    ) {
+
+      if (info) {
+
+        info.textContent =
+          "Place not found.";
+
+      }
+
+      return;
+    }
+
+
+    const place =
+      places[0];
+
+
+    const lat =
+      Number(place.lat);
+
+    const lon =
+      Number(place.lon);
+
+
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lon)
+    ) {
+
+      throw new Error(
+        "Invalid coordinates."
+      );
+
+    }
+
+
+    await openMap({
+
+      center: [
+        lon,
+        lat
+      ],
+
+      zoom: 13
+
+    });
+
+
+    if (!map) {
+      return;
+    }
+
+
+    map.flyTo({
+
+      center: [
+        lon,
+        lat
+      ],
+
+      zoom: 13,
+
+      pitch: 45,
+
+      speed: 1.2,
+
+      essential: true
+
+    });
+
+
+    addMapMarker([
+      lon,
+      lat
+    ]);
+
+
+    if (info) {
+
+      info.textContent =
+        place.display_name ||
+        value;
+
+    }
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA place search error:",
+      error
+    );
+
+    if (info) {
+
+      info.textContent =
+        "Place search failed. Try again.";
+
+    }
+
+  }
+}
+
+
+/* =========================================================
+   MAP MARKER
+   ========================================================= */
+
+function addMapMarker(
+  coordinates
+) {
+
+  if (
+    !map ||
+    !window.maplibregl
+  ) {
+    return;
+  }
+
+  if (mapMarker) {
+
+    mapMarker.remove();
+
+    mapMarker = null;
+
   }
 
 
-  /* =======================================================
-     SEARCH ENGINE
-     ======================================================= */
+  mapMarker =
+    new window.maplibregl.Marker({
+      color: "#00e5ff"
+    })
+      .setLngLat(
+        coordinates
+      )
+      .addTo(map);
+}
 
-  async function performSearch(
-    query,
-    mode = state.mode
+
+/* =========================================================
+   REAL DEVICE LOCATION
+   ========================================================= */
+
+function locateUser() {
+
+  if (
+    !navigator.geolocation
   ) {
-    query = cleanQuery(query);
 
-    if (!query) {
-      return;
+    const info =
+      $("#mapInfo");
+
+    if (info) {
+
+      info.textContent =
+        "Your browser does not support GPS location.";
+
     }
 
-    state.query = query;
-    state.mode = mode;
+    return;
 
-    const input =
-      $("#searchInput");
+  }
 
-    if (input) {
-      input.value = query;
-    }
 
-    /* Maps mode */
-    if (mode === "maps") {
-      await searchMapPlace(query);
-      return;
-    }
+  const info =
+    $("#mapInfo");
 
-    showSearchView();
 
-    const results =
-      $("#results");
+  if (info) {
 
-    const meta =
-      $("#resultMeta");
+    info.textContent =
+      "Getting your real location...";
 
-    if (results) {
-      results.innerHTML = `
-        <div class="hexora-loading">
-          <div class="loader"></div>
-          <span>Searching HEXORA...</span>
-        </div>
-      `;
-    }
+    info.style.display =
+      "block";
 
-    if (meta) {
-      meta.textContent =
-        `Searching for "${query}"...`;
-    }
+  }
 
-    try {
 
-      const url =
-        `${CONFIG.searchEndpoint}?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(mode)}`;
+  navigator.geolocation.getCurrentPosition(
 
-      const data =
-        await fetchJSON(url);
+    async (position) => {
 
-      renderSearchResults(
-        data,
-        query,
-        mode
-      );
+      const latitude =
+        position.coords.latitude;
 
-      updateURL(
-        query,
-        mode
-      );
+      const longitude =
+        position.coords.longitude;
 
-    } catch (error) {
+      const accuracy =
+        position.coords.accuracy;
+
+
+      await openMap({
+
+        center: [
+          longitude,
+          latitude
+        ],
+
+        zoom: 16
+
+      });
+
+
+      if (!map) {
+        return;
+      }
+
+
+      map.flyTo({
+
+        center: [
+          longitude,
+          latitude
+        ],
+
+        zoom: 16,
+
+        pitch: 55,
+
+        speed: 1.2,
+
+        essential: true
+
+      });
+
+
+      addMapMarker([
+        longitude,
+        latitude
+      ]);
+
+
+      if (info) {
+
+        info.textContent =
+          `Your location • Accuracy ±${Math.round(
+            accuracy
+          )} m`;
+
+      }
+
+    },
+
+
+    (error) => {
 
       console.error(
-        "HEXORA search error:",
+        "HEXORA GPS error:",
         error
       );
 
-      if (results) {
-        results.innerHTML = `
-          <div class="hexora-empty">
+      if (info) {
 
-            <div class="empty-icon">
-              ⌕
-            </div>
+        if (
+          error.code === 1
+        ) {
 
-            <h3>
-              HEXORA search is temporarily unavailable
-            </h3>
+          info.textContent =
+            "Location permission denied. Allow location access in your browser.";
 
-            <p>
-              ${escapeHTML(
-                error.message
-              )}
-            </p>
+        } else {
 
-            <button
-              class="hexora-retry"
-              id="retrySearchBtn"
-            >
-              Try Again
-            </button>
+          info.textContent =
+            "Could not get your current location.";
 
-          </div>
-        `;
+        }
 
-        $("#retrySearchBtn")
-          ?.addEventListener(
-            "click",
-            () =>
-              performSearch(
-                query,
-                mode
-              )
-          );
       }
 
-      if (meta) {
-        meta.textContent =
-          `Could not complete search for "${query}".`;
-      }
+    },
+
+
+    {
+
+      enableHighAccuracy:
+        true,
+
+      timeout:
+        15000,
+
+      maximumAge:
+        0
+
     }
+
+  );
+}
+
+
+/* =========================================================
+   RESET MAP
+   ========================================================= */
+
+function resetMap() {
+
+  if (!map) {
+    return;
+  }
+
+  if (mapMarker) {
+
+    mapMarker.remove();
+
+    mapMarker = null;
+
   }
 
 
-  /* =======================================================
-     SEARCH RESULTS
-     ======================================================= */
+  try {
 
-  function renderSearchResults(
-    data,
-    query,
-    mode
+    map.setProjection({
+      type: "globe"
+    });
+
+  } catch {}
+
+
+  map.flyTo({
+
+    center:
+      CONFIG.map.defaultCenter,
+
+    zoom:
+      CONFIG.map.defaultZoom,
+
+    pitch:
+      0,
+
+    bearing:
+      0,
+
+    speed:
+      1.2,
+
+    essential:
+      true
+
+  });
+
+
+  const info =
+    $("#mapInfo");
+
+  if (info) {
+
+    info.textContent =
+      "";
+
+    info.style.display =
+      "none";
+
+  }
+}
+
+
+/* =========================================================
+   FULLSCREEN
+   ========================================================= */
+
+function fullscreenMap() {
+
+  const mapView =
+    $("#mapView");
+
+  if (!mapView) {
+    return;
+  }
+
+  if (
+    !document.fullscreenElement
   ) {
-    const results =
-      $("#results");
 
-    const meta =
-      $("#resultMeta");
-
-    if (!results) {
-      return;
-    }
-
-    let items = [];
-
-    if (Array.isArray(data)) {
-
-      items = data;
-
-    } else if (
-      Array.isArray(
-        data?.results
-      )
+    if (
+      mapView.requestFullscreen
     ) {
 
-      items = data.results;
+      mapView.requestFullscreen();
 
-    } else if (
-      Array.isArray(
-        data?.data
-      )
+    }
+
+  } else {
+
+    if (
+      document.exitFullscreen
     ) {
 
-      items = data.data;
+      document.exitFullscreen();
+
     }
 
-    const total =
-      Number.isFinite(
-        data?.total
-      )
-        ? data.total
-        : items.length;
+  }
 
-    if (meta) {
-      meta.textContent =
-        `${total.toLocaleString("en-IN")} result${total === 1 ? "" : "s"} for "${query}"`;
+
+  setTimeout(() => {
+
+    if (map) {
+
+      try {
+        map.resize();
+      } catch {}
+
     }
 
-    if (!items.length) {
+  }, 500);
+}
+
+
+/* =========================================================
+   SEARCH ENGINE
+   ========================================================= */
+
+async function performSearch(
+  query
+) {
+
+  const value =
+    String(query || "")
+      .trim();
+
+  if (!value) {
+    return;
+  }
+
+  closeMap();
+
+
+  const home =
+    $("#homeView");
+
+  const searchView =
+    $("#searchView");
+
+  if (home) {
+
+    home.style.display =
+      "none";
+
+  }
+
+  if (searchView) {
+
+    searchView.classList.add(
+      "active"
+    );
+
+  }
+
+
+  const resultMeta =
+    $("#resultMeta");
+
+  const results =
+    $("#results");
+
+
+  if (resultMeta) {
+
+    resultMeta.textContent =
+      `Searching for "${value}"...`;
+
+  }
+
+
+  if (results) {
+
+    results.innerHTML = `
+      <div class="search-loading">
+        Searching HEXORA...
+      </div>
+    `;
+
+  }
+
+
+  try {
+
+    const url =
+      new URL(
+        CONFIG.searchEndpoint,
+        window.location.origin
+      );
+
+    url.searchParams.set(
+      "q",
+      value
+    );
+
+
+    const response =
+      await fetch(
+        url.toString(),
+        {
+          headers: {
+            Accept:
+              "application/json"
+          }
+        }
+      );
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        `Search HTTP ${response.status}`
+      );
+
+    }
+
+
+    const data =
+      await response.json();
+
+
+    const items =
+      Array.isArray(data)
+        ? data
+        : Array.isArray(data.results)
+          ? data.results
+          : Array.isArray(data.data)
+            ? data.data
+            : [];
+
+
+    renderSearchResults(
+      items,
+      value
+    );
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA Search error:",
+      error
+    );
+
+
+    if (resultMeta) {
+
+      resultMeta.textContent =
+        `Search: "${value}"`;
+
+    }
+
+
+    if (results) {
 
       results.innerHTML = `
-        <div class="hexora-empty">
 
-          <div class="empty-icon">
-            ⌕
-          </div>
+        <div class="search-error">
 
           <h3>
-            No matching results found
+            HEXORA Search Error
           </h3>
 
           <p>
-            HEXORA could not find indexed pages
-            matching this query yet.
+            Search service is temporarily unavailable.
+            Please try again.
           </p>
 
         </div>
+
       `;
 
-      return;
     }
 
-    results.innerHTML =
-      items
-        .map(
-          (item, index) =>
-            renderResultCard(
-              item,
-              index,
-              mode
-            )
-        )
-        .join("");
+  }
+}
+
+
+/* =========================================================
+   SEARCH RESULTS
+   ========================================================= */
+
+function renderSearchResults(
+  items,
+  query
+) {
+
+  const resultMeta =
+    $("#resultMeta");
+
+  const results =
+    $("#results");
+
+
+  if (resultMeta) {
+
+    resultMeta.textContent =
+      `${items.length} result${
+        items.length === 1
+          ? ""
+          : "s"
+      } for "${query}"`;
+
   }
 
 
-  function renderResultCard(
-    item,
-    index,
-    mode
-  ) {
-    const title =
-      item.title ||
-      item.name ||
-      "Untitled page";
+  if (!results) {
+    return;
+  }
 
-    const description =
-      item.description ||
-      item.snippet ||
-      item.content ||
-      "";
 
-    const url =
-      item.url ||
-      item.link ||
-      "#";
+  if (!items.length) {
 
-    const domain =
-      item.source_domain ||
-      item.domain ||
-      domainFromURL(url);
+    results.innerHTML = `
 
-    const image =
-      item.image_url ||
-      item.image ||
-      "";
+      <div class="search-empty">
 
-    const date =
-      item.published_at ||
-      item.fetched_at ||
-      item.date ||
-      "";
+        <h3>
+          No results found
+        </h3>
 
-    return `
-      <article
-        class="hexora-result"
-        data-result-index="${index}"
-      >
+        <p>
+          Try another search query.
+        </p>
 
-        <div class="result-top">
+      </div>
 
-          <div class="result-source">
+    `;
 
-            ${
-              domain
-                ? `
-                  <span class="source-dot"></span>
-                  <span>
-                    ${escapeHTML(domain)}
-                  </span>
-                `
-                : ""
-            }
+    return;
+  }
 
-          </div>
 
-          ${
-            date
-              ? `
-                <time>
-                  ${escapeHTML(
-                    formatDate(date)
-                  )}
-                </time>
-              `
-              : ""
-          }
+  results.innerHTML =
+    items
+      .map((item) => {
 
-        </div>
+        const title =
+          item.title ||
+          item.name ||
+          "Untitled";
 
-        <div class="result-body">
 
-          <div class="result-main">
+        const description =
+          item.description ||
+          item.snippet ||
+          item.content ||
+          "";
 
-            <h2 class="result-title">
+
+        const url =
+          item.url ||
+          item.link ||
+          "#";
+
+
+        const source =
+          item.source_name ||
+          item.source ||
+          item.source_domain ||
+          "";
+
+
+        const date =
+          item.published_at ||
+          item.date ||
+          item.publishedAt ||
+          "";
+
+
+        return `
+
+          <article
+            class="search-result"
+          >
+
+            <div
+              class="result-source"
+            >
+              ${escapeHTML(source)}
+            </div>
+
+
+            <h2
+              class="result-title"
+            >
 
               <a
                 href="${escapeHTML(
@@ -551,2592 +1477,1041 @@
 
             </h2>
 
+
+            <div
+              class="result-url"
+            >
+              ${escapeHTML(url)}
+            </div>
+
+
+            <p
+              class="result-description"
+            >
+              ${escapeHTML(
+                description
+              )}
+            </p>
+
+
             ${
-              domain
+              date
                 ? `
-                  <div class="result-url">
-                    ${escapeHTML(domain)}
+
+                  <div
+                    class="result-date"
+                  >
+                    ${escapeHTML(
+                      formatDate(date)
+                    )}
                   </div>
+
                 `
                 : ""
             }
 
-            <p class="result-description">
-              ${escapeHTML(
-                String(description)
-                  .replace(/\s+/g, " ")
-                  .slice(0, 500)
-              )}
-            </p>
+          </article>
 
-          </div>
+        `;
 
-          ${
-            image
-              ? `
-                <div class="result-image-wrap">
+      })
+      .join("");
+}
+
+
+/* =========================================================
+   NEWS
+   ========================================================= */
+
+async function loadNews() {
+
+  const newsList =
+    $("#newsList");
+
+  if (!newsList) {
+    return;
+  }
+
+  try {
+
+    const response =
+      await fetch(
+        CONFIG.newsEndpoint,
+        {
+          headers: {
+            Accept:
+              "application/json"
+          }
+        }
+      );
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        `News HTTP ${response.status}`
+      );
+
+    }
+
+
+    const data =
+      await response.json();
+
+
+    const items =
+      Array.isArray(data)
+        ? data
+        : Array.isArray(data.results)
+          ? data.results
+          : Array.isArray(data.data)
+            ? data.data
+            : [];
+
+
+    renderNews(items);
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA News error:",
+      error
+    );
+
+
+    newsList.innerHTML = `
+
+      <div class="news-error">
+        News is temporarily unavailable.
+      </div>
+
+    `;
+
+  }
+}
+
+
+/* =========================================================
+   RENDER NEWS
+   ========================================================= */
+
+function renderNews(items) {
+
+  const newsList =
+    $("#newsList");
+
+  if (!newsList) {
+    return;
+  }
+
+
+  if (!items.length) {
+
+    newsList.innerHTML = `
+
+      <div class="news-empty">
+        No news available right now.
+      </div>
+
+    `;
+
+    return;
+  }
+
+
+  newsList.innerHTML =
+    items
+      .slice(0, 20)
+      .map((item) => {
+
+        const title =
+          item.title ||
+          "Untitled news";
+
+
+        const description =
+          item.description ||
+          item.snippet ||
+          "";
+
+
+        const url =
+          item.url ||
+          item.link ||
+          "#";
+
+
+        const image =
+          item.image_url ||
+          item.image ||
+          "";
+
+
+        const source =
+          item.source_name ||
+          item.source ||
+          item.source_domain ||
+          "";
+
+
+        const date =
+          item.published_at ||
+          item.date ||
+          "";
+
+
+        return `
+
+          <article
+            class="news-card"
+          >
+
+            ${
+              image
+                ? `
 
                   <img
-                    class="result-image"
                     src="${escapeHTML(
                       safeURL(image)
                     )}"
-                    alt=""
+                    alt="${escapeHTML(
+                      title
+                    )}"
                     loading="lazy"
-                    referrerpolicy="no-referrer"
-                    onerror="
-                      this.style.display='none'
-                    "
+                    onerror="this.style.display='none'"
                   >
 
-                </div>
-              `
-              : ""
-          }
-
-        </div>
-
-      </article>
-    `;
-  }
+                `
+                : ""
+            }
 
 
-  /* =======================================================
-     NEWS
-     ======================================================= */
+            <div
+              class="news-card-content"
+            >
 
-  async function loadNews() {
+              ${
+                source
+                  ? `
 
-    const container =
-      $("#newsList");
+                    <div
+                      class="news-source"
+                    >
+                      ${escapeHTML(
+                        source
+                      )}
+                    </div>
 
-    if (!container) {
-      return;
-    }
+                  `
+                  : ""
+              }
 
-    container.innerHTML = `
-      <div class="hexora-loading">
 
-        <div class="loader"></div>
+              <h3>
 
-        <span>
-          Loading latest indexed news...
-        </span>
+                <a
+                  href="${escapeHTML(
+                    safeURL(url)
+                  )}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  ${escapeHTML(
+                    title
+                  )}
+                </a>
 
-      </div>
-    `;
+              </h3>
 
-    try {
 
-      const data =
-        await fetchJSON(
-          CONFIG.newsEndpoint
-        );
+              ${
+                description
+                  ? `
 
-      let items = [];
+                    <p>
+                      ${escapeHTML(
+                        description
+                      )}
+                    </p>
 
-      if (Array.isArray(data)) {
+                  `
+                  : ""
+              }
 
-        items = data;
 
-      } else if (
-        Array.isArray(
-          data?.results
-        )
-      ) {
+              ${
+                date
+                  ? `
 
-        items =
-          data.results;
+                    <small>
+                      ${escapeHTML(
+                        formatDate(date)
+                      )}
+                    </small>
 
-      } else if (
-        Array.isArray(
-          data?.data
-        )
-      ) {
+                  `
+                  : ""
+              }
 
-        items =
-          data.data;
-      }
+            </div>
 
-      if (!items.length) {
+          </article>
 
-        container.innerHTML = `
-          <div class="news-empty">
-            No indexed news available yet.
-          </div>
         `;
 
-        return;
-      }
-
-      container.innerHTML =
-        items
-          .slice(0, 20)
-          .map(
-            renderNewsCard
-          )
-          .join("");
-
-    } catch (error) {
-
-      console.error(
-        "HEXORA news error:",
-        error
-      );
-
-      container.innerHTML = `
-        <div class="news-empty">
-          Latest news could not be loaded.
-        </div>
-      `;
-    }
-  }
+      })
+      .join("");
+}
 
 
-  function renderNewsCard(
-    item
-  ) {
-    const title =
-      item.title ||
-      "Untitled news";
+/* =========================================================
+   HOME
+   ========================================================= */
 
-    const description =
-      item.description ||
-      item.snippet ||
+function showHome() {
+
+  const home =
+    $("#homeView");
+
+  const searchView =
+    $("#searchView");
+
+  const mapView =
+    $("#mapView");
+
+
+  if (home) {
+
+    home.style.display =
       "";
 
-    const url =
-      item.url ||
-      item.link ||
-      "#";
-
-    const source =
-      item.source_name ||
-      item.source_domain ||
-      item.source ||
-      domainFromURL(url);
-
-    const image =
-      item.image_url ||
-      item.image ||
-      "";
-
-    const date =
-      item.published_at ||
-      item.fetched_at ||
-      item.date ||
-      "";
-
-    return `
-      <article class="news-card">
-
-        ${
-          image
-            ? `
-              <a
-                href="${escapeHTML(
-                  safeURL(url)
-                )}"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="news-image-link"
-              >
-
-                <img
-                  src="${escapeHTML(
-                    safeURL(image)
-                  )}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="
-                    this.parentElement.style.display='none'
-                  "
-                >
-
-              </a>
-            `
-            : ""
-        }
-
-        <div class="news-content">
-
-          ${
-            source
-              ? `
-                <div class="news-source">
-                  ${escapeHTML(source)}
-                </div>
-              `
-              : ""
-          }
-
-          <h3>
-
-            <a
-              href="${escapeHTML(
-                safeURL(url)
-              )}"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              ${escapeHTML(title)}
-            </a>
-
-          </h3>
-
-          ${
-            description
-              ? `
-                <p>
-                  ${escapeHTML(
-                    String(
-                      description
-                    ).slice(0, 250)
-                  )}
-                </p>
-              `
-              : ""
-          }
-
-          ${
-            date
-              ? `
-                <time>
-                  ${escapeHTML(
-                    formatDate(date)
-                  )}
-                </time>
-              `
-              : ""
-          }
-
-        </div>
-
-      </article>
-    `;
   }
 
 
-  /* =======================================================
-     VIEWS
-     ======================================================= */
+  if (searchView) {
 
-  function showSearchView() {
-
-    $("#searchView")
-      ?.classList.add(
-        "active"
-      );
-
-    $("#mapView")
-      ?.classList.remove(
-        "active"
-      );
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth"
-    });
-  }
-
-
-  function showHomeView() {
-
-    $("#searchView")
-      ?.classList.remove(
-        "active"
-      );
-
-    $("#mapView")
-      ?.classList.remove(
-        "active"
-      );
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth"
-    });
-  }
-
-
-  /* =======================================================
-     CESIUM LOADER
-     ======================================================= */
-
-  function loadCesiumCSS() {
-
-    if (
-      document.querySelector(
-        'link[data-hexora-cesium-css="true"]'
-      )
-    ) {
-      return;
-    }
-
-    const link =
-      document.createElement(
-        "link"
-      );
-
-    link.rel =
-      "stylesheet";
-
-    link.href =
-      "https://cesium.com/downloads/cesiumjs/releases/1.136/Build/Cesium/Widgets/widgets.css";
-
-    link.dataset.hexoraCesiumCss =
-      "true";
-
-    document.head.appendChild(
-      link
-    );
-  }
-
-
-  function loadCesium() {
-
-    return new Promise(
-      (resolve, reject) => {
-
-        if (
-          window.Cesium
-        ) {
-          resolve(
-            window.Cesium
-          );
-
-          return;
-        }
-
-        const existing =
-          document.querySelector(
-            'script[data-hexora-cesium="true"]'
-          );
-
-        if (existing) {
-
-          existing.addEventListener(
-            "load",
-            () =>
-              resolve(
-                window.Cesium
-              ),
-            {
-              once: true
-            }
-          );
-
-          existing.addEventListener(
-            "error",
-            () =>
-              reject(
-                new Error(
-                  "HEXORA Earth engine failed to load."
-                )
-              ),
-            {
-              once: true
-            }
-          );
-
-          return;
-        }
-
-        const script =
-          document.createElement(
-            "script"
-          );
-
-        script.src =
-          "https://cesium.com/downloads/cesiumjs/releases/1.136/Build/Cesium/Cesium.js";
-
-        script.async =
-          true;
-
-        script.dataset.hexoraCesium =
-          "true";
-
-        script.onload =
-          () => {
-
-            if (
-              window.Cesium
-            ) {
-
-              resolve(
-                window.Cesium
-              );
-
-            } else {
-
-              reject(
-                new Error(
-                  "Cesium is unavailable."
-                )
-              );
-            }
-          };
-
-        script.onerror =
-          () =>
-            reject(
-              new Error(
-                "Could not load HEXORA Earth."
-              )
-            );
-
-        document.head.appendChild(
-          script
-        );
-      }
-    );
-  }
-
-
-  /* =======================================================
-     REAL SATELLITE PROVIDER
-     ======================================================= */
-
-  function createSatelliteProvider(
-    Cesium
-  ) {
-
-    return new Cesium.UrlTemplateImageryProvider(
-      {
-        url:
-          CONFIG.earth.satelliteTiles,
-
-        credit:
-          CONFIG.earth.satelliteAttribution,
-
-        maximumLevel:
-          19,
-
-        tileWidth:
-          256,
-
-        tileHeight:
-          256
-      }
-    );
-  }
-
-
-  /* =======================================================
-     REAL STREET PROVIDER
-     ======================================================= */
-
-  function createStreetProvider(
-    Cesium
-  ) {
-
-    return new Cesium.UrlTemplateImageryProvider(
-      {
-        url:
-          CONFIG.earth.streetTiles,
-
-        credit:
-          CONFIG.earth.streetAttribution,
-
-        maximumLevel:
-          19,
-
-        tileWidth:
-          256,
-
-        tileHeight:
-          256
-      }
-    );
-  }
-
-
-  /* =======================================================
-     HEXORA EARTH INITIALIZATION
-     ======================================================= */
-
-  async function initHexoraEarth() {
-
-    if (
-      state.viewer
-    ) {
-      return state.viewer;
-    }
-
-    if (
-      state.earthLoading
-    ) {
-      return null;
-    }
-
-    const container =
-      $("#hexoraMap");
-
-    if (!container) {
-
-      console.error(
-        "HEXORA: #hexoraMap not found."
-      );
-
-      return null;
-    }
-
-    state.earthLoading =
-      true;
-
-    try {
-
-      loadCesiumCSS();
-
-      const Cesium =
-        await loadCesium();
-
-      container.innerHTML = "";
-
-      /*
-       * REAL SATELLITE IMAGERY
-       *
-       * No fake globe.
-       * No Google Earth.
-       * Real Esri World Imagery tiles.
-       */
-
-      const imageryProvider =
-        createSatelliteProvider(
-          Cesium
-        );
-
-      const viewer =
-        new Cesium.Viewer(
-          container,
-          {
-            baseLayer:
-              new Cesium.ImageryLayer(
-                imageryProvider
-              ),
-
-            animation:
-              false,
-
-            timeline:
-              false,
-
-            baseLayerPicker:
-              false,
-
-            geocoder:
-              false,
-
-            homeButton:
-              false,
-
-            sceneModePicker:
-              false,
-
-            navigationHelpButton:
-              false,
-
-            fullscreenButton:
-              false,
-
-            infoBox:
-              false,
-
-            selectionIndicator:
-              true,
-
-            scene3DOnly:
-              true,
-
-            shouldAnimate:
-              true
-          }
-        );
-
-      state.viewer =
-        viewer;
-
-      state.earthReady =
-        true;
-
-      state.earthLoading =
-        false;
-
-      /*
-       * Real Earth atmosphere.
-       */
-
-      viewer.scene.skyAtmosphere.show =
-        true;
-
-      viewer.scene.fog.enabled =
-        true;
-
-      viewer.scene.globe.enableLighting =
-        true;
-
-      viewer.scene.backgroundColor =
-        Cesium.Color.BLACK;
-
-
-      /*
-       * Start with real globe view.
-       */
-
-      viewer.camera.flyTo(
-        {
-          destination:
-            Cesium.Cartesian3.fromDegrees(
-              CONFIG.earth.longitude,
-              CONFIG.earth.latitude,
-              CONFIG.earth.height
-            ),
-
-          orientation:
-            {
-              heading: 0,
-
-              pitch:
-                Cesium.Math.toRadians(
-                  -90
-                ),
-
-              roll: 0
-            },
-
-          duration:
-            1.8
-        }
-      );
-
-
-      /*
-       * Resize after opening.
-       */
-
-      setTimeout(
-        () => {
-
-          try {
-            viewer.resize();
-          } catch {}
-
-        },
-        500
-      );
-
-
-      updateMapInfo(
-        "HEXORA Earth • Real satellite imagery"
-      );
-
-      return viewer;
-
-    } catch (error) {
-
-      state.earthLoading =
-        false;
-
-      console.error(
-        "HEXORA Earth error:",
-        error
-      );
-
-      updateMapInfo(
-        `HEXORA Earth error: ${error.message}`
-      );
-
-      return null;
-    }
-  }
-
-
-  /* =======================================================
-     OPEN EARTH
-     ======================================================= */
-
-  async function openMapView() {
-
-    $("#searchView")
-      ?.classList.remove(
-        "active"
-      );
-
-    $("#mapView")
-      ?.classList.add(
-        "active"
-      );
-
-    const viewer =
-      await initHexoraEarth();
-
-    if (viewer) {
-
-      setTimeout(
-        () => {
-
-          try {
-            viewer.resize();
-          } catch {}
-
-        },
-        300
-      );
-    }
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth"
-    });
-  }
-
-
-  /* =======================================================
-     MAP INFO
-     ======================================================= */
-
-  function updateMapInfo(
-    message
-  ) {
-
-    const info =
-      $("#mapInfo");
-
-    if (info) {
-      info.textContent =
-        message || "";
-    }
-  }
-
-
-  /* =======================================================
-     MARKER
-     ======================================================= */
-
-  function removeEntity(
-    entity
-  ) {
-
-    if (
-      !entity ||
-      !state.viewer
-    ) {
-      return;
-    }
-
-    try {
-
-      state.viewer.entities
-        .remove(entity);
-
-    } catch {}
-  }
-
-
-  function createMarker(
-    longitude,
-    latitude,
-    title,
-    type = "place"
-  ) {
-
-    if (
-      !state.viewer
-    ) {
-      return null;
-    }
-
-    const Cesium =
-      window.Cesium;
-
-    const isLocation =
-      type === "location";
-
-    return state.viewer.entities.add(
-      {
-        position:
-          Cesium.Cartesian3.fromDegrees(
-            Number(longitude),
-            Number(latitude),
-            30
-          ),
-
-        point:
-          {
-            pixelSize:
-              isLocation
-                ? 16
-                : 13,
-
-            color:
-              isLocation
-                ? Cesium.Color.CYAN
-                : Cesium.Color.WHITE,
-
-            outlineColor:
-              Cesium.Color.BLACK,
-
-            outlineWidth:
-              3,
-
-            heightReference:
-              Cesium.HeightReference.CLAMP_TO_GROUND
-          },
-
-        label:
-          {
-            text:
-              String(
-                title || ""
-              ),
-
-            font:
-              "14px sans-serif",
-
-            showBackground:
-              true,
-
-            backgroundColor:
-              Cesium.Color.BLACK
-                .withAlpha(
-                  0.78
-                ),
-
-            pixelOffset:
-              new Cesium.Cartesian2(
-                0,
-                -28
-              ),
-
-            heightReference:
-              Cesium.HeightReference.CLAMP_TO_GROUND
-          }
-      }
-    );
-  }
-
-
-  /* =======================================================
-     REAL PLACE SEARCH
-     ======================================================= */
-
-  async function searchMapPlace(
-    query
-  ) {
-
-    query =
-      cleanQuery(query);
-
-    if (!query) {
-      return;
-    }
-
-    await openMapView();
-
-    const viewer =
-      await initHexoraEarth();
-
-    if (!viewer) {
-      return;
-    }
-
-    updateMapInfo(
-      `Searching real location for "${query}"...`
+    searchView.classList.remove(
+      "active"
     );
 
-    try {
+  }
 
-      const url =
-        `${CONFIG.earth.geocoder}?format=jsonv2&limit=8&addressdetails=1&q=${encodeURIComponent(query)}`;
 
-      const response =
-        await fetch(
-          url,
-          {
-            headers:
-              {
-                Accept:
-                  "application/json"
-              }
-          }
-        );
+  if (mapView) {
 
-      if (!response.ok) {
+    mapView.classList.remove(
+      "active"
+    );
 
-        throw new Error(
-          `Location search failed (${response.status})`
-        );
-      }
+  }
 
-      const places =
-        await response.json();
 
-      if (
-        !Array.isArray(places) ||
-        !places.length
-      ) {
+  window.scrollTo({
 
-        updateMapInfo(
-          `No real location found for "${query}".`
-        );
+    top: 0,
+
+    behavior: "smooth"
+
+  });
+}
+
+
+/* =========================================================
+   SEARCH FORM
+   ========================================================= */
+
+function setupSearch() {
+
+  const form =
+    $("#searchForm");
+
+  const input =
+    $("#searchInput");
+
+
+  if (!form || !input) {
+    return;
+  }
+
+
+  form.addEventListener(
+    "submit",
+    (event) => {
+
+      event.preventDefault();
+
+
+      const query =
+        input.value.trim();
+
+
+      if (!query) {
+
+        input.focus();
 
         return;
+
       }
 
-      const place =
-        places[0];
 
-      const latitude =
-        Number(place.lat);
+      performSearch(query);
 
-      const longitude =
-        Number(place.lon);
-
-      if (
-        !Number.isFinite(
-          latitude
-        ) ||
-        !Number.isFinite(
-          longitude
-        )
-      ) {
-
-        throw new Error(
-          "Invalid location returned."
-        );
-      }
-
-      /*
-       * Remove previous search marker.
-       */
-
-      removeEntity(
-        state.searchMarker
-      );
-
-      /*
-       * Add new real location marker.
-       */
-
-      state.searchMarker =
-        createMarker(
-          longitude,
-          latitude,
-          place.display_name,
-          "place"
-        );
-
-      const Cesium =
-        window.Cesium;
-
-      /*
-       * Fly to searched location.
-       */
-
-      viewer.camera.flyTo(
-        {
-          destination:
-            Cesium.Cartesian3.fromDegrees(
-              longitude,
-              latitude,
-              5000
-            ),
-
-          orientation:
-            {
-              heading: 0,
-
-              pitch:
-                Cesium.Math.toRadians(
-                  -65
-                ),
-
-              roll: 0
-            },
-
-          duration:
-            2.2
-        }
-      );
-
-      updateMapInfo(
-        `📍 ${place.display_name}`
-      );
-
-    } catch (error) {
-
-      console.error(
-        "HEXORA map search error:",
-        error
-      );
-
-      updateMapInfo(
-        `Map search failed: ${error.message}`
-      );
     }
-  }
+  );
+}
 
 
-  /* =======================================================
-     REAL DEVICE GPS
-     ======================================================= */
+/* =========================================================
+   MAP SEARCH FORM
+   ========================================================= */
 
-  async function locateUser() {
+function setupMapSearch() {
 
-    if (
-      !navigator.geolocation
-    ) {
+  const form =
+    $(".map-search-panel");
 
-      updateMapInfo(
-        "GPS is not supported by this browser."
-      );
+  const input =
+    $("#mapSearchInput");
 
-      return;
-    }
+  const button =
+    $("#mapSearchBtn");
 
-    await openMapView();
 
-    updateMapInfo(
-      "Requesting your real device location..."
-    );
-
-    navigator.geolocation.getCurrentPosition(
-
-      async position => {
-
-        const latitude =
-          position.coords.latitude;
-
-        const longitude =
-          position.coords.longitude;
-
-        const accuracy =
-          position.coords.accuracy;
-
-        state.lastLocation =
-          {
-            latitude,
-            longitude,
-            accuracy
-          };
-
-        const viewer =
-          await initHexoraEarth();
-
-        if (!viewer) {
-          return;
-        }
-
-        /*
-         * Remove old GPS marker.
-         */
-
-        removeEntity(
-          state.locationMarker
-        );
-
-        /*
-         * Create real GPS marker.
-         */
-
-        state.locationMarker =
-          createMarker(
-            longitude,
-            latitude,
-            "Your current location",
-            "location"
-          );
-
-        const Cesium =
-          window.Cesium;
-
-        /*
-         * Fly camera to real GPS.
-         */
-
-        viewer.camera.flyTo(
-          {
-            destination:
-              Cesium.Cartesian3.fromDegrees(
-                longitude,
-                latitude,
-                2000
-              ),
-
-            orientation:
-              {
-                heading: 0,
-
-                pitch:
-                  Cesium.Math.toRadians(
-                    -65
-                  ),
-
-                roll: 0
-              },
-
-            duration:
-              2
-          }
-        );
-
-        updateMapInfo(
-          `📍 Your location • accuracy ±${Math.round(accuracy)}m`
-        );
-
-      },
-
-      error => {
-
-        let message =
-          "Unable to get your location.";
-
-        if (
-          error.code ===
-          error.PERMISSION_DENIED
-        ) {
-
-          message =
-            "Location permission denied. Allow location access for HEXORA.";
-        }
-
-        if (
-          error.code ===
-          error.POSITION_UNAVAILABLE
-        ) {
-
-          message =
-            "Device GPS location unavailable.";
-        }
-
-        if (
-          error.code ===
-          error.TIMEOUT
-        ) {
-
-          message =
-            "GPS request timed out.";
-        }
-
-        updateMapInfo(
-          message
-        );
-
-        console.error(
-          "HEXORA GPS:",
-          error
-        );
-      },
-
-      {
-        enableHighAccuracy:
-          true,
-
-        timeout:
-          20000,
-
-        maximumAge:
-          0
-      }
-    );
-  }
-
-
-  /* =======================================================
-     SATELLITE / STREET SWITCH
-     ======================================================= */
-
-  async function setImagery(
-    satellite
-  ) {
-
-    const viewer =
-      await initHexoraEarth();
-
-    if (!viewer) {
-      return;
-    }
-
-    const Cesium =
-      window.Cesium;
-
-    try {
-
-      viewer.imageryLayers
-        .removeAll();
-
-      const provider =
-        satellite
-          ? createSatelliteProvider(
-              Cesium
-            )
-          : createStreetProvider(
-              Cesium
-            );
-
-      viewer.imageryLayers.addImageryProvider(
-        provider
-      );
-
-      state.satellite =
-        satellite;
-
-      updateMapInfo(
-        satellite
-          ? "🛰️ HEXORA Satellite • Real satellite imagery"
-          : "🗺️ HEXORA Map • OpenStreetMap"
-      );
-
-    } catch (error) {
-
-      console.error(
-        "Imagery switch error:",
-        error
-      );
-
-      updateMapInfo(
-        "Could not change map layer."
-      );
-    }
-  }
-
-
-  function satelliteMode() {
-    setImagery(true);
-  }
-
-
-  function streetMode() {
-    setImagery(false);
-  }
-
-
-  /* =======================================================
-     GLOBE VIEW
-     ======================================================= */
-
-  function globeView() {
-
-    if (
-      !state.viewer
-    ) {
-      openMapView();
-      return;
-    }
-
-    const Cesium =
-      window.Cesium;
-
-    state.viewer.camera.flyTo(
-      {
-        destination:
-          Cesium.Cartesian3.fromDegrees(
-            78,
-            25,
-            13000000
-          ),
-
-        orientation:
-          {
-            heading: 0,
-
-            pitch:
-              Cesium.Math.toRadians(
-                -75
-              ),
-
-            roll: 0
-          },
-
-        duration:
-          1.8
-      }
-    );
-
-    updateMapInfo(
-      "🌍 HEXORA 3D Earth"
-    );
-  }
-
-
-  /* =======================================================
-     TOP VIEW
-     ======================================================= */
-
-  function topView() {
-
-    if (
-      !state.viewer
-    ) {
-      return;
-    }
-
-    const Cesium =
-      window.Cesium;
-
-    const cartographic =
-      state.viewer.camera
-        .positionCartographic;
-
-    state.viewer.camera.flyTo(
-      {
-        destination:
-          Cesium.Cartesian3.fromRadians(
-            cartographic.longitude,
-            cartographic.latitude,
-            2500000
-          ),
-
-        orientation:
-          {
-            heading: 0,
-
-            pitch:
-              Cesium.Math.toRadians(
-                -90
-              ),
-
-            roll: 0
-          },
-
-        duration:
-          1
-      }
-    );
-
-    updateMapInfo(
-      "HEXORA top view"
-    );
-  }
-
-
-  /* =======================================================
-     RESET EARTH
-     ======================================================= */
-
-  function resetMap() {
-
-    if (
-      !state.viewer
-    ) {
-      openMapView();
-      return;
-    }
-
-    const Cesium =
-      window.Cesium;
-
-    state.viewer.camera.flyTo(
-      {
-        destination:
-          Cesium.Cartesian3.fromDegrees(
-            CONFIG.earth.longitude,
-            CONFIG.earth.latitude,
-            CONFIG.earth.height
-          ),
-
-        orientation:
-          {
-            heading: 0,
-
-            pitch:
-              Cesium.Math.toRadians(
-                -90
-              ),
-
-            roll: 0
-          },
-
-        duration:
-          1.5
-      }
-    );
-
-    updateMapInfo(
-      "🌍 HEXORA Earth"
-    );
-  }
-
-
-  /* =======================================================
-     FULLSCREEN
-     ======================================================= */
-
-  async function fullscreenMap() {
-
-    const element =
-      $("#hexoraMap");
-
-    if (!element) {
-      return;
-    }
-
-    try {
-
-      if (
-        document.fullscreenElement
-      ) {
-
-        await document.exitFullscreen();
-
-      } else if (
-        element.requestFullscreen
-      ) {
-
-        await element.requestFullscreen();
-
-      } else {
-
-        element.classList.toggle(
-          "hexora-map-fullscreen"
-        );
-      }
-
-    } catch (error) {
-
-      console.error(
-        "Fullscreen error:",
-        error
-      );
-    }
-
-    setTimeout(
-      () => {
-
-        try {
-          state.viewer?.resize();
-        } catch {}
-
-      },
-      400
-    );
-  }
-
-
-  /* =======================================================
-     MAP PREVIEW
-     ======================================================= */
-
-  function initMapPreview() {
-
-    const preview =
-      $("#mapPreview");
-
-    if (!preview) {
-      return;
-    }
-
-    preview.innerHTML = `
-      <div class="hexora-preview-earth">
-
-        <div class="hexora-preview-globe">
-        </div>
-
-        <div class="hexora-preview-text">
-          HEXORA EARTH
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  /* =======================================================
-     MODES
-     ======================================================= */
-
-  function setMode(
-    mode
-  ) {
-
-    state.mode =
-      String(
-        mode || "web"
-      )
-        .toLowerCase();
-
-    $$(".mode")
-      .forEach(
-        button => {
-
-          const buttonMode =
-            String(
-              button.dataset.mode ||
-              button.textContent ||
-              ""
-            )
-              .trim()
-              .toLowerCase();
-
-          button.classList.toggle(
-            "active",
-            buttonMode ===
-              state.mode
-          );
-        }
-      );
-
-    const input =
-      $("#searchInput");
-
-    if (!input) {
-      return;
-    }
-
-    const placeholders = {
-
-      web:
-        "Search the world...",
-
-      images:
-        "Search images...",
-
-      news:
-        "Search latest news...",
-
-      maps:
-        "Search places and maps...",
-
-      videos:
-        "Search videos...",
-
-      shopping:
-        "Search products..."
-    };
-
-    input.placeholder =
-      placeholders[
-        state.mode
-      ] ||
-      placeholders.web;
-  }
-
-
-  /* =======================================================
-     TRENDING
-     ======================================================= */
-
-  function setupTrending() {
-
-    $$(".trend")
-      .forEach(
-        button => {
-
-          button.addEventListener(
-            "click",
-            () => {
-
-              const query =
-                cleanQuery(
-                  button.dataset.query ||
-                  button.textContent
-                );
-
-              if (!query) {
-                return;
-              }
-
-              const input =
-                $("#searchInput");
-
-              if (input) {
-                input.value =
-                  query;
-              }
-
-              performSearch(
-                query,
-                "web"
-              );
-            }
-          );
-        }
-      );
-  }
-
-
-  /* =======================================================
-     QUERY BUTTONS
-     ======================================================= */
-
-  function bindQueryButtons() {
-
-    $$("[data-query]")
-      .forEach(
-        button => {
-
-          if (
-            button.classList.contains(
-              "trend"
-            )
-          ) {
-            return;
-          }
-
-          button.addEventListener(
-            "click",
-            () => {
-
-              const query =
-                cleanQuery(
-                  button.dataset.query
-                );
-
-              if (!query) {
-                return;
-              }
-
-              const input =
-                $("#searchInput");
-
-              if (input) {
-                input.value =
-                  query;
-              }
-
-              performSearch(
-                query,
-                state.mode
-              );
-            }
-          );
-        }
-      );
-  }
-
-
-  /* =======================================================
-     MOBILE MENU
-     ======================================================= */
-
-  function setupMobileMenu() {
-
-    const button =
-      $("#mobileMenu");
-
-    const menu =
-      $("#mobileNav");
-
-    if (
-      !button ||
-      !menu
-    ) {
-      return;
-    }
-
-    button.addEventListener(
-      "click",
-      () => {
-
-        const open =
-          menu.classList.toggle(
-            "active"
-          );
-
-        button.setAttribute(
-          "aria-expanded",
-          open
-            ? "true"
-            : "false"
-        );
-      }
-    );
-
-    menu
-      .querySelectorAll("a")
-      .forEach(
-        link => {
-
-          link.addEventListener(
-            "click",
-            () => {
-
-              menu.classList.remove(
-                "active"
-              );
-            }
-          );
-        }
-      );
-  }
-
-
-  /* =======================================================
-     QUICK ACTIONS
-     ======================================================= */
-
-  function setupQuickActions() {
-
-    $$( "[data-quick]" )
-      .forEach(
-        button => {
-
-          button.addEventListener(
-            "click",
-            async () => {
-
-              const action =
-                button.dataset.quick;
-
-              switch (action) {
-
-                case "location":
-
-                  await openMapView();
-
-                  locateUser();
-
-                  break;
-
-
-                case "place":
-
-                  await openMapView();
-
-                  $("#mapSearchInput")
-                    ?.focus();
-
-                  updateMapInfo(
-                    "Search a real location on HEXORA Earth."
-                  );
-
-                  break;
-
-
-                case "directions":
-
-                  await openMapView();
-
-                  $("#mapSearchInput")
-                    ?.focus();
-
-                  updateMapInfo(
-                    "Search your destination on HEXORA Earth."
-                  );
-
-                  break;
-
-
-                case "satellite":
-
-                  await openMapView();
-
-                  satelliteMode();
-
-                  break;
-              }
-            }
-          );
-        }
-      );
-  }
-
-
-  /* =======================================================
-     NAVIGATION
-     ======================================================= */
-
-  function setupNavigation() {
-
-    $$("[data-home]")
-      .forEach(
-        element => {
-
-          element.addEventListener(
-            "click",
-            event => {
-
-              event.preventDefault();
-
-              showHomeView();
-            }
-          );
-        }
-      );
-
-
-    $("#openMapBtn")
-      ?.addEventListener(
-        "click",
-        openMapView
-      );
-
-
-    $("#mapPreviewBtn")
-      ?.addEventListener(
-        "click",
-        openMapView
-      );
-  }
-
-
-  /* =======================================================
-     SEARCH FORM
-     ======================================================= */
-
-  function setupSearch() {
-
-    const form =
-      $("#searchForm");
-
-    const input =
-      $("#searchInput");
-
-    if (
-      !form ||
-      !input
-    ) {
-      return;
-    }
+  if (form && input) {
 
     form.addEventListener(
       "submit",
-      event => {
+      (event) => {
 
         event.preventDefault();
 
-        const query =
-          cleanQuery(
-            input.value
-          );
-
-        if (!query) {
-
-          input.focus();
-
-          return;
-        }
-
-        performSearch(
-          query,
-          state.mode
+        searchMapPlace(
+          input.value
         );
+
       }
     );
 
-
-    input.addEventListener(
-      "keydown",
-      event => {
-
-        if (
-          event.key ===
-          "Escape"
-        ) {
-
-          input.value = "";
-
-          input.focus();
-        }
-      }
-    );
   }
 
 
-  /* =======================================================
-     MAP SEARCH
-     ======================================================= */
+  if (button && input) {
 
-  function setupMapSearch() {
+    button.addEventListener(
+      "click",
+      (event) => {
 
-    const input =
-      $("#mapSearchInput");
+        event.preventDefault();
 
-    const button =
-      $("#mapSearchBtn");
+        searchMapPlace(
+          input.value
+        );
 
-    button?.addEventListener(
+      }
+    );
+
+  }
+}
+
+
+/* =========================================================
+   NAVIGATION
+   ========================================================= */
+
+function setupNavigation() {
+
+  $$("[data-mode]")
+    .forEach((button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const mode =
+            button.dataset.mode;
+
+
+          if (mode === "maps") {
+
+            openMap();
+
+            return;
+
+          }
+
+
+          const input =
+            $("#searchInput");
+
+
+          if (!input) {
+            return;
+          }
+
+
+          if (
+            mode === "news"
+          ) {
+
+            input.value =
+              "latest news";
+
+          } else if (
+            mode === "images"
+          ) {
+
+            input.value =
+              "images";
+
+          } else if (
+            mode === "videos"
+          ) {
+
+            input.value =
+              "videos";
+
+          } else if (
+            mode === "shopping"
+          ) {
+
+            input.value =
+              "shopping";
+
+          }
+
+
+          input.focus();
+
+        }
+      );
+
+    });
+
+
+  $$("[data-trending]")
+    .forEach((button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const query =
+            button.dataset.trending ||
+            button.textContent.trim();
+
+
+          const input =
+            $("#searchInput");
+
+
+          if (input) {
+
+            input.value =
+              query;
+
+          }
+
+
+          performSearch(
+            query
+          );
+
+        }
+      );
+
+    });
+
+
+  $$("[data-quick]")
+    .forEach((button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const action =
+            button.dataset.quick;
+
+
+          if (
+            action ===
+            "location"
+          ) {
+
+            openMap()
+              .then(
+                locateUser
+              );
+
+            return;
+
+          }
+
+
+          if (
+            action ===
+            "place"
+          ) {
+
+            openMap()
+              .then(() => {
+
+                const input =
+                  $("#mapSearchInput");
+
+                if (input) {
+                  input.focus();
+                }
+
+              });
+
+            return;
+
+          }
+
+
+          if (
+            action ===
+            "directions"
+          ) {
+
+            openMap()
+              .then(() => {
+
+                const input =
+                  $("#mapSearchInput");
+
+                if (input) {
+                  input.focus();
+                }
+
+              });
+
+            return;
+
+          }
+
+
+          if (
+            action ===
+            "satellite"
+          ) {
+
+            openMap()
+              .then(
+                satelliteView
+              );
+
+          }
+
+        }
+      );
+
+    });
+}
+
+
+/* =========================================================
+   MAP BUTTONS
+   ========================================================= */
+
+function setupMapButtons() {
+
+  const earthBtn =
+    $("#earthMapBtn");
+
+  const satelliteBtn =
+    $("#satelliteMapBtn");
+
+  const streetBtn =
+    $("#streetMapBtn");
+
+  const terrainBtn =
+    $("#3dMapBtn");
+
+  const high3DBtn =
+    $("#high3dMapBtn");
+
+  const locateBtn =
+    $("#locateBtn");
+
+  const resetBtn =
+    $("#resetMapBtn");
+
+  const fullscreenBtn =
+    $("#fullscreenMapBtn");
+
+
+  if (earthBtn) {
+
+    earthBtn.addEventListener(
       "click",
       () => {
 
-        const query =
-          cleanQuery(
-            input?.value
+        openMap()
+          .then(
+            earthView
           );
 
-        if (query) {
-          searchMapPlace(
-            query
-          );
-        }
       }
     );
 
+  }
 
-    input?.addEventListener(
-      "keydown",
-      event => {
 
-        if (
-          event.key ===
-          "Enter"
-        ) {
+  if (satelliteBtn) {
 
-          event.preventDefault();
+    satelliteBtn.addEventListener(
+      "click",
+      () => {
 
-          const query =
-            cleanQuery(
-              input.value
-            );
+        openMap()
+          .then(
+            satelliteView
+          );
 
-          if (query) {
-            searchMapPlace(
-              query
-            );
-          }
-        }
       }
     );
+
   }
 
 
-  /* =======================================================
-     MAP CONTROLS
-     ======================================================= */
+  if (streetBtn) {
 
-  function setupMapControls() {
+    streetBtn.addEventListener(
+      "click",
+      () => {
 
-    $("#locateBtn")
-      ?.addEventListener(
-        "click",
-        locateUser
-      );
+        openMap()
+          .then(
+            streetView
+          );
 
+      }
+    );
 
-    $("#resetMapBtn")
-      ?.addEventListener(
-        "click",
-        resetMap
-      );
-
-
-    $("#fullscreenMapBtn")
-      ?.addEventListener(
-        "click",
-        fullscreenMap
-      );
-
-
-    $("#globeBtn")
-      ?.addEventListener(
-        "click",
-        globeView
-      );
-
-
-    $("#topViewBtn")
-      ?.addEventListener(
-        "click",
-        topView
-      );
-
-
-    $("#satelliteBtn")
-      ?.addEventListener(
-        "click",
-        satelliteMode
-      );
-
-
-    $("#streetBtn")
-      ?.addEventListener(
-        "click",
-        streetMode
-      );
-
-
-    /*
-     * Optional alternate button IDs
-     */
-
-    $("#earthMapBtn")
-      ?.addEventListener(
-        "click",
-        openMapView
-      );
-
-
-    $("#satelliteMapBtn")
-      ?.addEventListener(
-        "click",
-        satelliteMode
-      );
-
-
-    $("#streetMapBtn")
-      ?.addEventListener(
-        "click",
-        streetMode
-      );
-
-
-    $("#3dMapBtn")
-      ?.addEventListener(
-        "click",
-        globeView
-      );
-
-
-    $("#high3dMapBtn")
-      ?.addEventListener(
-        "click",
-        globeView
-      );
   }
 
 
-  /* =======================================================
-     MAP VIEW RESIZE
-     ======================================================= */
+  if (terrainBtn) {
 
-  function setupMapResize() {
+    terrainBtn.addEventListener(
+      "click",
+      () => {
 
-    window.addEventListener(
-      "resize",
+        openMap()
+          .then(
+            enable3D
+          );
+
+      }
+    );
+
+  }
+
+
+  if (high3DBtn) {
+
+    high3DBtn.addEventListener(
+      "click",
+      () => {
+
+        openMap()
+          .then(
+            enableHigh3D
+          );
+
+      }
+    );
+
+  }
+
+
+  if (locateBtn) {
+
+    locateBtn.addEventListener(
+      "click",
+      locateUser
+    );
+
+  }
+
+
+  if (resetBtn) {
+
+    resetBtn.addEventListener(
+      "click",
+      resetMap
+    );
+
+  }
+
+
+  if (fullscreenBtn) {
+
+    fullscreenBtn.addEventListener(
+      "click",
+      fullscreenMap
+    );
+
+  }
+
+
+  const openMapBtn =
+    $("#openMapBtn");
+
+  if (openMapBtn) {
+
+    openMapBtn.addEventListener(
+      "click",
+      () => openMap()
+    );
+
+  }
+
+
+  const previewBtn =
+    $("#mapPreviewBtn");
+
+  if (previewBtn) {
+
+    previewBtn.addEventListener(
+      "click",
+      () => openMap()
+    );
+
+  }
+}
+
+
+/* =========================================================
+   MAP PREVIEW
+   ========================================================= */
+
+async function initializePreviewMap() {
+
+  const container =
+    $("#mapPreview");
+
+  if (!container) {
+    return;
+  }
+
+
+  try {
+
+    const maplibregl =
+      await loadMapLibre();
+
+
+    const preview =
+      new maplibregl.Map({
+
+        container:
+          "mapPreview",
+
+        style:
+          satelliteStyle(),
+
+        center:
+          CONFIG.map.defaultCenter,
+
+        zoom:
+          3.5,
+
+        interactive:
+          false,
+
+        attributionControl:
+          false
+
+      });
+
+
+    preview.on(
+      "load",
       () => {
 
         try {
-          state.viewer?.resize();
+
+          preview.setProjection({
+            type: "globe"
+          });
+
         } catch {}
+
       }
     );
-  }
 
+
+  } catch (error) {
+
+    console.error(
+      "HEXORA preview map error:",
+      error
+    );
+
+  }
+}
+
+
+/* =========================================================
+   BRAND / HOME
+   ========================================================= */
+
+function setupBrand() {
+
+  $$(
+    ".logo, [data-home]"
+  ).forEach((element) => {
+
+    element.addEventListener(
+      "click",
+      (event) => {
+
+        event.preventDefault();
+
+        showHome();
+
+      }
+    );
+
+  });
+}
+
+
+/* =========================================================
+   KEYBOARD
+   ========================================================= */
+
+function setupKeyboard() {
 
   document.addEventListener(
-    "fullscreenchange",
-    () => {
-
-      setTimeout(
-        () => {
-
-          try {
-            state.viewer?.resize();
-          } catch {}
-
-        },
-        300
-      );
-    }
-  );
+    "keydown",
+    (event) => {
 
 
-  /* =======================================================
-     MODES
-     ======================================================= */
+      if (
+        event.key === "/" &&
+        document.activeElement?.tagName !==
+          "INPUT" &&
+        document.activeElement?.tagName !==
+          "TEXTAREA"
+      ) {
 
-  function setupModes() {
+        event.preventDefault();
 
-    $$(".mode")
-      .forEach(
-        button => {
-
-          button.addEventListener(
-            "click",
-            () => {
-
-              const mode =
-                button.dataset.mode ||
-                button.textContent
-                  .trim()
-                  .toLowerCase();
-
-              setMode(
-                mode
-              );
-
-              const input =
-                $("#searchInput");
-
-              if (
-                input &&
-                input.value.trim()
-              ) {
-
-                performSearch(
-                  input.value,
-                  state.mode
-                );
-              }
-            }
-          );
-        }
-      );
-
-    setMode(
-      "web"
-    );
-  }
-
-
-  /* =======================================================
-     URL STATE
-     ======================================================= */
-
-  function updateURL(
-    query,
-    mode
-  ) {
-
-    try {
-
-      const url =
-        new URL(
-          window.location.href
-        );
-
-      url.searchParams.set(
-        "q",
-        query
-      );
-
-      url.searchParams.set(
-        "mode",
-        mode
-      );
-
-      history.replaceState(
-        {},
-        "",
-        url
-      );
-
-    } catch {}
-  }
-
-
-  function loadURLState() {
-
-    try {
-
-      const params =
-        new URLSearchParams(
-          window.location.search
-        );
-
-      const query =
-        cleanQuery(
-          params.get("q")
-        );
-
-      const mode =
-        params.get("mode") ||
-        "web";
-
-      setMode(
-        mode
-      );
-
-      if (query) {
 
         const input =
           $("#searchInput");
 
+
         if (input) {
-          input.value =
-            query;
+
+          input.focus();
+
         }
 
-        performSearch(
-          query,
-          mode
+      }
+
+
+      if (
+        event.key === "Escape"
+      ) {
+
+        showHome();
+
+      }
+
+    }
+  );
+}
+
+
+/* =========================================================
+   START HEXORA
+   ========================================================= */
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+
+    setupSearch();
+
+    setupMapSearch();
+
+    setupNavigation();
+
+    setupMapButtons();
+
+    setupBrand();
+
+    setupKeyboard();
+
+    loadNews();
+
+    initializePreviewMap();
+
+  }
+);
+
+
+/* =========================================================
+   HEXORA GLOBAL API
+   ========================================================= */
+
+window.HEXORA = {
+
+  config:
+    CONFIG,
+
+  search:
+    performSearch,
+
+  openMap,
+
+  closeMap,
+
+  searchMapPlace,
+
+  locateUser,
+
+  resetMap,
+
+  fullscreenMap,
+
+  enable3D,
+
+  enableHigh3D,
+
+  earth:
+    () => {
+
+      openMap()
+        .then(
+          earthView
         );
-      }
 
-    } catch (error) {
+    },
 
-      console.error(
-        "HEXORA URL state:",
-        error
-      );
+  satellite:
+    () => {
+
+      openMap()
+        .then(
+          satelliteView
+        );
+
+    },
+
+  street:
+    () => {
+
+      openMap()
+        .then(
+          streetView
+        );
+
     }
-  }
 
-
-  /* =======================================================
-     RUNTIME CSS
-     ======================================================= */
-
-  function injectRuntimeCSS() {
-
-    if (
-      $("#hexoraRuntimeCSS")
-    ) {
-      return;
-    }
-
-    const style =
-      document.createElement(
-        "style"
-      );
-
-    style.id =
-      "hexoraRuntimeCSS";
-
-    style.textContent = `
-
-      .hexora-loading {
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        gap:12px;
-        padding:40px 20px;
-        opacity:.8;
-      }
-
-      .loader {
-        width:18px;
-        height:18px;
-        border:2px solid currentColor;
-        border-top-color:transparent;
-        border-radius:50%;
-        animation:hexoraSpin .7s linear infinite;
-      }
-
-      @keyframes hexoraSpin {
-        to {
-          transform:rotate(360deg);
-        }
-      }
-
-      .hexora-empty {
-        text-align:center;
-        padding:60px 20px;
-      }
-
-      .empty-icon {
-        font-size:42px;
-        margin-bottom:12px;
-        opacity:.7;
-      }
-
-      .hexora-retry {
-        margin-top:18px;
-        padding:10px 18px;
-        border-radius:10px;
-        border:1px solid currentColor;
-        background:transparent;
-        color:inherit;
-        cursor:pointer;
-      }
-
-      .result-body {
-        display:flex;
-        gap:20px;
-        justify-content:space-between;
-      }
-
-      .result-main {
-        min-width:0;
-        flex:1;
-      }
-
-      .result-image-wrap {
-        width:160px;
-        min-width:160px;
-        height:100px;
-        overflow:hidden;
-        border-radius:12px;
-      }
-
-      .result-image {
-        width:100%;
-        height:100%;
-        object-fit:cover;
-      }
-
-      .result-top {
-        display:flex;
-        align-items:center;
-        justify-content:space-between;
-        gap:12px;
-      }
-
-      .result-source {
-        display:flex;
-        align-items:center;
-        gap:7px;
-        font-size:13px;
-        opacity:.75;
-      }
-
-      .source-dot {
-        width:7px;
-        height:7px;
-        border-radius:50%;
-        background:currentColor;
-      }
-
-      .result-url {
-        font-size:13px;
-        opacity:.65;
-        margin:4px 0 7px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-        white-space:nowrap;
-      }
-
-      .result-description {
-        line-height:1.6;
-      }
-
-      .news-empty {
-        padding:30px 0;
-        opacity:.7;
-      }
-
-      /*
-       * REAL HEXORA EARTH
-       */
-
-      #hexoraMap {
-        width:100%;
-        min-height:650px;
-        position:relative;
-        overflow:hidden;
-        background:#02050a;
-      }
-
-      #hexoraMap .cesium-viewer {
-        width:100%;
-        height:100%;
-      }
-
-      #hexoraMap .cesium-widget {
-        width:100%;
-        height:100%;
-      }
-
-      #hexoraMap .cesium-widget canvas {
-        width:100% !important;
-        height:100% !important;
-      }
-
-      /*
-       * Fullscreen
-       */
-
-      .hexora-map-fullscreen {
-        position:fixed !important;
-        inset:0 !important;
-        z-index:99999 !important;
-        width:100vw !important;
-        height:100vh !important;
-        min-height:100vh !important;
-      }
-
-      /*
-       * Preview
-       */
-
-      .hexora-preview-earth {
-        position:relative;
-        width:100%;
-        min-height:260px;
-        height:100%;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        overflow:hidden;
-
-        background:
-          radial-gradient(
-            circle at 50% 50%,
-            #173f62 0%,
-            #081524 48%,
-            #02060b 80%
-          );
-      }
-
-      .hexora-preview-globe {
-        width:170px;
-        height:170px;
-        border-radius:50%;
-
-        background:
-          radial-gradient(
-            circle at 30% 28%,
-            #7ec8df,
-            #226384 42%,
-            #0b263a 72%,
-            #02060b 100%
-          );
-
-        box-shadow:
-          0 0 70px
-          rgba(
-            70,
-            190,
-            255,
-            .35
-          );
-      }
-
-      .hexora-preview-text {
-        position:absolute;
-        left:20px;
-        bottom:20px;
-        font-size:13px;
-        font-weight:800;
-        letter-spacing:.2em;
-        opacity:.8;
-      }
-
-      /*
-       * Mobile
-       */
-
-      @media(max-width:640px) {
-
-        #hexoraMap {
-          min-height:
-            calc(
-              100vh - 120px
-            );
-        }
-
-        .result-body {
-          gap:12px;
-        }
-
-        .result-image-wrap {
-          width:92px;
-          min-width:92px;
-          height:72px;
-        }
-
-        .result-top {
-          align-items:flex-start;
-        }
-
-      }
-
-    `;
-
-    document.head.appendChild(
-      style
-    );
-  }
-
-
-  /* =======================================================
-     INIT
-     ======================================================= */
-
-  async function init() {
-
-    try {
-
-      injectRuntimeCSS();
-
-      setupMobileMenu();
-
-      setupSearch();
-
-      setupMapSearch();
-
-      setupMapControls();
-
-      setupMapResize();
-
-      setupQuickActions();
-
-      setupNavigation();
-
-      setupModes();
-
-      setupTrending();
-
-      bindQueryButtons();
-
-      initMapPreview();
-
-      loadNews();
-
-      loadURLState();
-
-      console.log(
-        "HEXORA initialized successfully."
-      );
-
-    } catch (error) {
-
-      console.error(
-        "HEXORA initialization error:",
-        error
-      );
-    }
-  }
-
-
-  /* =======================================================
-     PUBLIC HEXORA API
-     ======================================================= */
-
-  window.HEXORA = {
-
-    search:
-      performSearch,
-
-    searchMap:
-      searchMapPlace,
-
-    openMap:
-      openMapView,
-
-    locate:
-      locateUser,
-
-    satellite:
-      satelliteMode,
-
-    street:
-      streetMode,
-
-    resetMap:
-      resetMap,
-
-    globe:
-      globeView,
-
-    topView:
-      topView,
-
-    fullscreen:
-      fullscreenMap,
-
-    setMode:
-      setMode,
-
-    loadNews:
-      loadNews,
-
-    state:
-      state
-  };
-
-
-  /* =======================================================
-     START
-     ======================================================= */
-
-  if (
-    document.readyState ===
-    "loading"
-  ) {
-
-    document.addEventListener(
-      "DOMContentLoaded",
-      init,
-      {
-        once: true
-      }
-    );
-
-  } else {
-
-    init();
-  }
-
-})();
+};
