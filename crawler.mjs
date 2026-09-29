@@ -1,172 +1,155 @@
-// HEXORA - crawler.mjs
-// Neon primary crawler + Supabase connection
-// Queue lifecycle: queued -> processing -> done / failed
+// ============================================================
+// HEXORA SEARCH ENGINE - CRAWLER
+// ============================================================
 
-import { createClient } from "@supabase/supabase-js";
+import fs from "node:fs";
 import crypto from "node:crypto";
+import * as cheerio from "cheerio";
+import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 
 const { Pool } = pg;
 
-/* =========================================================
-   DATABASE CONFIG
-========================================================= */
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const USER_AGENT =
+  process.env.HEXORA_USER_AGENT ||
+  "HEXORA-Bot/1.0 (+https://hexorasearch.com/)";
+
+const REQUEST_TIMEOUT =
+  Number(process.env.CRAWL_TIMEOUT_MS || 15000);
+
+const DOMAIN_DELAY =
+  Number(process.env.CRAWL_DOMAIN_DELAY_MS || 1500);
+
+const MAX_CONTENT =
+  Number(process.env.CRAWL_MAX_CONTENT || 100000);
+
+const MAX_LINKS =
+  Number(process.env.CRAWL_MAX_LINKS || 100);
+
+const BATCH_SIZE =
+  Number(process.env.CRAWL_BATCH_SIZE || 12);
+
+const CONCURRENCY =
+  Number(process.env.CRAWL_CONCURRENCY || 2);
+
+
+// ============================================================
+// ENVIRONMENT
+// ============================================================
+
+const DATABASE_URL =
+  process.env.DATABASE_URL;
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL;
 
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_KEY;
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_KEY;
 
-const DATABASE_URL =
-  process.env.DATABASE_URL;
+
+// ============================================================
+// DATABASE CONNECTIONS
+// ============================================================
 
 if (!DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL is missing"
-  );
-}
 
-if (!SUPABASE_URL) {
-  console.warn(
-    "[HEXORA] SUPABASE_URL is missing - Supabase features disabled"
+  console.error(
+    "[HEXORA] ERROR: DATABASE_URL is missing."
   );
-}
 
-if (!SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn(
-    "[HEXORA] SUPABASE_SERVICE_ROLE_KEY is missing - Supabase features disabled"
-  );
+  process.exit(1);
 }
 
 
-/* =========================================================
-   NEON POSTGRES
-========================================================= */
-
-const neon = new Pool({
-  connectionString:
-    DATABASE_URL,
-
-  max: 5,
-
-  idleTimeoutMillis:
-    30000,
-
-  connectionTimeoutMillis:
-    10000
-});
+const neon =
+  new Pool({
+    connectionString: DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false
+    },
+    max: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+  });
 
 
-/* =========================================================
-   SUPABASE
-========================================================= */
+let supabase = null;
 
-const supabase =
+if (
   SUPABASE_URL &&
   SUPABASE_SERVICE_ROLE_KEY
+) {
 
-    ? createClient(
-        SUPABASE_URL,
-        SUPABASE_SERVICE_ROLE_KEY
-      )
+  supabase =
+    createClient(
+      SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
+      }
+    );
 
-    : null;
+} else {
 
-
-/* =========================================================
-   CRAWLER CONFIG
-========================================================= */
-
-const USER_AGENT =
-  process.env.HEXORA_USER_AGENT ||
-  "HEXORA-Bot/1.0 (+https://hexora-search-production.up.railway.app/)";
-
-const BATCH_SIZE =
-  Math.max(
-    1,
-    Number(
-      process.env.CRAWLER_BATCH_SIZE ||
-      12
-    )
+  console.warn(
+    "[HEXORA] Supabase credentials not found. Supabase duplicate protection disabled."
   );
-
-const CONCURRENCY =
-  Math.max(
-    1,
-    Number(
-      process.env.CRAWLER_CONCURRENCY ||
-      2
-    )
-  );
-
-const FETCH_TIMEOUT =
-  Math.max(
-    5000,
-    Number(
-      process.env.CRAWL_TIMEOUT_MS ||
-      15000
-    )
-  );
-
-const DOMAIN_DELAY =
-  Math.max(
-    0,
-    Number(
-      process.env.CRAWL_DOMAIN_DELAY_MS ||
-      1500
-    )
-  );
-
-const MAX_CONTENT =
-  Math.max(
-    10000,
-    Number(
-      process.env.CRAWL_MAX_CONTENT ||
-      100000
-    )
-  );
-
-const MAX_LINKS =
-  Math.max(
-    10,
-    Number(
-      process.env.CRAWL_MAX_LINKS ||
-      100
-    )
-  );
+}
 
 
-/* =========================================================
-   SEEDS
-========================================================= */
+// ============================================================
+// CRAWLER SEEDS
+// ============================================================
 
-const SEEDS = [
-  "https://www.wikipedia.org/",
+const SEED_URLS = [
+
+  "https://en.wikipedia.org/wiki/Search_engine",
+
   "https://www.india.gov.in/",
+
   "https://assam.gov.in/",
-  "https://www.python.org/",
+
+  "https://python.org/",
+
   "https://www.w3.org/"
+
 ];
 
 
-/* =========================================================
-   MEMORY CACHE
-========================================================= */
+// ============================================================
+// DOMAIN DELAY MEMORY
+// ============================================================
+
+const domainLastRequest =
+  new Map();
+
+
+// ============================================================
+// ROBOTS CACHE
+// ============================================================
 
 const robotsCache =
   new Map();
 
-const lastVisit =
-  new Map();
 
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
 
-/* =========================================================
-   HELPERS
-========================================================= */
+function sleep(
+  ms
+) {
 
-function sleep(ms) {
   return new Promise(
     resolve =>
       setTimeout(
@@ -177,80 +160,98 @@ function sleep(ms) {
 }
 
 
-/* =========================================================
-   URL NORMALIZATION
-========================================================= */
+function cleanText(
+  value
+) {
 
-export function normalizeUrl(
-  input,
-  base = null
+  return String(
+    value || ""
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+function normalizeUrl(
+  input
 ) {
 
   try {
 
+    if (!input) {
+      return null;
+    }
+
     const url =
-      base
-        ? new URL(
-            input,
-            base
-          )
-        : new URL(
-            input
-          );
+      new URL(
+        String(input)
+      );
 
     if (
-      ![
-        "http:",
-        "https:"
-      ].includes(
-        url.protocol
-      )
+      url.protocol !== "http:" &&
+      url.protocol !== "https:"
     ) {
+
       return null;
     }
 
     url.hash = "";
 
-    url.hostname =
-      url.hostname.toLowerCase();
+    url.username = "";
+    url.password = "";
 
+    let pathname =
+      url.pathname || "/";
 
-    for (
-      const key of [
-        ...url.searchParams.keys()
-      ]
-    ) {
-
-      const k =
-        key.toLowerCase();
-
-      if (
-        k === "fbclid" ||
-        k === "gclid" ||
-        k === "mc_cid" ||
-        k === "mc_eid" ||
-        k.startsWith("utm_")
-      ) {
-
-        url.searchParams.delete(
-          key
-        );
-      }
-    }
-
+    pathname =
+      pathname.replace(
+        /\/{2,}/g,
+        "/"
+      );
 
     if (
-      url.pathname.length > 1 &&
-      url.pathname.endsWith("/")
+      pathname.length > 1 &&
+      pathname.endsWith("/")
     ) {
 
-      url.pathname =
-        url.pathname.replace(
-          /\/+$/,
-          ""
+      pathname =
+        pathname.slice(
+          0,
+          -1
         );
     }
 
+    url.pathname =
+      pathname;
+
+    /*
+      Remove common tracking parameters.
+    */
+
+    const removeParams = [
+
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "gclid",
+      "fbclid",
+      "msclkid",
+      "ref",
+      "ref_src"
+
+    ];
+
+    for (
+      const param
+      of removeParams
+    ) {
+
+      url.searchParams.delete(
+        param
+      );
+    }
 
     return url.toString();
 
@@ -261,773 +262,387 @@ export function normalizeUrl(
 }
 
 
-/* =========================================================
-   CRAWL FILTER
-========================================================= */
-
-export function shouldCrawl(
-  input
+function getDomain(
+  url
 ) {
 
-  const normalized =
-    normalizeUrl(
-      input
-    );
+  try {
 
-  if (!normalized) {
-    return false;
-  }
-
-  const url =
-    new URL(
-      normalized
-    );
-
-  const host =
-    url.hostname.toLowerCase();
-
-  const path =
-    decodeURIComponent(
-      url.pathname
-    ).toLowerCase();
-
-  const query =
-    url.searchParams;
-
-
-  /* -------------------------------------------------------
-     BLOCKED PARAMETERS
-  ------------------------------------------------------- */
-
-  const blockedParams = [
-    "action",
-    "oldid",
-    "diff",
-    "veaction",
-    "printable",
-    "useparsoid",
-    "wpformidentifier"
-  ];
-
-  for (
-    const key of blockedParams
-  ) {
-
-    if (
-      query.has(key)
-    ) {
-      return false;
-    }
-  }
-
-
-  /* -------------------------------------------------------
-     WIKIMEDIA FILTERS
-  ------------------------------------------------------- */
-
-  if (
-    host.endsWith(
-      "wikipedia.org"
-    ) ||
-    host.endsWith(
-      "wikimedia.org"
-    ) ||
-    host.endsWith(
-      "wiktionary.org"
-    ) ||
-    host.endsWith(
-      "wikibooks.org"
-    ) ||
-    host.endsWith(
-      "wikiquote.org"
-    ) ||
-    host.endsWith(
-      "wikinews.org"
-    ) ||
-    host.endsWith(
-      "wikisource.org"
-    ) ||
-    host.endsWith(
-      "wikiversity.org"
-    ) ||
-    host.endsWith(
-      "wikivoyage.org"
-    )
-  ) {
-
-    const wikiIndex =
-      path.indexOf(
-        "/wiki/"
+    return new URL(
+      url
+    ).hostname
+      .toLowerCase()
+      .replace(
+        /^www\./,
+        ""
       );
 
-    if (
-      wikiIndex !== -1
-    ) {
+  } catch {
 
-      const title =
-        path.slice(
-          wikiIndex + 6
-        );
+    return "";
+  }
+}
 
-      const blockedNamespaces = [
-        "special:",
-        "user:",
-        "user_talk:",
-        "talk:",
-        "template:",
-        "template_talk:",
-        "file:",
-        "file_talk:",
-        "category:",
-        "category_talk:",
-        "help:",
-        "portal:",
-        "mediawiki:",
-        "module:",
-        "module_talk:",
-        "project:",
-        "project_talk:",
-        "book:",
-        "book_talk:",
-        "draft:",
-        "draft_talk:",
-        "timedtext:"
-      ];
 
-      if (
-        blockedNamespaces.some(
-          ns =>
-            title.startsWith(
-              ns
-            )
-        )
-      ) {
-        return false;
-      }
+function isValidCrawlUrl(
+  url
+) {
 
-      if (
-        title.includes(
-          "special:"
-        ) ||
-        title.includes(
-          "recentchanges"
-        )
-      ) {
-        return false;
-      }
-    }
+  try {
 
+    const parsed =
+      new URL(url);
 
     if (
-      path ===
-        "/w/index.php" ||
-      path ===
-        "/w/index.php/"
+      parsed.protocol !== "http:" &&
+      parsed.protocol !== "https:"
     ) {
 
       return false;
     }
-  }
 
+    const hostname =
+      parsed.hostname
+        .toLowerCase();
 
-  /* -------------------------------------------------------
-     ACCOUNT / LOGIN
-  ------------------------------------------------------- */
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1"
+    ) {
 
-  if (
-    path === "/login" ||
-    path === "/logout" ||
-    path === "/register" ||
-    path === "/signup" ||
-    path === "/createaccount" ||
-    path === "/account/login" ||
-    path === "/account/logout" ||
-    path.includes(
-      "/wp-login.php"
-    )
-  ) {
+      return false;
+    }
 
-    return false;
-  }
+    const blockedExtensions = [
 
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".webp",
+      ".svg",
+      ".ico",
+      ".bmp",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".mp4",
+      ".webm",
+      ".avi",
+      ".mov",
+      ".zip",
+      ".rar",
+      ".7z",
+      ".tar",
+      ".gz",
+      ".pdf",
+      ".doc",
+      ".docx",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx",
+      ".exe",
+      ".apk",
+      ".dmg",
+      ".iso"
 
-  /* -------------------------------------------------------
-     NON HTML FILES
-  ------------------------------------------------------- */
+    ];
 
-  const badExtensions = [
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".webp",
-    ".svg",
-    ".ico",
-    ".bmp",
-    ".tif",
-    ".tiff",
-    ".mp3",
-    ".wav",
-    ".ogg",
-    ".m4a",
-    ".mp4",
-    ".avi",
-    ".mov",
-    ".mkv",
-    ".webm",
-    ".zip",
-    ".rar",
-    ".7z",
-    ".tar",
-    ".gz",
-    ".exe",
-    ".apk",
-    ".dmg",
-    ".iso",
-    ".css",
-    ".js",
-    ".json",
-    ".xml"
-  ];
+    const pathname =
+      parsed.pathname
+        .toLowerCase();
 
-  if (
-    badExtensions.some(
-      ext =>
-        path.endsWith(
-          ext
-        )
-    )
-  ) {
-
-    return false;
-  }
-
-
-  /* -------------------------------------------------------
-     URL SIZE
-  ------------------------------------------------------- */
-
-  if (
-    normalized.length >
-    1600
-  ) {
-    return false;
-  }
-
-  if (
-    path.length >
-    700
-  ) {
-    return false;
-  }
-
-
-  /* -------------------------------------------------------
-     SEARCH PAGES
-  ------------------------------------------------------- */
-
-  if (
-    path === "/search" ||
-    path === "/search/" ||
-    path ===
-      "/search-results" ||
-    path ===
-      "/search-results/"
-  ) {
-
-    return false;
-  }
-
-
-  /* -------------------------------------------------------
-     INVALID HOST
-  ------------------------------------------------------- */
-
-  if (
-    !host ||
-    host.includes("..")
-  ) {
-
-    return false;
-  }
-
-  return true;
-}
-
-
-/* =========================================================
-   TEXT HELPERS
-========================================================= */
-
-function decodeEntities(
-  text
-) {
-
-  return String(
-    text || ""
-  )
-    .replace(
-      /&nbsp;/gi,
-      " "
-    )
-    .replace(
-      /&amp;/gi,
-      "&"
-    )
-    .replace(
-      /&lt;/gi,
-      "<"
-    )
-    .replace(
-      /&gt;/gi,
-      ">"
-    )
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
-    .replace(
-      /&#x27;/gi,
-      "'"
-    );
-}
-
-
-function cleanText(
-  text
-) {
-
-  return decodeEntities(
-    text
-  )
-    .replace(
-      /\u00a0/g,
-      " "
-    )
-    .replace(
-      /[ \t]+/g,
-      " "
-    )
-    .replace(
-      /\n\s+/g,
-      "\n"
-    )
-    .replace(
-      /\n{3,}/g,
-      "\n\n"
-    )
-    .trim();
-}
-
-
-function stripTags(
-  html
-) {
-
-  return String(
-    html || ""
-  )
-    .replace(
-      /<br\s*\/?>/gi,
-      "\n"
-    )
-    .replace(
-      /<\/p>/gi,
-      "\n"
-    )
-    .replace(
-      /<\/div>/gi,
-      "\n"
-    )
-    .replace(
-      /<\/li>/gi,
-      "\n"
-    )
-    .replace(
-      /<\/h[1-6]>/gi,
-      "\n"
-    )
-    .replace(
-      /<[^>]+>/g,
-      " "
-    );
-}
-
-
-function removeBlocks(
-  html
-) {
-
-  return String(
-    html || ""
-  )
-    .replace(
-      /<!--[\s\S]*?-->/g,
-      " "
-    )
-    .replace(
-      /<(script|style|noscript|template|svg|canvas|iframe|object|embed|form)\b[^>]*>[\s\S]*?<\/\1>/gi,
-      " "
-    );
-}
-
-
-function extractBetween(
-  html,
-  tag
-) {
-
-  const re =
-    new RegExp(
-      `<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`,
-      "i"
-    );
-
-  return (
-    html.match(
-      re
-    )?.[1] ||
-    ""
-  );
-}
-
-
-function extractMeta(
-  html,
-  attr,
-  value
-) {
-
-  const re1 =
-    new RegExp(
-      `<meta\\b[^>]*${attr}=["']${value}["'][^>]*content=["']([^"']*)["'][^>]*>`,
-      "i"
-    );
-
-  const re2 =
-    new RegExp(
-      `<meta\\b[^>]*content=["']([^"']*)["'][^>]*${attr}=["']${value}["'][^>]*>`,
-      "i"
-    );
-
-  return (
-    re1.exec(
-      html
-    )?.[1] ||
-    re2.exec(
-      html
-    )?.[1] ||
-    ""
-  );
-}
-
-
-/* =========================================================
-   CANONICAL
-========================================================= */
-
-function extractCanonical(
-  html,
-  baseUrl
-) {
-
-  const match =
-    /<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i.exec(
-      html
-    ) ||
-    /<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["'][^>]*>/i.exec(
-      html
-    );
-
-  if (!match) {
-    return baseUrl;
-  }
-
-  return (
-    normalizeUrl(
-      match[1],
-      baseUrl
-    ) ||
-    baseUrl
-  );
-}
-
-
-/* =========================================================
-   MAIN CONTENT
-========================================================= */
-
-function extractMainContent(
-  html
-) {
-
-  const cleaned =
-    removeBlocks(
-      html
-    );
-
-  let content =
-    extractBetween(
-      cleaned,
-      "article"
-    ) ||
-    extractBetween(
-      cleaned,
-      "main"
-    ) ||
-    extractBetween(
-      cleaned,
-      "body"
-    ) ||
-    cleaned;
-
-  let text =
-    cleanText(
-      stripTags(
-        content
+    if (
+      blockedExtensions.some(
+        ext =>
+          pathname.endsWith(ext)
       )
-    );
+    ) {
 
-  if (
-    text.length < 200
-  ) {
+      return false;
+    }
 
-    text =
-      cleanText(
-        stripTags(
-          cleaned
-        )
-      );
+    return true;
+
+  } catch {
+
+    return false;
   }
-
-  return text.slice(
-    0,
-    MAX_CONTENT
-  );
 }
 
 
-/* =========================================================
-   TITLE
-========================================================= */
-
-function extractTitle(
-  html
-) {
-
-  const og =
-    extractMeta(
-      html,
-      "property",
-      "og:title"
-    );
-
-  if (og) {
-
-    return cleanText(
-      og
-    ).slice(
-      0,
-      500
-    );
-  }
-
-  const title =
-    extractBetween(
-      html,
-      "title"
-    );
-
-  return cleanText(
-    stripTags(
-      title
-    )
-  ).slice(
-    0,
-    500
-  );
-}
-
-
-/* =========================================================
-   DESCRIPTION
-========================================================= */
-
-function extractDescription(
-  html
-) {
-
-  const description =
-    extractMeta(
-      html,
-      "name",
-      "description"
-    ) ||
-    extractMeta(
-      html,
-      "property",
-      "og:description"
-    );
-
-  return cleanText(
-    description
-  ).slice(
-    0,
-    1200
-  );
-}
-
-
-/* =========================================================
-   LANGUAGE
-========================================================= */
+// ============================================================
+// LANGUAGE DETECTION
+// ============================================================
 
 function detectLanguage(
   text
 ) {
 
-  const sample =
+  const value =
     String(
       text || ""
-    ).slice(
-      0,
-      8000
     );
 
-  if (
-    /[\u0C00-\u0C7F]/.test(
-      sample
-    )
-  ) {
-    return "as";
+  if (!value) {
+    return "unknown";
   }
 
   if (
-    /[\u0900-\u097F]/.test(
-      sample
-    )
+    /[\u0C00-\u0C7F]/.test(value)
   ) {
-    return "hi";
+
+    return "assamese/telugu";
+  }
+
+  /*
+    Assamese/Bengali Unicode block.
+  */
+
+  if (
+    /[\u0980-\u09FF]/.test(value)
+  ) {
+
+    return "assamese/bengali";
   }
 
   if (
-    /[\u0980-\u09FF]/.test(
-      sample
-    )
+    /[\u0900-\u097F]/.test(value)
   ) {
-    return "bn";
+
+    return "hindi";
   }
 
   if (
-    /[\u0B80-\u0BFF]/.test(
-      sample
-    )
+    /[\u4E00-\u9FFF]/.test(value)
   ) {
-    return "ta";
+
+    return "chinese";
   }
 
   if (
-    /[\u0A80-\u0AFF]/.test(
-      sample
-    )
+    /[\u3040-\u30FF]/.test(value)
   ) {
-    return "gu";
+
+    return "japanese";
   }
 
   if (
-    /[\u0A00-\u0A7F]/.test(
-      sample
-    )
+    /[\uAC00-\uD7AF]/.test(value)
   ) {
-    return "pa";
+
+    return "korean";
   }
 
   if (
-    /[\u4E00-\u9FFF]/.test(
-      sample
-    )
+    /[A-Za-z]/.test(value)
   ) {
-    return "zh";
+
+    return "english";
   }
 
-  if (
-    /[\u3040-\u30FF]/.test(
-      sample
-    )
-  ) {
-    return "ja";
-  }
-
-  if (
-    /[\uAC00-\uD7AF]/.test(
-      sample
-    )
-  ) {
-    return "ko";
-  }
-
-  return "en";
+  return "unknown";
 }
 
 
-/* =========================================================
-   LINKS
-========================================================= */
+// ============================================================
+// CONTENT EXTRACTION
+// ============================================================
 
-function extractLinks(
+function extractPage(
   html,
-  baseUrl
+  pageUrl
 ) {
 
-  const links =
-    new Set();
+  const $ =
+    cheerio.load(
+      html
+    );
 
-  const regex =
-    /<a\b[^>]*href=["']([^"']+)["']/gi;
+  /*
+    Remove non-content elements.
+  */
 
-  let match;
+  $(
+    "script, style, noscript, iframe, svg, canvas, nav, footer, header, form"
+  ).remove();
 
-  while (
-    links.size <
-      MAX_LINKS &&
-    (match =
-      regex.exec(
-        html
-      )) !== null
+
+  const title =
+    cleanText(
+      $("title")
+        .first()
+        .text()
+    );
+
+
+  let description =
+    cleanText(
+      $('meta[name="description"]')
+        .attr("content") ||
+      $('meta[property="og:description"]')
+        .attr("content") ||
+      ""
+    );
+
+
+  let content =
+    cleanText(
+      $("main")
+        .text() ||
+      $("article")
+        .text() ||
+      $("body")
+        .text()
+    );
+
+
+  if (
+    content.length >
+    MAX_CONTENT
   ) {
 
-    const normalized =
-      normalizeUrl(
-        match[1],
-        baseUrl
+    content =
+      content.slice(
+        0,
+        MAX_CONTENT
       );
+  }
 
-    if (
-      normalized &&
-      shouldCrawl(
-        normalized
-      )
-    ) {
 
-      links.add(
-        normalized
-      );
+  const language =
+    detectLanguage(
+      `${title} ${description} ${content}`
+    );
+
+
+  const canonicalRaw =
+    $('link[rel="canonical"]')
+      .attr("href");
+
+
+  let canonical =
+    pageUrl;
+
+  if (
+    canonicalRaw
+  ) {
+
+    try {
+
+      canonical =
+        normalizeUrl(
+          new URL(
+            canonicalRaw,
+            pageUrl
+          ).toString()
+        ) ||
+        pageUrl;
+
+    } catch {
+
+      canonical =
+        pageUrl;
     }
   }
 
+
+  const links =
+    extractLinks(
+      $,
+      pageUrl
+    );
+
+
+  return {
+
+    title,
+
+    description,
+
+    content,
+
+    language,
+
+    canonical,
+
+    links
+
+  };
+}
+
+
+// ============================================================
+// LINK EXTRACTION
+// ============================================================
+
+function extractLinks(
+  $,
+  baseUrl
+) {
+
+  const results =
+    new Set();
+
+  $("a[href]").each(
+    (_, element) => {
+
+      if (
+        results.size >=
+        MAX_LINKS
+      ) {
+
+        return;
+      }
+
+      const href =
+        $(element)
+          .attr("href");
+
+      if (!href) {
+        return;
+      }
+
+      try {
+
+        const absolute =
+          normalizeUrl(
+            new URL(
+              href,
+              baseUrl
+            ).toString()
+          );
+
+        if (
+          absolute &&
+          isValidCrawlUrl(
+            absolute
+          )
+        ) {
+
+          results.add(
+            absolute
+          );
+        }
+
+      } catch {
+        // Ignore invalid links.
+      }
+    }
+  );
+
+
   return [
-    ...links
+    ...results
   ];
 }
 
 
-/* =========================================================
-   FETCH PAGE
-========================================================= */
+// ============================================================
+// HTTP FETCH
+// ============================================================
 
 async function fetchPage(
   url
@@ -1040,7 +655,7 @@ async function fetchPage(
     setTimeout(
       () =>
         controller.abort(),
-      FETCH_TIMEOUT
+      REQUEST_TIMEOUT
     );
 
   try {
@@ -1049,11 +664,7 @@ async function fetchPage(
       await fetch(
         url,
         {
-          redirect:
-            "follow",
-
-          signal:
-            controller.signal,
+          method: "GET",
 
           headers: {
 
@@ -1065,34 +676,36 @@ async function fetchPage(
 
             "Accept-Language":
               "en-US,en;q=0.8"
-          }
+
+          },
+
+          redirect:
+            "follow",
+
+          signal:
+            controller.signal
+
         }
       );
 
-    const finalUrl =
-      normalizeUrl(
-        response.url
-      ) ||
-      url;
 
     if (
       !response.ok
     ) {
 
-      return {
-        ok: false,
-        status:
-          response.status,
-        finalUrl,
-        reason:
-          `HTTP ${response.status}`
-      };
+      throw new Error(
+        `HTTP ${response.status}`
+      );
     }
 
+
     const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
+      response.headers
+        .get(
+          "content-type"
+        ) ||
+      "";
+
 
     if (
       !contentType.includes(
@@ -1103,41 +716,29 @@ async function fetchPage(
       )
     ) {
 
-      return {
-        ok: false,
-        status:
-          response.status,
-        finalUrl,
-        reason:
-          "not-html"
-      };
+      throw new Error(
+        `Unsupported content-type: ${contentType}`
+      );
     }
 
-    return {
-      ok: true,
-      status:
-        response.status,
-      finalUrl,
-      html:
-        await response.text()
-    };
 
-  } catch (
-    error
-  ) {
+    const finalUrl =
+      normalizeUrl(
+        response.url
+      ) ||
+      url;
+
+
+    const html =
+      await response.text();
+
 
     return {
-      ok: false,
-      status: 0,
-      finalUrl: url,
-      reason:
-        error?.name ===
-        "AbortError"
-          ? "timeout"
-          : String(
-              error?.message ||
-              error
-            )
+
+      html,
+
+      finalUrl
+
     };
 
   } finally {
@@ -1149,186 +750,224 @@ async function fetchPage(
 }
 
 
-/* =========================================================
-   ROBOTS.TXT
-========================================================= */
+// ============================================================
+// DOMAIN RATE LIMIT
+// ============================================================
 
-function parseRobots(
-  text
+async function respectDomainDelay(
+  url
 ) {
 
-  const groups =
+  const domain =
+    getDomain(
+      url
+    );
+
+  if (!domain) {
+    return;
+  }
+
+  const previous =
+    domainLastRequest.get(
+      domain
+    );
+
+  if (previous) {
+
+    const elapsed =
+      Date.now() -
+      previous;
+
+    if (
+      elapsed <
+      DOMAIN_DELAY
+    ) {
+
+      await sleep(
+        DOMAIN_DELAY -
+        elapsed
+      );
+    }
+  }
+
+  domainLastRequest.set(
+    domain,
+    Date.now()
+  );
+}
+
+
+// ============================================================
+// ROBOTS.TXT
+// ============================================================
+
+function robotsAllows(
+  robotsText,
+  targetUrl
+) {
+
+  /*
+    Simple robots parser.
+
+    This is intentionally conservative.
+  */
+
+  const lines =
+    String(
+      robotsText || ""
+    )
+      .split(/\r?\n/)
+      .map(
+        line =>
+          line.trim()
+      );
+
+  let applies =
+    false;
+
+  const rules =
     [];
 
-  let current =
-    null;
-
   for (
-    const raw of String(
-      text || ""
-    ).split(
-      /\r?\n/
-    )
+    const line
+    of lines
   ) {
 
-    const line =
-      raw
-        .split("#")[0]
-        .trim();
+    if (
+      !line ||
+      line.startsWith("#")
+    ) {
 
-    if (!line) {
       continue;
     }
 
-    const i =
-      line.indexOf(
+    const parts =
+      line.split(
         ":"
       );
 
-    if (i < 0) {
+    if (
+      parts.length < 2
+    ) {
+
       continue;
     }
 
     const key =
-      line
-        .slice(
-          0,
-          i
-        )
+      parts.shift()
         .trim()
         .toLowerCase();
 
     const value =
-      line
-        .slice(
-          i + 1
-        )
+      parts
+        .join(":")
         .trim();
+
 
     if (
       key ===
       "user-agent"
     ) {
 
-      current = {
-        agents: [
-          value.toLowerCase()
-        ],
-        allow: [],
-        disallow: []
-      };
-
-      groups.push(
-        current
-      );
+      applies =
+        value === "*" ||
+        value.toLowerCase()
+          .includes(
+            "hexora"
+          );
 
       continue;
     }
 
-    if (!current) {
-      continue;
-    }
 
     if (
+      applies &&
       key ===
-        "allow" &&
-      value
+      "disallow"
     ) {
 
-      current.allow.push(
-        value
+      rules.push(
+        {
+          type: "disallow",
+          path: value
+        }
       );
+
     }
 
+
     if (
+      applies &&
       key ===
-        "disallow" &&
-      value
+      "allow"
     ) {
 
-      current.disallow.push(
-        value
+      rules.push(
+        {
+          type: "allow",
+          path: value
+        }
       );
     }
   }
 
-  return groups.filter(
-    group =>
-      group.agents.includes(
-        "*"
-      ) ||
-      group.agents.includes(
-        "hexora-bot"
-      )
-  );
-}
 
+  let pathname =
+    "/";
 
-function robotsAllowed(
-  pathname,
-  groups
-) {
+  try {
 
-  if (
-    !groups.length
-  ) {
+    pathname =
+      new URL(
+        targetUrl
+      ).pathname || "/";
+
+  } catch {
     return true;
   }
 
-  let bestLength =
-    -1;
 
-  let allowed =
-    true;
+  let matched =
+    null;
+
 
   for (
-    const group of groups
+    const rule
+    of rules
   ) {
 
-    for (
-      const rule of
-        group.disallow
-    ) {
-
-      if (
-        pathname.startsWith(
-          rule
-        ) &&
-        rule.length >
-          bestLength
-      ) {
-
-        bestLength =
-          rule.length;
-
-        allowed =
-          false;
-      }
+    if (!rule.path) {
+      continue;
     }
 
-    for (
-      const rule of
-        group.allow
+    if (
+      pathname.startsWith(
+        rule.path
+      )
     ) {
 
       if (
-        pathname.startsWith(
-          rule
-        ) &&
-        rule.length >=
-          bestLength
+        !matched ||
+        rule.path.length >
+        matched.path.length
       ) {
 
-        bestLength =
-          rule.length;
-
-        allowed =
-          true;
+        matched =
+          rule;
       }
     }
   }
 
-  return allowed;
+
+  if (!matched) {
+    return true;
+  }
+
+
+  return (
+    matched.type ===
+    "allow"
+  );
 }
 
 
@@ -1336,34 +975,39 @@ async function canCrawl(
   url
 ) {
 
+  const domain =
+    getDomain(
+      url
+    );
+
+  if (!domain) {
+    return false;
+  }
+
+
+  if (
+    robotsCache.has(
+      domain
+    )
+  ) {
+
+    const robotsText =
+      robotsCache.get(
+        domain
+      );
+
+    return robotsAllows(
+      robotsText,
+      url
+    );
+  }
+
+
   try {
 
-    const target =
-      new URL(
-        url
-      );
-
-    const origin =
-      target.origin;
-
-    const cached =
-      robotsCache.get(
-        origin
-      );
-
-    if (
-      cached &&
-      cached.expires >
-        Date.now()
-    ) {
-
-      return (
-        cached.allowed
-      );
-    }
-
     const robotsUrl =
-      `${origin}/robots.txt`;
+      `https://${domain}/robots.txt`;
+
 
     const controller =
       new AbortController();
@@ -1372,125 +1016,72 @@ async function canCrawl(
       setTimeout(
         () =>
           controller.abort(),
-        8000
+        10000
       );
 
-    let response;
 
-    try {
-
-      response =
-        await fetch(
-          robotsUrl,
-          {
-            signal:
-              controller.signal,
-
-            headers: {
-              "User-Agent":
-                USER_AGENT
-            }
-          }
-        );
-
-    } finally {
-
-      clearTimeout(
-        timer
+    const response =
+      await fetch(
+        robotsUrl,
+        {
+          headers: {
+            "User-Agent":
+              USER_AGENT
+          },
+          signal:
+            controller.signal
+        }
       );
-    }
+
+
+    clearTimeout(
+      timer
+    );
+
 
     if (
       !response.ok
     ) {
 
       robotsCache.set(
-        origin,
-        {
-          allowed: true,
-          expires:
-            Date.now() +
-            3600000
-        }
+        domain,
+        ""
       );
 
       return true;
     }
 
-    const rules =
-      parseRobots(
-        await response.text()
-      );
 
-    const allowed =
-      robotsAllowed(
-        target.pathname,
-        rules
-      );
+    const text =
+      await response.text();
+
 
     robotsCache.set(
-      origin,
-      {
-        allowed,
-        expires:
-          Date.now() +
-          3600000
-      }
+      domain,
+      text
     );
 
-    return allowed;
+
+    return robotsAllows(
+      text,
+      url
+    );
 
   } catch {
 
-    return false;
+    robotsCache.set(
+      domain,
+      ""
+    );
+
+    return true;
   }
 }
 
 
-/* =========================================================
-   DOMAIN DELAY
-========================================================= */
-
-async function respectDomainDelay(
-  url
-) {
-
-  const host =
-    new URL(
-      url
-    ).hostname;
-
-  const previous =
-    lastVisit.get(
-      host
-    ) || 0;
-
-  const wait =
-    DOMAIN_DELAY -
-    (
-      Date.now() -
-      previous
-    );
-
-  if (
-    wait > 0
-  ) {
-
-    await sleep(
-      wait
-    );
-  }
-
-  lastVisit.set(
-    host,
-    Date.now()
-  );
-}
-
-
-/* =========================================================
-   DATABASE TEST
-========================================================= */
+// ============================================================
+// DATABASE TEST
+// ============================================================
 
 async function checkNeon() {
 
@@ -1500,8 +1091,7 @@ async function checkNeon() {
     );
 
   return (
-    result.rows?.[0]?.ok ===
-    1
+    result.rows?.[0]?.ok === 1
   );
 }
 
@@ -1512,21 +1102,200 @@ async function checkSupabase() {
     return false;
   }
 
-  const {
-    error
-  } =
-    await supabase
-      .from("pages")
-      .select("id")
-      .limit(1);
+  try {
 
-  return !error;
+    const {
+      error
+    } =
+      await supabase
+        .from("pages")
+        .select("id")
+        .limit(1);
+
+
+    if (error) {
+
+      console.warn(
+        "[HEXORA] Supabase check failed:",
+        error.message
+      );
+
+      return false;
+    }
+
+
+    return true;
+
+  } catch (error) {
+
+    console.warn(
+      "[HEXORA] Supabase connection error:",
+      error?.message || error
+    );
+
+    return false;
+  }
 }
 
 
-/* =========================================================
-   SAVE PAGE -> NEON
-========================================================= */
+// ============================================================
+// DUPLICATE CHECK - SUPABASE + NEON
+// ============================================================
+
+async function pageExistsInSupabase(
+  url
+) {
+
+  if (!supabase) {
+    return false;
+  }
+
+  try {
+
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("pages")
+        .select("id")
+        .eq(
+          "url",
+          url
+        )
+        .limit(1);
+
+
+    if (error) {
+
+      console.warn(
+        `[HEXORA] Supabase duplicate check failed: ${url}`,
+        error.message
+      );
+
+      return false;
+    }
+
+
+    return (
+      Array.isArray(data) &&
+      data.length > 0
+    );
+
+  } catch (error) {
+
+    console.warn(
+      `[HEXORA] Supabase duplicate check exception: ${url}`,
+      error?.message || error
+    );
+
+    return false;
+  }
+}
+
+
+async function pageExistsInNeon(
+  url
+) {
+
+  try {
+
+    const result =
+      await neon.query(
+        `
+          SELECT id
+          FROM pages
+          WHERE url = $1
+          LIMIT 1
+        `,
+        [url]
+      );
+
+
+    return (
+      result.rows?.length > 0
+    );
+
+  } catch (error) {
+
+    console.warn(
+      `[HEXORA] Neon duplicate check failed: ${url}`,
+      error?.message || error
+    );
+
+    return false;
+  }
+}
+
+
+async function pageExistsAnywhere(
+  url
+) {
+
+  const normalized =
+    normalizeUrl(
+      url
+    );
+
+
+  if (!normalized) {
+    return true;
+  }
+
+
+  /*
+    FIRST:
+    Check old/existing Supabase index.
+  */
+
+  const existsInSupabase =
+    await pageExistsInSupabase(
+      normalized
+    );
+
+
+  if (
+    existsInSupabase
+  ) {
+
+    console.log(
+      `[HEXORA] Already exists in Supabase - Neon insert skipped: ${normalized}`
+    );
+
+    return true;
+  }
+
+
+  /*
+    SECOND:
+    Check newly crawled Neon index.
+  */
+
+  const existsInNeon =
+    await pageExistsInNeon(
+      normalized
+    );
+
+
+  if (
+    existsInNeon
+  ) {
+
+    console.log(
+      `[HEXORA] Already exists in Neon: ${normalized}`
+    );
+
+    return true;
+  }
+
+
+  return false;
+}
+
+
+// ============================================================
+// SAVE NEW PAGE -> NEON ONLY
+// ============================================================
 
 async function savePage({
   url,
@@ -1536,30 +1305,88 @@ async function savePage({
   language
 }) {
 
+  const normalizedUrl =
+    normalizeUrl(
+      url
+    );
+
+
+  if (!normalizedUrl) {
+
+    return {
+
+      saved: false,
+
+      duplicate: false,
+
+      wordCount: 0
+
+    };
+  }
+
+
+  /*
+    NEVER copy existing Supabase pages
+    into Neon.
+  */
+
+  const alreadyExists =
+    await pageExistsAnywhere(
+      normalizedUrl
+    );
+
+
+  if (
+    alreadyExists
+  ) {
+
+    return {
+
+      saved: false,
+
+      duplicate: true,
+
+      wordCount: 0
+
+    };
+  }
+
+
+  const cleanContent =
+    cleanText(
+      content
+    );
+
+
   const contentHash =
     crypto
       .createHash(
         "sha256"
       )
       .update(
-        content
+        cleanContent
       )
       .digest(
         "hex"
       );
 
+
   const wordCount =
-    content
+    cleanContent
       .split(/\s+/)
-      .filter(
-        Boolean
-      )
+      .filter(Boolean)
       .length;
+
 
   const now =
     new Date()
       .toISOString();
 
+
+  /*
+    NEW CRAWLED PAGES
+    ARE STORED IN NEON.
+  */
 
   await neon.query(
     `
@@ -1586,110 +1413,190 @@ async function savePage({
         $8
       )
       ON CONFLICT (url)
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        description = EXCLUDED.description,
-        content = EXCLUDED.content,
-        content_hash = EXCLUDED.content_hash,
-        word_count = EXCLUDED.word_count,
-        language = EXCLUDED.language,
-        updated_at = EXCLUDED.updated_at,
-        last_crawled_at = EXCLUDED.last_crawled_at
+      DO NOTHING
     `,
     [
-      url,
-      title ||
-        url,
-      description ||
-        "",
-      content,
+
+      normalizedUrl,
+
+      cleanText(
+        title
+      ) ||
+      normalizedUrl,
+
+      cleanText(
+        description
+      ),
+
+      cleanContent,
+
       contentHash,
+
       wordCount,
+
       language ||
-        "unknown",
+      "unknown",
+
       now
+
     ]
   );
 
-  return wordCount;
+
+  console.log(
+    `[HEXORA] NEW PAGE -> NEON: ${normalizedUrl}`
+  );
+
+
+  return {
+
+    saved: true,
+
+    duplicate: false,
+
+    wordCount
+
+  };
 }
 
 
-/* =========================================================
-   QUEUE LINKS -> NEON
-========================================================= */
+// ============================================================
+// QUEUE LINK
+// ============================================================
+
+async function queueLink(
+  url
+) {
+
+  const normalized =
+    normalizeUrl(
+      url
+    );
+
+
+  if (!normalized) {
+    return;
+  }
+
+
+  if (
+    !isValidCrawlUrl(
+      normalized
+    )
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    await neon.query(
+      `
+        INSERT INTO crawl_queue (
+          url,
+          status
+        )
+        VALUES (
+          $1,
+          'queued'
+        )
+        ON CONFLICT (url)
+        DO NOTHING
+      `,
+      [
+        normalized
+      ]
+    );
+
+  } catch (error) {
+
+    console.warn(
+      `[HEXORA] Queue failed: ${normalized}`,
+      error?.message || error
+    );
+  }
+}
+
 
 async function queueLinks(
   links
 ) {
 
   if (
-    !links.length
+    !Array.isArray(links) ||
+    links.length === 0
   ) {
+
     return;
   }
 
-  const client =
-    await neon.connect();
 
-  try {
-
-    await client.query(
-      "BEGIN"
-    );
-
-    for (
-      const url of links
-    ) {
-
-      await client.query(
-        `
-          INSERT INTO crawl_queue (
-            url,
-            status,
-            created_at
-          )
-          VALUES (
-            $1,
-            'queued',
-            NOW()
-          )
-          ON CONFLICT (url)
-          DO NOTHING
-        `,
-        [url]
-      );
-    }
-
-    await client.query(
-      "COMMIT"
-    );
-
-  } catch (
-    error
+  for (
+    const link
+    of links
   ) {
 
-    try {
-      await client.query(
-        "ROLLBACK"
-      );
-    } catch {}
-
-    console.error(
-      "[HEXORA] Queue insert error:",
-      error.message
+    await queueLink(
+      link
     );
-
-  } finally {
-
-    client.release();
   }
 }
 
 
-/* =========================================================
-   QUEUE STATUS -> NEON
-========================================================= */
+// ============================================================
+// SEED QUEUE
+// ============================================================
+
+async function seedQueue() {
+
+  for (
+    const seed
+    of SEED_URLS
+  ) {
+
+    await queueLink(
+      seed
+    );
+  }
+
+
+  console.log(
+    `[HEXORA] Seed URLs queued: ${SEED_URLS.length}`
+  );
+}
+
+
+// ============================================================
+// GET QUEUED URLS
+// ============================================================
+
+async function getQueueBatch() {
+
+  const result =
+    await neon.query(
+      `
+        SELECT
+          id,
+          url
+        FROM crawl_queue
+        WHERE status = 'queued'
+        ORDER BY id ASC
+        LIMIT $1
+      `,
+      [
+        BATCH_SIZE
+      ]
+    );
+
+
+  return result.rows || [];
+}
+
+
+// ============================================================
+// MARK QUEUE STATUS
+// ============================================================
 
 async function markStatus(
   url,
@@ -1703,313 +1610,409 @@ async function markStatus(
       `
         UPDATE crawl_queue
         SET
-          status = $1,
+          status = $2,
           last_crawled_at =
             CASE
-              WHEN $1 IN ('done','failed')
+              WHEN $2 = 'done'
               THEN NOW()
               ELSE last_crawled_at
             END,
-          error = $2
-        WHERE url = $3
+          error = $3
+        WHERE url = $1
       `,
       [
+        url,
         status,
-        errorMessage,
-        url
+        errorMessage
+          ? String(
+              errorMessage
+            ).slice(
+              0,
+              2000
+            )
+          : null
       ]
     );
 
-  } catch (
-    error
-  ) {
+  } catch (error) {
 
-    console.error(
-      "[HEXORA] Queue status error:",
-      error.message
+    console.warn(
+      `[HEXORA] Failed to update queue status: ${url}`,
+      error?.message || error
     );
   }
 }
 
 
-/* =========================================================
-   CRAWL ONE
-========================================================= */
+// ============================================================
+// CLAIM QUEUED URL
+// ============================================================
 
-async function crawlOne(
+async function claimUrl(
+  id,
   url
-) {
-
-  if (
-    !shouldCrawl(
-      url
-    )
-  ) {
-
-    console.log(
-      `[HEXORA] Filtered: ${url}`
-    );
-
-    await markStatus(
-      url,
-      "done",
-      null
-    );
-
-    return {
-      success: false,
-      skipped: true
-    };
-  }
-
-
-  console.log(
-    `[HEXORA] Crawling: ${url}`
-  );
-
-
-  try {
-
-    if (
-      !(await canCrawl(
-        url
-      ))
-    ) {
-
-      console.log(
-        `[HEXORA] Robots blocked: ${url}`
-      );
-
-      await markStatus(
-        url,
-        "done",
-        "robots-disallowed"
-      );
-
-      return {
-        success: false,
-        skipped: true
-      };
-    }
-
-
-    await respectDomainDelay(
-      url
-    );
-
-
-    const page =
-      await fetchPage(
-        url
-      );
-
-
-    if (
-      !page.ok
-    ) {
-
-      throw new Error(
-        page.reason ||
-        `HTTP ${page.status}`
-      );
-    }
-
-
-    if (
-      !shouldCrawl(
-        page.finalUrl
-      )
-    ) {
-
-      console.log(
-        `[HEXORA] Filtered redirect: ${page.finalUrl}`
-      );
-
-      await markStatus(
-        url,
-        "done",
-        "filtered-redirect"
-      );
-
-      return {
-        success: false,
-        skipped: true
-      };
-    }
-
-
-    const title =
-      extractTitle(
-        page.html
-      );
-
-    const description =
-      extractDescription(
-        page.html
-      );
-
-    const content =
-      extractMainContent(
-        page.html
-      );
-
-
-    if (
-      content.length <
-      80
-    ) {
-
-      throw new Error(
-        "No useful page content found"
-      );
-    }
-
-
-    const canonical =
-      extractCanonical(
-        page.html,
-        page.finalUrl
-      );
-
-
-    const language =
-      detectLanguage(
-        content
-      );
-
-
-    const links =
-      extractLinks(
-        page.html,
-        canonical
-      );
-
-
-    const words =
-      await savePage({
-        url:
-          canonical,
-        title,
-        description,
-        content,
-        language
-      });
-
-
-    await queueLinks(
-      links
-    );
-
-
-    await markStatus(
-      url,
-      "done",
-      null
-    );
-
-
-    console.log(
-      `[HEXORA] Indexed: ${title || canonical}`
-    );
-
-    console.log(
-      `[HEXORA] Words: ${words} | Links: ${links.length} | Language: ${language}`
-    );
-
-
-    return {
-      success: true,
-      skipped: false
-    };
-
-
-  } catch (
-    error
-  ) {
-
-    const message =
-      String(
-        error?.message ||
-        error
-      );
-
-
-    console.error(
-      `[HEXORA] Crawl failed: ${url} -> ${message}`
-    );
-
-
-    await markStatus(
-      url,
-      "failed",
-      message.slice(
-        0,
-        1000
-      )
-    );
-
-
-    return {
-      success: false,
-      skipped: false
-    };
-  }
-}
-
-
-/* =========================================================
-   GET QUEUED -> NEON
-========================================================= */
-
-async function getQueued(
-  batchSize
 ) {
 
   const result =
     await neon.query(
       `
-        SELECT url
-        FROM crawl_queue
-        WHERE status = 'queued'
-        ORDER BY created_at ASC
-        LIMIT $1
+        UPDATE crawl_queue
+        SET status = 'processing'
+        WHERE id = $1
+          AND status = 'queued'
+        RETURNING id, url
       `,
-      [batchSize]
+      [
+        id
+      ]
     );
 
+
   return (
-    result.rows ||
-    []
+    result.rows?.[0] || null
   );
 }
 
 
-/* =========================================================
-   NORMALIZE OLD QUEUE STATUSES
-========================================================= */
+// ============================================================
+// CRAWL ONE PAGE
+// ============================================================
 
-async function normalizeOldQueueStatuses() {
+async function crawlOne(
+  row
+) {
+
+  const id =
+    row.id;
+
+  const originalUrl =
+    normalizeUrl(
+      row.url
+    );
+
+
+  if (!originalUrl) {
+
+    await markStatus(
+      row.url,
+      "done",
+      "Invalid URL"
+    );
+
+    return {
+
+      success: false,
+
+      skipped: true,
+
+      duplicate: false
+
+    };
+  }
+
+
+  const claimed =
+    await claimUrl(
+      id,
+      originalUrl
+    );
+
+
+  if (!claimed) {
+
+    return {
+
+      success: false,
+
+      skipped: true,
+
+      duplicate: false
+
+    };
+  }
+
 
   try {
 
-    await neon.query(
-      `
-        UPDATE crawl_queue
-        SET status = 'queued'
-        WHERE status = 'pending'
-      `
+    /*
+      Respect domain request delay.
+    */
+
+    await respectDomainDelay(
+      originalUrl
     );
 
-  } catch (
-    error
-  ) {
+
+    /*
+      Check robots.txt.
+    */
+
+    const allowed =
+      await canCrawl(
+        originalUrl
+      );
+
+
+    if (!allowed) {
+
+      console.log(
+        `[HEXORA] robots.txt blocked: ${originalUrl}`
+      );
+
+
+      await markStatus(
+        originalUrl,
+        "done",
+        "Blocked by robots.txt"
+      );
+
+
+      return {
+
+        success: false,
+
+        skipped: true,
+
+        duplicate: false
+
+      };
+    }
+
+
+    /*
+      Fetch page.
+    */
+
+    const fetched =
+      await fetchPage(
+        originalUrl
+      );
+
+
+    const finalUrl =
+      fetched.finalUrl ||
+      originalUrl;
+
+
+    /*
+      Extract HTML content.
+    */
+
+    const page =
+      extractPage(
+        fetched.html,
+        finalUrl
+      );
+
+
+    const canonical =
+      normalizeUrl(
+        page.canonical ||
+        finalUrl
+      ) ||
+      finalUrl;
+
+
+    /*
+      ALWAYS queue discovered links.
+
+      Even when the current page already
+      exists in Supabase/Neon, its new links
+      can lead to new pages.
+    */
+
+    await queueLinks(
+      page.links
+    );
+
+
+    /*
+      Save only NEW pages into Neon.
+    */
+
+    const saveResult =
+      await savePage({
+
+        url:
+          canonical,
+
+        title:
+          page.title,
+
+        description:
+          page.description,
+
+        content:
+          page.content,
+
+        language:
+          page.language
+
+      });
+
+
+    /*
+      Existing page:
+      don't insert it again.
+    */
+
+    if (
+      saveResult.duplicate
+    ) {
+
+      await markStatus(
+        originalUrl,
+        "done",
+        null
+      );
+
+
+      console.log(
+        `[HEXORA] Existing page skipped: ${canonical}`
+      );
+
+
+      return {
+
+        success: false,
+
+        skipped: true,
+
+        duplicate: true
+
+      };
+    }
+
+
+    /*
+      New page successfully indexed.
+    */
+
+    await markStatus(
+      originalUrl,
+      "done",
+      null
+    );
+
+
+    console.log(
+      `[HEXORA] Indexed NEW page: ${page.title || canonical}`
+    );
+
+
+    console.log(
+      `[HEXORA] Words: ${saveResult.wordCount} | Links: ${page.links.length} | Language: ${page.language}`
+    );
+
+
+    return {
+
+      success: true,
+
+      skipped: false,
+
+      duplicate: false
+
+    };
+
+  } catch (error) {
+
+    const message =
+      error?.message ||
+      String(error);
+
 
     console.error(
-      "[HEXORA] pending->queued migration:",
-      error.message
+      `[HEXORA] Crawl failed: ${originalUrl}`,
+      message
     );
+
+
+    await markStatus(
+      originalUrl,
+      "error",
+      message
+    );
+
+
+    return {
+
+      success: false,
+
+      skipped: false,
+
+      duplicate: false,
+
+      error: message
+
+    };
+  }
+}
+
+
+// ============================================================
+// CONCURRENCY RUNNER
+// ============================================================
+
+async function runConcurrent(
+  rows
+) {
+
+  let index = 0;
+
+
+  async function worker() {
+
+    while (
+      true
+    ) {
+
+      const current =
+        index++;
+
+
+      if (
+        current >=
+        rows.length
+      ) {
+
+        return;
+      }
+
+
+      await crawlOne(
+        rows[current]
+      );
+    }
   }
 
+
+  const workers =
+    Math.min(
+      CONCURRENCY,
+      rows.length
+    );
+
+
+  await Promise.all(
+    Array
+      .from(
+        {
+          length:
+            workers
+        },
+        () =>
+          worker()
+      )
+  );
+}
+
+
+// ============================================================
+// RESET STUCK PROCESSING JOBS
+// ============================================================
+
+async function resetStuckJobs() {
 
   try {
 
@@ -2021,412 +2024,255 @@ async function normalizeOldQueueStatuses() {
       `
     );
 
-  } catch (
-    error
-  ) {
+  } catch (error) {
 
-    console.error(
-      "[HEXORA] processing->queued recovery:",
-      error.message
+    console.warn(
+      "[HEXORA] Could not reset processing jobs:",
+      error?.message || error
     );
   }
 }
 
 
-/* =========================================================
-   SEED QUEUE -> NEON
-========================================================= */
+// ============================================================
+// CRAWLER RUN
+// ============================================================
 
-async function seedQueue() {
-
-  const rows =
-    SEEDS
-      .filter(
-        shouldCrawl
-      )
-      .map(
-        url =>
-          normalizeUrl(
-            url
-          )
-      )
-      .filter(
-        Boolean
-      );
-
-
-  for (
-    const url of rows
-  ) {
-
-    try {
-
-      await neon.query(
-        `
-          INSERT INTO crawl_queue (
-            url,
-            status,
-            created_at
-          )
-          VALUES (
-            $1,
-            'queued',
-            NOW()
-          )
-          ON CONFLICT (url)
-          DO NOTHING
-        `,
-        [url]
-      );
-
-    } catch (
-      error
-    ) {
-
-      console.error(
-        `[HEXORA] Seed error: ${url}`,
-        error.message
-      );
-    }
-  }
-}
-
-
-/* =========================================================
-   CLAIM URL
-========================================================= */
-
-async function claimUrl(
-  url
-) {
-
-  const result =
-    await neon.query(
-      `
-        UPDATE crawl_queue
-        SET status = 'processing'
-        WHERE url = $1
-          AND status = 'queued'
-        RETURNING url
-      `,
-      [url]
-    );
-
-  return (
-    result.rows?.length >
-    0
-  );
-}
-
-
-/* =========================================================
-   CRAWL BATCH
-========================================================= */
-
-export async function crawlBatch(
-  options = BATCH_SIZE
-) {
-
-  const batchSize =
-    typeof options ===
-    "number"
-
-      ? Math.max(
-          1,
-          Math.floor(
-            options
-          )
-        )
-
-      : Math.max(
-          1,
-          Math.floor(
-            Number(
-              options?.batchSize ||
-              options?.batch ||
-              BATCH_SIZE
-            )
-          )
-        );
-
+async function runCrawler() {
 
   console.log(
-    `[HEXORA] Starting crawl batch: ${batchSize}`
+    "============================================================"
   );
-
-
-  const jobs =
-    await getQueued(
-      batchSize
-    );
-
-
-  if (
-    !jobs.length
-  ) {
-
-    console.log(
-      "[HEXORA] No queued URLs."
-    );
-
-    return {
-      processed: 0,
-      successful: 0,
-      failed: 0
-    };
-  }
-
-
-  /* -------------------------------------------------------
-     CLAIM
-  ------------------------------------------------------- */
-
-  const claimed =
-    [];
-
-  for (
-    const job of jobs
-  ) {
-
-    try {
-
-      const ok =
-        await claimUrl(
-          job.url
-        );
-
-      if (ok) {
-        claimed.push(
-          job.url
-        );
-      }
-
-    } catch (
-      error
-    ) {
-
-      console.error(
-        "[HEXORA] Claim error:",
-        error.message
-      );
-    }
-  }
-
-
-  let processed =
-    0;
-
-  let successful =
-    0;
-
-  let failed =
-    0;
-
-  let index =
-    0;
-
-
-  /* -------------------------------------------------------
-     WORKER
-  ------------------------------------------------------- */
-
-  async function worker() {
-
-    while (true) {
-
-      const current =
-        index++;
-
-      if (
-        current >=
-        claimed.length
-      ) {
-        return;
-      }
-
-
-      const result =
-        await crawlOne(
-          claimed[
-            current
-          ]
-        );
-
-
-      processed++;
-
-
-      if (
-        result.success
-      ) {
-
-        successful++;
-
-      } else if (
-        !result.skipped
-      ) {
-
-        failed++;
-      }
-    }
-  }
-
-
-  const workers =
-    Array.from(
-      {
-        length:
-          Math.min(
-            CONCURRENCY,
-            claimed.length
-          )
-      },
-      () =>
-        worker()
-    );
-
-
-  await Promise.all(
-    workers
-  );
-
 
   console.log(
-    `[HEXORA] Batch completed | processed: ${processed} | successful: ${successful} | failed: ${failed}`
+    "HEXORA WORLDWIDE CRAWLER"
   );
-
-
-  return {
-    processed,
-    successful,
-    failed
-  };
-}
-
-
-/* =========================================================
-   RUN CRAWLER
-========================================================= */
-
-export async function runCrawler() {
 
   console.log(
-    "[HEXORA] Checking Neon database..."
+    "============================================================"
   );
+
+
+  /*
+    Test Neon.
+  */
 
   try {
 
-    const connected =
+    const neonOK =
       await checkNeon();
 
-    if (!connected) {
+
+    if (!neonOK) {
 
       throw new Error(
         "Neon database check failed"
       );
     }
 
+
     console.log(
-      "[HEXORA] Neon database connected"
+      "[HEXORA] Neon: CONNECTED"
     );
 
-  } catch (
-    error
-  ) {
+  } catch (error) {
 
     console.error(
-      "[HEXORA] Neon database error:",
-      error.message
+      "[HEXORA] Neon connection failed:",
+      error?.message || error
     );
 
-    throw error;
+    return;
   }
 
 
-  /* -------------------------------------------------------
-     SUPABASE CHECK
-  ------------------------------------------------------- */
+  /*
+    Test Supabase.
+  */
 
-  if (supabase) {
+  const supabaseOK =
+    await checkSupabase();
 
-    try {
 
-      const connected =
-        await checkSupabase();
+  if (
+    supabaseOK
+  ) {
 
-      if (connected) {
+    console.log(
+      "[HEXORA] Supabase: CONNECTED"
+    );
 
-        console.log(
-          "[HEXORA] Supabase connected"
-        );
+  } else {
 
-      } else {
-
-        console.warn(
-          "[HEXORA] Supabase unavailable - continuing with Neon"
-        );
-      }
-
-    } catch (
-      error
-    ) {
-
-      console.warn(
-        "[HEXORA] Supabase check failed:",
-        error.message
-      );
-    }
+    console.warn(
+      "[HEXORA] Supabase: NOT AVAILABLE"
+    );
   }
 
 
-  await normalizeOldQueueStatuses();
+  /*
+    Reset jobs left in processing state.
+  */
+
+  await resetStuckJobs();
+
+
+  /*
+    Add initial seeds.
+  */
 
   await seedQueue();
 
-  return crawlBatch(
-    BATCH_SIZE
+
+  /*
+    Main crawler loop.
+  */
+
+  let cycle = 0;
+
+
+  while (
+    true
+  ) {
+
+    cycle++;
+
+
+    console.log(
+      `\n[HEXORA] Crawl cycle #${cycle}`
+    );
+
+
+    const rows =
+      await getQueueBatch();
+
+
+    if (
+      rows.length === 0
+    ) {
+
+      console.log(
+        "[HEXORA] Queue empty. Waiting 10 seconds..."
+      );
+
+
+      await sleep(
+        10000
+      );
+
+
+      /*
+        Check again because
+        other crawled pages may have
+        added new links.
+      */
+
+      continue;
+    }
+
+
+    console.log(
+      `[HEXORA] Processing ${rows.length} URLs`
+    );
+
+
+    await runConcurrent(
+      rows
+    );
+
+
+    console.log(
+      `[HEXORA] Cycle #${cycle} completed`
+    );
+
+
+    /*
+      Small pause before next batch.
+    */
+
+    await sleep(
+      1000
+    );
+  }
+}
+
+
+// ============================================================
+// ERROR HANDLING
+// ============================================================
+
+process.on(
+  "unhandledRejection",
+  error => {
+
+    console.error(
+      "[HEXORA] Unhandled rejection:",
+      error
+    );
+  }
+);
+
+
+process.on(
+  "uncaughtException",
+  error => {
+
+    console.error(
+      "[HEXORA] Uncaught exception:",
+      error
+    );
+  }
+);
+
+
+// ============================================================
+// SHUTDOWN
+// ============================================================
+
+async function shutdown(
+  signal
+) {
+
+  console.log(
+    `[HEXORA] ${signal} received. Shutting down...`
+  );
+
+
+  try {
+
+    await neon.end();
+
+  } catch {
+    // Ignore shutdown database errors.
+  }
+
+
+  process.exit(
+    0
   );
 }
 
 
-/* =========================================================
-   DIRECT EXECUTION
-========================================================= */
-
-if (
-  process.argv[1] &&
-  process.argv[1].endsWith(
-    "crawler.mjs"
-  )
-) {
-
-  runCrawler()
-    .then(
-      result => {
-
-        console.log(
-          new Date()
-            .toISOString(),
-          "crawl cycle",
-          result
-        );
-
-        process.exit(
-          0
-        );
-      }
+process.on(
+  "SIGTERM",
+  () =>
+    shutdown(
+      "SIGTERM"
     )
-    .catch(
-      error => {
+);
 
-        console.error(
-          "[HEXORA] Fatal crawler error:",
-          error
-        );
 
-        process.exit(
-          1
-        );
-      }
-    );
-}
+process.on(
+  "SIGINT",
+  () =>
+    shutdown(
+      "SIGINT"
+    )
+);
+
+
+// ============================================================
+// START
+// ============================================================
+
+runCrawler();
