@@ -1,27 +1,43 @@
-// HEXORA - Web Crawler
-// Clean content extraction + Supabase indexing
-// File: crawler.mjs
+// HEXORA CRAWLER
+// Clean webpage content + Supabase indexing
+// Compatible with worker/worker.mjs:
+// import { crawlBatch } from "../crawler.mjs";
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
 
-// --------------------------------------------------
+// =====================================================
 // CONFIG
-// --------------------------------------------------
+// =====================================================
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
+
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_KEY;
 
-const USER_AGENT = "HEXORA-Bot/1.0 (+https://hexora-search-production.up.railway.app/)";
+const USER_AGENT =
+  "HEXORA-Bot/1.0 (+https://hexora-search-production.up.railway.app/)";
 
-const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE || 10);
-const CONCURRENCY = Number(process.env.CRAWL_CONCURRENCY || 2);
-const FETCH_TIMEOUT = Number(process.env.CRAWL_TIMEOUT || 15000);
+const DEFAULT_BATCH_SIZE = Number(
+  process.env.CRAWL_BATCH_SIZE || 10
+);
+
+const CONCURRENCY = Number(
+  process.env.CRAWL_CONCURRENCY || 2
+);
+
+const FETCH_TIMEOUT = Number(
+  process.env.CRAWL_TIMEOUT || 15000
+);
 
 const MAX_CONTENT_LENGTH = 100000;
+
 const MAX_LINKS_PER_PAGE = 100;
+
+// =====================================================
+// SUPABASE
+// =====================================================
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error(
@@ -40,9 +56,9 @@ const supabase = createClient(
   }
 );
 
-// --------------------------------------------------
-// SEED URLS
-// --------------------------------------------------
+// =====================================================
+// SEEDS
+// =====================================================
 
 const SEED_URLS = [
   "https://www.wikipedia.org/",
@@ -52,9 +68,9 @@ const SEED_URLS = [
   "https://www.w3.org/",
 ];
 
-// --------------------------------------------------
-// HELPERS
-// --------------------------------------------------
+// =====================================================
+// UTILS
+// =====================================================
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,15 +78,20 @@ function sleep(ms) {
 
 function normalizeUrl(url, baseUrl = null) {
   try {
-    const parsed = new URL(url, baseUrl || undefined);
+    const parsed = new URL(
+      url,
+      baseUrl || undefined
+    );
 
-    if (!["http:", "https:"].includes(parsed.protocol)) {
+    if (
+      parsed.protocol !== "http:" &&
+      parsed.protocol !== "https:"
+    ) {
       return null;
     }
 
     parsed.hash = "";
 
-    // Remove tracking parameters
     const trackingParams = [
       "utm_source",
       "utm_medium",
@@ -98,9 +119,9 @@ function isBadUrl(url) {
 
   try {
     const parsed = new URL(url);
-    const pathname = parsed.pathname.toLowerCase();
+    const pathname =
+      parsed.pathname.toLowerCase();
 
-    // Skip downloads / binary files
     const blockedExtensions = [
       ".jpg",
       ".jpeg",
@@ -109,6 +130,7 @@ function isBadUrl(url) {
       ".webp",
       ".svg",
       ".ico",
+      ".bmp",
       ".mp3",
       ".wav",
       ".mp4",
@@ -138,8 +160,7 @@ function isBadUrl(url) {
       return true;
     }
 
-    // Skip obvious tracking / login URLs
-    const badWords = [
+    const blockedPaths = [
       "/login",
       "/signin",
       "/signup",
@@ -154,8 +175,8 @@ function isBadUrl(url) {
     ];
 
     if (
-      badWords.some((word) =>
-        pathname.includes(word)
+      blockedPaths.some((path) =>
+        pathname.includes(path)
       )
     ) {
       return true;
@@ -172,10 +193,10 @@ function cleanText(text) {
 
   return text
     .replace(/\u00a0/g, " ")
-    .replace(/\r/g, " ")
-    .replace(/\n+/g, "\n")
+    .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")
     .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -190,41 +211,54 @@ function decodeHtmlEntities(text) {
     .replace(/&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, (_, n) =>
-      String.fromCharCode(Number(n))
+    .replace(
+      /&#(\d+);/g,
+      (_, n) =>
+        String.fromCharCode(Number(n))
     )
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
-      String.fromCharCode(parseInt(n, 16))
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      (_, n) =>
+        String.fromCharCode(
+          parseInt(n, 16)
+        )
     );
 }
 
 function stripTags(html) {
   return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<\/section>/gi, "\n")
-    .replace(/<\/article>/gi, "\n")
-    .replace(/<\/li>/gi, "\n")
+    .replace(
+      /<(br|\/p|\/div|\/section|\/article|\/li)[^>]*>/gi,
+      "\n"
+    )
     .replace(/<[^>]+>/g, " ");
 }
 
 function removeComments(html) {
-  return html.replace(/<!--[\s\S]*?-->/g, " ");
+  return html.replace(
+    /<!--[\s\S]*?-->/g,
+    " "
+  );
 }
 
-// --------------------------------------------------
-// REMOVE UNWANTED HTML
-// --------------------------------------------------
+// =====================================================
+// HTML CLEANING
+// =====================================================
 
-function removeElementBlocks(html, tagNames) {
-  for (const tag of tagNames) {
+function removeElementBlocks(
+  html,
+  tags
+) {
+  for (const tag of tags) {
     const regex = new RegExp(
       `<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`,
       "gi"
     );
 
-    html = html.replace(regex, " ");
+    html = html.replace(
+      regex,
+      " "
+    );
   }
 
   return html;
@@ -234,6 +268,7 @@ function removeNoiseByClass(html) {
   const noiseWords = [
     "advert",
     "advertisement",
+    "advertisements",
     "ads",
     "ad-container",
     "adbox",
@@ -282,52 +317,66 @@ function removeNoiseByClass(html) {
     "related-stories",
   ];
 
-  const pattern = noiseWords.join("|");
+  const pattern =
+    noiseWords.join("|");
 
   const regex = new RegExp(
     `<([a-z0-9]+)\\b[^>]*(?:class|id)=["'][^"']*(?:${pattern})[^"']*["'][^>]*>[\\s\\S]*?<\\/\\1>`,
     "gi"
   );
 
-  return html.replace(regex, " ");
+  return html.replace(
+    regex,
+    " "
+  );
 }
 
-// --------------------------------------------------
+// =====================================================
 // TITLE
-// --------------------------------------------------
+// =====================================================
 
 function extractTitle(html) {
-  const titleMatch = html.match(
-    /<title[^>]*>([\s\S]*?)<\/title>/i
-  );
+  const match =
+    html.match(
+      /<title[^>]*>([\s\S]*?)<\/title>/i
+    );
 
-  if (!titleMatch) return "";
+  if (!match) return "";
 
   return cleanText(
     decodeHtmlEntities(
-      stripTags(titleMatch[1])
+      stripTags(match[1])
     )
   );
 }
 
-// --------------------------------------------------
-// META DESCRIPTION
-// --------------------------------------------------
+// =====================================================
+// DESCRIPTION
+// =====================================================
 
 function extractDescription(html) {
   const patterns = [
     /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["'][^>]*>/i,
+
     /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["'][^>]*>/i,
+
     /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["'][^>]*>/i,
+
     /<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:description["'][^>]*>/i,
   ];
 
   for (const regex of patterns) {
-    const match = html.match(regex);
+    const match =
+      html.match(regex);
 
-    if (match && match[1]) {
+    if (
+      match &&
+      match[1]
+    ) {
       return cleanText(
-        decodeHtmlEntities(match[1])
+        decodeHtmlEntities(
+          match[1]
+        )
       ).slice(0, 1000);
     }
   }
@@ -335,211 +384,309 @@ function extractDescription(html) {
   return "";
 }
 
-// --------------------------------------------------
-// CANONICAL URL
-// --------------------------------------------------
+// =====================================================
+// CANONICAL
+// =====================================================
 
-function extractCanonical(html, baseUrl) {
-  const match = html.match(
-    /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["'][^>]*>/i
-  );
+function extractCanonical(
+  html,
+  baseUrl
+) {
+  const match =
+    html.match(
+      /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["'][^>]*>/i
+    );
 
   if (!match) return null;
 
-  return normalizeUrl(match[1], baseUrl);
+  return normalizeUrl(
+    match[1],
+    baseUrl
+  );
 }
 
-// --------------------------------------------------
-// MAIN CONTENT EXTRACTION
-// --------------------------------------------------
+// =====================================================
+// MAIN CONTENT
+// =====================================================
 
 function extractMainContent(html) {
   let source = html;
 
-  source = removeComments(source);
+  source = removeComments(
+    source
+  );
 
-  // Remove dangerous / useless tags
-  source = removeElementBlocks(source, [
-    "script",
-    "style",
-    "noscript",
-    "svg",
-    "canvas",
-    "iframe",
-    "object",
-    "embed",
-    "template",
-    "form",
-    "dialog",
-  ]);
+  // Remove scripts and useless blocks
+  source = removeElementBlocks(
+    source,
+    [
+      "script",
+      "style",
+      "noscript",
+      "svg",
+      "canvas",
+      "iframe",
+      "object",
+      "embed",
+      "template",
+      "form",
+      "dialog",
+    ]
+  );
 
-  // Remove common navigation structures
-  source = removeElementBlocks(source, [
-    "nav",
-    "footer",
-    "aside",
-  ]);
+  // Remove navigation structures
+  source = removeElementBlocks(
+    source,
+    [
+      "nav",
+      "footer",
+      "aside",
+    ]
+  );
 
-  // Remove elements identified as ads/noise
-  source = removeNoiseByClass(source);
+  // Remove advertisement /
+  // social / recommendation blocks
+  source =
+    removeNoiseByClass(
+      source
+    );
 
-  // Prefer ARTICLE
-  let articleMatches = [
+  // -------------------------------------------------
+  // ARTICLE FIRST
+  // -------------------------------------------------
+
+  const articles = [
     ...source.matchAll(
       /<article\b[^>]*>([\s\S]*?)<\/article>/gi
     ),
   ];
 
-  if (articleMatches.length > 0) {
-    const articleText = articleMatches
-      .map((m) => stripTags(m[1]))
-      .join("\n");
+  if (articles.length) {
+    const articleText =
+      articles
+        .map((m) =>
+          stripTags(m[1])
+        )
+        .join("\n");
 
-    const cleaned = cleanText(
-      decodeHtmlEntities(articleText)
-    );
+    const cleaned =
+      cleanText(
+        decodeHtmlEntities(
+          articleText
+        )
+      );
 
-    if (cleaned.length >= 300) {
-      return cleaned;
+    if (
+      cleaned.length >= 300
+    ) {
+      return cleaned.slice(
+        0,
+        MAX_CONTENT_LENGTH
+      );
     }
   }
 
-  // Prefer MAIN
-  let mainMatches = [
+  // -------------------------------------------------
+  // MAIN SECOND
+  // -------------------------------------------------
+
+  const mains = [
     ...source.matchAll(
       /<main\b[^>]*>([\s\S]*?)<\/main>/gi
     ),
   ];
 
-  if (mainMatches.length > 0) {
-    const mainText = mainMatches
-      .map((m) => stripTags(m[1]))
-      .join("\n");
+  if (mains.length) {
+    const mainText =
+      mains
+        .map((m) =>
+          stripTags(m[1])
+        )
+        .join("\n");
 
-    const cleaned = cleanText(
-      decodeHtmlEntities(mainText)
-    );
+    const cleaned =
+      cleanText(
+        decodeHtmlEntities(
+          mainText
+        )
+      );
 
-    if (cleaned.length >= 300) {
-      return cleaned;
+    if (
+      cleaned.length >= 300
+    ) {
+      return cleaned.slice(
+        0,
+        MAX_CONTENT_LENGTH
+      );
     }
   }
 
-  // BODY fallback
-  const bodyMatch = source.match(
-    /<body\b[^>]*>([\s\S]*?)<\/body>/i
-  );
+  // -------------------------------------------------
+  // BODY FALLBACK
+  // -------------------------------------------------
 
-  const body = bodyMatch
-    ? bodyMatch[1]
-    : source;
+  const bodyMatch =
+    source.match(
+      /<body\b[^>]*>([\s\S]*?)<\/body>/i
+    );
 
-  let text = stripTags(body);
+  const body =
+    bodyMatch
+      ? bodyMatch[1]
+      : source;
 
-  text = decodeHtmlEntities(text);
+  let text =
+    stripTags(body);
 
-  text = cleanText(text);
+  text =
+    decodeHtmlEntities(
+      text
+    );
 
-  // Remove common text-only noise
-  const noiseLines = [
-    "advertisement",
-    "advertisements",
-    "loading...",
-    "load more",
-    "subscribe now",
-    "sign in",
-    "log in",
-    "follow us",
-    "share this",
-    "share on",
-    "cookie policy",
-    "privacy policy",
-    "terms and conditions",
+  text =
+    cleanText(text);
+
+  // Remove common text noise
+  const noisePatterns = [
+    /^advertisement$/i,
+    /^advertisements$/i,
+    /^loading\.{0,3}$/i,
+    /^load more$/i,
+    /^subscribe now$/i,
+    /^sign in$/i,
+    /^log in$/i,
+    /^follow us$/i,
+    /^share this$/i,
+    /^share on$/i,
   ];
 
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => {
-      const lower = line.toLowerCase();
-
-      return !noiseLines.some((noise) =>
-        lower === noise ||
-        lower.includes(noise)
+  const lines =
+    text
+      .split("\n")
+      .map((line) =>
+        line.trim()
+      )
+      .filter(Boolean)
+      .filter(
+        (line) =>
+          !noisePatterns.some(
+            (regex) =>
+              regex.test(line)
+          )
       );
-    });
 
-  text = cleanText(lines.join("\n"));
+  text =
+    cleanText(
+      lines.join("\n")
+    );
 
-  return text;
+  return text.slice(
+    0,
+    MAX_CONTENT_LENGTH
+  );
 }
 
-// --------------------------------------------------
-// EXTRACT LINKS
-// --------------------------------------------------
+// =====================================================
+// LINKS
+// =====================================================
 
-function extractLinks(html, baseUrl) {
-  const links = new Set();
+function extractLinks(
+  html,
+  baseUrl
+) {
+  const links =
+    new Set();
 
   const regex =
     /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi;
 
   let match;
 
-  while ((match = regex.exec(html)) !== null) {
-    if (links.size >= MAX_LINKS_PER_PAGE) break;
+  while (
+    (match = regex.exec(html))
+  ) {
+    if (
+      links.size >=
+      MAX_LINKS_PER_PAGE
+    ) {
+      break;
+    }
 
-    let url = normalizeUrl(
-      match[1],
-      baseUrl
-    );
+    const url =
+      normalizeUrl(
+        match[1],
+        baseUrl
+      );
 
     if (!url) continue;
 
-    if (isBadUrl(url)) continue;
+    if (
+      isBadUrl(url)
+    ) {
+      continue;
+    }
 
     links.add(url);
   }
 
-  return [...links];
+  return [
+    ...links,
+  ];
 }
 
-// --------------------------------------------------
+// =====================================================
 // HASH
-// --------------------------------------------------
+// =====================================================
 
-function contentHash(text) {
+function makeHash(text) {
   return crypto
     .createHash("sha256")
     .update(text)
     .digest("hex");
 }
 
-// --------------------------------------------------
-// FETCH PAGE
-// --------------------------------------------------
+// =====================================================
+// FETCH
+// =====================================================
 
-async function fetchPage(url) {
-  const controller = new AbortController();
+async function fetchPage(
+  url
+) {
+  const controller =
+    new AbortController();
 
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, FETCH_TIMEOUT);
+  const timeout =
+    setTimeout(
+      () =>
+        controller.abort(),
+      FETCH_TIMEOUT
+    );
 
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept:
-          "text/html,application/xhtml+xml",
-        "Accept-Language":
-          "en-US,en;q=0.9",
-      },
-      redirect: "follow",
-      signal: controller.signal,
-    });
+    const response =
+      await fetch(
+        url,
+        {
+          method: "GET",
+
+          headers: {
+            "User-Agent":
+              USER_AGENT,
+
+            Accept:
+              "text/html,application/xhtml+xml",
+
+            "Accept-Language":
+              "en-US,en;q=0.9",
+          },
+
+          redirect:
+            "follow",
+
+          signal:
+            controller.signal,
+        }
+      );
 
     if (!response.ok) {
       throw new Error(
@@ -548,72 +695,97 @@ async function fetchPage(url) {
     }
 
     const contentType =
-      response.headers.get("content-type") || "";
+      response.headers.get(
+        "content-type"
+      ) || "";
 
     if (
-      !contentType.includes("text/html") &&
-      !contentType.includes("application/xhtml+xml")
+      !contentType.includes(
+        "text/html"
+      ) &&
+      !contentType.includes(
+        "application/xhtml+xml"
+      )
     ) {
       throw new Error(
         `Unsupported content type: ${contentType}`
       );
     }
 
-    const html = await response.text();
+    const html =
+      await response.text();
 
     return {
       html,
+
       finalUrl:
-        normalizeUrl(response.url) || url,
+        normalizeUrl(
+          response.url
+        ) || url,
     };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(
+      timeout
+    );
   }
 }
 
-// --------------------------------------------------
+// =====================================================
 // SAVE PAGE
-// --------------------------------------------------
+// =====================================================
 
-async function savePage({
-  url,
-  title,
-  description,
-  content,
-  canonicalUrl,
-}) {
-  const finalUrl =
-    canonicalUrl || url;
+async function savePage(
+  data
+) {
+  const words =
+    data.content
+      .split(/\s+/)
+      .filter(Boolean);
 
-  const words = content
-    .split(/\s+/)
-    .filter(Boolean);
+  const row = {
+    url:
+      data.canonicalUrl ||
+      data.url,
 
-  const hash = contentHash(content);
+    title:
+      data.title ||
+      data.url,
 
-  const pageData = {
-    url: finalUrl,
-    title: title || finalUrl,
     description:
-      description || null,
+      data.description ||
+      null,
+
     content:
-      content.slice(0, MAX_CONTENT_LENGTH),
-    content_hash: hash,
-    word_count: words.length,
-    language: "unknown",
-    updated_at: new Date().toISOString(),
+      data.content,
+
+    content_hash:
+      makeHash(
+        data.content
+      ),
+
+    word_count:
+      words.length,
+
+    language:
+      "unknown",
+
+    updated_at:
+      new Date().toISOString(),
+
     last_crawled_at:
       new Date().toISOString(),
   };
 
-  const { error } = await supabase
-    .from("pages")
-    .upsert(
-      pageData,
-      {
-        onConflict: "url",
-      }
-    );
+  const { error } =
+    await supabase
+      .from("pages")
+      .upsert(
+        row,
+        {
+          onConflict:
+            "url",
+        }
+      );
 
   if (error) {
     throw new Error(
@@ -622,58 +794,71 @@ async function savePage({
   }
 }
 
-// --------------------------------------------------
+// =====================================================
 // QUEUE LINKS
-// --------------------------------------------------
+// =====================================================
 
-async function queueLinks(links) {
-  if (!links.length) return;
+async function queueLinks(
+  links
+) {
+  if (!links.length) {
+    return;
+  }
 
-  const rows = links.map((url) => ({
-    url,
-    status: "queued",
-  }));
-
-  const { error } = await supabase
-    .from("crawl_queue")
-    .upsert(
-      rows,
-      {
-        onConflict: "url",
-        ignoreDuplicates: true,
-      }
+  const rows =
+    links.map(
+      (url) => ({
+        url,
+        status:
+          "queued",
+      })
     );
+
+  const { error } =
+    await supabase
+      .from("crawl_queue")
+      .upsert(
+        rows,
+        {
+          onConflict:
+            "url",
+
+          ignoreDuplicates:
+            true,
+        }
+      );
 
   if (error) {
     console.log(
-      "[HEXORA] Queue insert warning:",
+      "[HEXORA] Queue warning:",
       error.message
     );
   }
 }
 
-// --------------------------------------------------
-// UPDATE QUEUE
-// --------------------------------------------------
+// =====================================================
+// QUEUE STATUS
+// =====================================================
 
-async function markQueueDone(
-  queueId,
-  errorMessage = null
+async function markDone(
+  id
 ) {
-  const update = {
-    status: errorMessage
-      ? "failed"
-      : "done",
-    last_crawled_at:
-      new Date().toISOString(),
-    last_error:
-      errorMessage || null,
-  };
+  const { error } =
+    await supabase
+      .from("crawl_queue")
+      .update({
+        status: "done",
 
-  const { error } = await supabase
-    .from("crawl_queue")
-    .update(update)
-    .eq("id", queueId);
+        last_crawled_at:
+          new Date().toISOString(),
+
+        last_error:
+          null,
+      })
+      .eq(
+        "id",
+        id
+      );
 
   if (error) {
     console.log(
@@ -683,14 +868,47 @@ async function markQueueDone(
   }
 }
 
-// --------------------------------------------------
-// CRAWL ONE URL
-// --------------------------------------------------
-
-async function crawlUrl(
-  queueItem
+async function markFailed(
+  id,
+  message
 ) {
-  const url = queueItem.url;
+  const { error } =
+    await supabase
+      .from("crawl_queue")
+      .update({
+        status: "failed",
+
+        last_crawled_at:
+          new Date().toISOString(),
+
+        last_error:
+          String(message).slice(
+            0,
+            1000
+          ),
+      })
+      .eq(
+        "id",
+        id
+      );
+
+  if (error) {
+    console.log(
+      "[HEXORA] Queue failure update warning:",
+      error.message
+    );
+  }
+}
+
+// =====================================================
+// CRAWL ONE URL
+// =====================================================
+
+async function crawlOne(
+  item
+) {
+  const url =
+    item.url;
 
   console.log(
     `[HEXORA] Crawling: ${url}`
@@ -698,17 +916,25 @@ async function crawlUrl(
 
   try {
     const page =
-      await fetchPage(url);
+      await fetchPage(
+        url
+      );
 
-    const html = page.html;
+    const html =
+      page.html;
+
     const finalUrl =
       page.finalUrl;
 
     const title =
-      extractTitle(html);
+      extractTitle(
+        html
+      );
 
     const description =
-      extractDescription(html);
+      extractDescription(
+        html
+      );
 
     const canonicalUrl =
       extractCanonical(
@@ -717,9 +943,14 @@ async function crawlUrl(
       );
 
     const content =
-      extractMainContent(html);
+      extractMainContent(
+        html
+      );
 
-    if (!content || content.length < 50) {
+    if (
+      !content ||
+      content.length < 50
+    ) {
       throw new Error(
         "No useful page content found"
       );
@@ -732,27 +963,41 @@ async function crawlUrl(
       );
 
     await savePage({
-      url: finalUrl,
+      url:
+        finalUrl,
+
       title,
+
       description,
+
       content,
+
       canonicalUrl,
     });
 
-    await queueLinks(links);
+    await queueLinks(
+      links
+    );
 
-    await markQueueDone(
-      queueItem.id
+    await markDone(
+      item.id
     );
 
     console.log(
-      `[HEXORA] Indexed: ${title || finalUrl}`
+      `[HEXORA] Indexed: ${
+        title || finalUrl
+      }`
     );
 
     console.log(
-      `[HEXORA] Words: ${content
-        .split(/\s+/)
-        .filter(Boolean).length} | Links: ${links.length}`
+      `[HEXORA] Words: ${
+        content
+          .split(/\s+/)
+          .filter(Boolean)
+          .length
+      } | Links: ${
+        links.length
+      }`
     );
 
     return {
@@ -768,9 +1013,9 @@ async function crawlUrl(
       `[HEXORA] Crawl failed: ${url} -> ${message}`
     );
 
-    await markQueueDone(
-      queueItem.id,
-      message.slice(0, 1000)
+    await markFailed(
+      item.id,
+      message
     );
 
     return {
@@ -781,25 +1026,32 @@ async function crawlUrl(
   }
 }
 
-// --------------------------------------------------
-// GET QUEUE
-// --------------------------------------------------
+// =====================================================
+// GET PENDING QUEUE
+// =====================================================
 
-async function getPendingUrls() {
+async function getPending(
+  batchSize
+) {
   const { data, error } =
     await supabase
       .from("crawl_queue")
       .select(
         "id,url,status"
       )
-      .eq("status", "queued")
+      .eq(
+        "status",
+        "queued"
+      )
       .order(
         "created_at",
         {
           ascending: true,
         }
       )
-      .limit(BATCH_SIZE);
+      .limit(
+        batchSize
+      );
 
   if (error) {
     throw new Error(
@@ -810,16 +1062,19 @@ async function getPendingUrls() {
   return data || [];
 }
 
-// --------------------------------------------------
+// =====================================================
 // SEED QUEUE
-// --------------------------------------------------
+// =====================================================
 
 async function seedQueue() {
   const rows =
-    SEED_URLS.map((url) => ({
-      url,
-      status: "queued",
-    }));
+    SEED_URLS.map(
+      (url) => ({
+        url,
+        status:
+          "queued",
+      })
+    );
 
   const { error } =
     await supabase
@@ -827,8 +1082,11 @@ async function seedQueue() {
       .upsert(
         rows,
         {
-          onConflict: "url",
-          ignoreDuplicates: true,
+          onConflict:
+            "url",
+
+          ignoreDuplicates:
+            true,
         }
       );
 
@@ -840,39 +1098,83 @@ async function seedQueue() {
   }
 }
 
-// --------------------------------------------------
-// CONCURRENT PROCESSING
-// --------------------------------------------------
+// =====================================================
+// CRAWL BATCH
+// =====================================================
+// IMPORTANT:
+// worker/worker.mjs imports this function.
+// =====================================================
 
-async function processBatch(items) {
-  let index = 0;
+export async function crawlBatch(
+  batchSize = DEFAULT_BATCH_SIZE
+) {
+  console.log(
+    `[HEXORA] Starting crawl batch: ${batchSize}`
+  );
+
+  const items =
+    await getPending(
+      batchSize
+    );
+
+  if (!items.length) {
+    console.log(
+      "[HEXORA] No pending URLs."
+    );
+
+    return {
+      processed: 0,
+      successful: 0,
+      failed: 0,
+    };
+  }
+
+  let nextIndex = 0;
+
+  let successful = 0;
+
+  let failed = 0;
 
   async function worker() {
     while (true) {
-      const current =
-        index++;
+      const index =
+        nextIndex++;
 
-      if (current >= items.length) {
+      if (
+        index >=
+        items.length
+      ) {
         break;
       }
 
-      await crawlUrl(
-        items[current]
-      );
+      const result =
+        await crawlOne(
+          items[index]
+        );
 
-      // Small delay between requests
+      if (result.ok) {
+        successful++;
+      } else {
+        failed++;
+      }
+
       await sleep(500);
     }
   }
 
   const workers = [];
 
-  const count = Math.min(
-    CONCURRENCY,
-    items.length
-  );
+  const workerCount =
+    Math.min(
+      CONCURRENCY,
+      items.length
+    );
 
-  for (let i = 0; i < count; i++) {
+  for (
+    let i = 0;
+    i < workerCount;
+    i++
+  ) {
     workers.push(
       worker()
     );
@@ -881,11 +1183,24 @@ async function processBatch(items) {
   await Promise.all(
     workers
   );
+
+  console.log(
+    `[HEXORA] Batch completed | processed: ${items.length} | successful: ${successful} | failed: ${failed}`
+  );
+
+  return {
+    processed:
+      items.length,
+
+    successful,
+
+    failed,
+  };
 }
 
-// --------------------------------------------------
-// MAIN CRAWL CYCLE
-// --------------------------------------------------
+// =====================================================
+// RUN ONE CRAWL CYCLE
+// =====================================================
 
 export async function runCrawler() {
   console.log("");
@@ -893,7 +1208,7 @@ export async function runCrawler() {
     "======================================"
   );
   console.log(
-    " HEXORA CRAWLER"
+    "       HEXORA CRAWLER"
   );
   console.log(
     "======================================"
@@ -902,35 +1217,9 @@ export async function runCrawler() {
   try {
     await seedQueue();
 
-    const items =
-      await getPendingUrls();
-
-    if (!items.length) {
-      console.log(
-        "[HEXORA] No pending URLs."
-      );
-
-      return {
-        processed: 0,
-      };
-    }
-
-    console.log(
-      `[HEXORA] Processing ${items.length} URLs...`
+    return await crawlBatch(
+      DEFAULT_BATCH_SIZE
     );
-
-    await processBatch(
-      items
-    );
-
-    console.log(
-      "[HEXORA] Crawl cycle completed."
-    );
-
-    return {
-      processed:
-        items.length,
-    };
   } catch (error) {
     console.error(
       "[HEXORA] Crawler error:",
@@ -939,6 +1228,9 @@ export async function runCrawler() {
 
     return {
       processed: 0,
+      successful: 0,
+      failed: 0,
+
       error:
         error?.message ||
         String(error),
@@ -946,16 +1238,14 @@ export async function runCrawler() {
   }
 }
 
-// --------------------------------------------------
-// DIRECT RUN
-// --------------------------------------------------
+// =====================================================
+// DIRECT EXECUTION
+// =====================================================
 
 const isMain =
   process.argv[1] &&
-  (
-    process.argv[1].endsWith(
-      "crawler.mjs"
-    )
+  process.argv[1].endsWith(
+    "crawler.mjs"
   );
 
 if (isMain) {
