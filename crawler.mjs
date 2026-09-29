@@ -1,59 +1,146 @@
 // HEXORA - crawler.mjs
-// Unified crawler for Railway Worker + Supabase
+// Neon primary crawler + Supabase connection
 // Queue lifecycle: queued -> processing -> done / failed
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
+import pg from "pg";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const { Pool } = pg;
+
+/* =========================================================
+   DATABASE CONFIG
+========================================================= */
+
+const SUPABASE_URL =
+  process.env.SUPABASE_URL;
+
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_KEY;
 
-if (!SUPABASE_URL) throw new Error("SUPABASE_URL is missing");
+const DATABASE_URL =
+  process.env.DATABASE_URL;
 
-if (!SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error("SUPABASE_SERVICE_ROLE_KEY is missing");
+if (!DATABASE_URL) {
+  throw new Error(
+    "DATABASE_URL is missing"
+  );
 }
 
-const supabase = createClient(
-  SUPABASE_URL,
+if (!SUPABASE_URL) {
+  console.warn(
+    "[HEXORA] SUPABASE_URL is missing - Supabase features disabled"
+  );
+}
+
+if (!SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn(
+    "[HEXORA] SUPABASE_SERVICE_ROLE_KEY is missing - Supabase features disabled"
+  );
+}
+
+
+/* =========================================================
+   NEON POSTGRES
+========================================================= */
+
+const neon = new Pool({
+  connectionString:
+    DATABASE_URL,
+
+  max: 5,
+
+  idleTimeoutMillis:
+    30000,
+
+  connectionTimeoutMillis:
+    10000
+});
+
+
+/* =========================================================
+   SUPABASE
+========================================================= */
+
+const supabase =
+  SUPABASE_URL &&
   SUPABASE_SERVICE_ROLE_KEY
-);
+
+    ? createClient(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY
+      )
+
+    : null;
+
+
+/* =========================================================
+   CRAWLER CONFIG
+========================================================= */
 
 const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
   "HEXORA-Bot/1.0 (+https://hexora-search-production.up.railway.app/)";
 
-const BATCH_SIZE = Math.max(
-  1,
-  Number(process.env.CRAWLER_BATCH_SIZE || 12)
-);
+const BATCH_SIZE =
+  Math.max(
+    1,
+    Number(
+      process.env.CRAWLER_BATCH_SIZE ||
+      12
+    )
+  );
 
-const CONCURRENCY = Math.max(
-  1,
-  Number(process.env.CRAWLER_CONCURRENCY || 2)
-);
+const CONCURRENCY =
+  Math.max(
+    1,
+    Number(
+      process.env.CRAWLER_CONCURRENCY ||
+      2
+    )
+  );
 
-const FETCH_TIMEOUT = Math.max(
-  5000,
-  Number(process.env.CRAWL_TIMEOUT_MS || 15000)
-);
+const FETCH_TIMEOUT =
+  Math.max(
+    5000,
+    Number(
+      process.env.CRAWL_TIMEOUT_MS ||
+      15000
+    )
+  );
 
-const DOMAIN_DELAY = Math.max(
-  0,
-  Number(process.env.CRAWL_DOMAIN_DELAY_MS || 1500)
-);
+const DOMAIN_DELAY =
+  Math.max(
+    0,
+    Number(
+      process.env.CRAWL_DOMAIN_DELAY_MS ||
+      1500
+    )
+  );
 
-const MAX_CONTENT = Math.max(
-  10000,
-  Number(process.env.CRAWL_MAX_CONTENT || 100000)
-);
+const MAX_CONTENT =
+  Math.max(
+    10000,
+    Number(
+      process.env.CRAWL_MAX_CONTENT ||
+      100000
+    )
+  );
 
-const MAX_LINKS = Math.max(
-  10,
-  Number(process.env.CRAWL_MAX_LINKS || 100)
-);
+const MAX_LINKS =
+  Math.max(
+    10,
+    Number(
+      process.env.CRAWL_MAX_LINKS ||
+      100
+    )
+  );
+
+
+/* =========================================================
+   SEEDS
+========================================================= */
 
 const SEEDS = [
   "https://www.wikipedia.org/",
@@ -63,28 +150,79 @@ const SEEDS = [
   "https://www.w3.org/"
 ];
 
-const robotsCache = new Map();
-const lastVisit = new Map();
+
+/* =========================================================
+   MEMORY CACHE
+========================================================= */
+
+const robotsCache =
+  new Map();
+
+const lastVisit =
+  new Map();
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(
+    resolve =>
+      setTimeout(
+        resolve,
+        ms
+      )
+  );
 }
 
-export function normalizeUrl(input, base = null) {
-  try {
-    const url = base
-      ? new URL(input, base)
-      : new URL(input);
 
-    if (!["http:", "https:"].includes(url.protocol)) {
+/* =========================================================
+   URL NORMALIZATION
+========================================================= */
+
+export function normalizeUrl(
+  input,
+  base = null
+) {
+
+  try {
+
+    const url =
+      base
+        ? new URL(
+            input,
+            base
+          )
+        : new URL(
+            input
+          );
+
+    if (
+      ![
+        "http:",
+        "https:"
+      ].includes(
+        url.protocol
+      )
+    ) {
       return null;
     }
 
     url.hash = "";
-    url.hostname = url.hostname.toLowerCase();
 
-    for (const key of [...url.searchParams.keys()]) {
-      const k = key.toLowerCase();
+    url.hostname =
+      url.hostname.toLowerCase();
+
+
+    for (
+      const key of [
+        ...url.searchParams.keys()
+      ]
+    ) {
+
+      const k =
+        key.toLowerCase();
 
       if (
         k === "fbclid" ||
@@ -93,41 +231,57 @@ export function normalizeUrl(input, base = null) {
         k === "mc_eid" ||
         k.startsWith("utm_")
       ) {
-        url.searchParams.delete(key);
+
+        url.searchParams.delete(
+          key
+        );
       }
     }
+
 
     if (
       url.pathname.length > 1 &&
       url.pathname.endsWith("/")
     ) {
+
       url.pathname =
-        url.pathname.replace(/\/+$/, "");
+        url.pathname.replace(
+          /\/+$/,
+          ""
+        );
     }
+
 
     return url.toString();
 
   } catch {
+
     return null;
   }
 }
 
 
-/*
- * IMPORTANT:
- * Normal article/page URLs must NOT be blocked.
- */
-export function shouldCrawl(input) {
+/* =========================================================
+   CRAWL FILTER
+========================================================= */
+
+export function shouldCrawl(
+  input
+) {
 
   const normalized =
-    normalizeUrl(input);
+    normalizeUrl(
+      input
+    );
 
   if (!normalized) {
     return false;
   }
 
   const url =
-    new URL(normalized);
+    new URL(
+      normalized
+    );
 
   const host =
     url.hostname.toLowerCase();
@@ -141,9 +295,9 @@ export function shouldCrawl(input) {
     url.searchParams;
 
 
-  /*
-   * Wikimedia / Wikipedia utility parameters
-   */
+  /* -------------------------------------------------------
+     BLOCKED PARAMETERS
+  ------------------------------------------------------- */
 
   const blockedParams = [
     "action",
@@ -158,32 +312,57 @@ export function shouldCrawl(input) {
   for (
     const key of blockedParams
   ) {
-    if (query.has(key)) {
+
+    if (
+      query.has(key)
+    ) {
       return false;
     }
   }
 
 
-  /*
-   * Wikimedia / Wikipedia namespaces
-   */
+  /* -------------------------------------------------------
+     WIKIMEDIA FILTERS
+  ------------------------------------------------------- */
 
   if (
-    host.endsWith("wikipedia.org") ||
-    host.endsWith("wikimedia.org") ||
-    host.endsWith("wiktionary.org") ||
-    host.endsWith("wikibooks.org") ||
-    host.endsWith("wikiquote.org") ||
-    host.endsWith("wikinews.org") ||
-    host.endsWith("wikisource.org") ||
-    host.endsWith("wikiversity.org") ||
-    host.endsWith("wikivoyage.org")
+    host.endsWith(
+      "wikipedia.org"
+    ) ||
+    host.endsWith(
+      "wikimedia.org"
+    ) ||
+    host.endsWith(
+      "wiktionary.org"
+    ) ||
+    host.endsWith(
+      "wikibooks.org"
+    ) ||
+    host.endsWith(
+      "wikiquote.org"
+    ) ||
+    host.endsWith(
+      "wikinews.org"
+    ) ||
+    host.endsWith(
+      "wikisource.org"
+    ) ||
+    host.endsWith(
+      "wikiversity.org"
+    ) ||
+    host.endsWith(
+      "wikivoyage.org"
+    )
   ) {
 
     const wikiIndex =
-      path.indexOf("/wiki/");
+      path.indexOf(
+        "/wiki/"
+      );
 
-    if (wikiIndex !== -1) {
+    if (
+      wikiIndex !== -1
+    ) {
 
       const title =
         path.slice(
@@ -217,37 +396,43 @@ export function shouldCrawl(input) {
 
       if (
         blockedNamespaces.some(
-          ns => title.startsWith(ns)
+          ns =>
+            title.startsWith(
+              ns
+            )
         )
       ) {
         return false;
       }
 
       if (
-        title.includes("special:") ||
-        title.includes("recentchanges")
+        title.includes(
+          "special:"
+        ) ||
+        title.includes(
+          "recentchanges"
+        )
       ) {
         return false;
       }
     }
 
 
-    /*
-     * Wikimedia utility endpoint
-     */
-
     if (
-      path === "/w/index.php" ||
-      path === "/w/index.php/"
+      path ===
+        "/w/index.php" ||
+      path ===
+        "/w/index.php/"
     ) {
+
       return false;
     }
   }
 
 
-  /*
-   * Generic login/account endpoints
-   */
+  /* -------------------------------------------------------
+     ACCOUNT / LOGIN
+  ------------------------------------------------------- */
 
   if (
     path === "/login" ||
@@ -257,15 +442,18 @@ export function shouldCrawl(input) {
     path === "/createaccount" ||
     path === "/account/login" ||
     path === "/account/logout" ||
-    path.includes("/wp-login.php")
+    path.includes(
+      "/wp-login.php"
+    )
   ) {
+
     return false;
   }
 
 
-  /*
-   * Non-document file types
-   */
+  /* -------------------------------------------------------
+     NON HTML FILES
+  ------------------------------------------------------- */
 
   const badExtensions = [
     ".jpg",
@@ -304,52 +492,62 @@ export function shouldCrawl(input) {
 
   if (
     badExtensions.some(
-      ext => path.endsWith(ext)
+      ext =>
+        path.endsWith(
+          ext
+        )
     )
   ) {
+
     return false;
   }
 
 
-  /*
-   * Prevent huge URLs
-   */
+  /* -------------------------------------------------------
+     URL SIZE
+  ------------------------------------------------------- */
 
   if (
-    normalized.length > 1600
+    normalized.length >
+    1600
   ) {
     return false;
   }
 
   if (
-    path.length > 700
+    path.length >
+    700
   ) {
     return false;
   }
 
 
-  /*
-   * Search result pages only
-   */
+  /* -------------------------------------------------------
+     SEARCH PAGES
+  ------------------------------------------------------- */
 
   if (
     path === "/search" ||
     path === "/search/" ||
-    path === "/search-results" ||
-    path === "/search-results/"
+    path ===
+      "/search-results" ||
+    path ===
+      "/search-results/"
   ) {
+
     return false;
   }
 
 
-  /*
-   * Invalid host
-   */
+  /* -------------------------------------------------------
+     INVALID HOST
+  ------------------------------------------------------- */
 
   if (
     !host ||
     host.includes("..")
   ) {
+
     return false;
   }
 
@@ -361,33 +559,78 @@ export function shouldCrawl(input) {
    TEXT HELPERS
 ========================================================= */
 
-function decodeEntities(text) {
+function decodeEntities(
+  text
+) {
 
-  return String(text || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&#x27;/gi, "'");
+  return String(
+    text || ""
+  )
+    .replace(
+      /&nbsp;/gi,
+      " "
+    )
+    .replace(
+      /&amp;/gi,
+      "&"
+    )
+    .replace(
+      /&lt;/gi,
+      "<"
+    )
+    .replace(
+      /&gt;/gi,
+      ">"
+    )
+    .replace(
+      /&quot;/gi,
+      '"'
+    )
+    .replace(
+      /&#39;/gi,
+      "'"
+    )
+    .replace(
+      /&#x27;/gi,
+      "'"
+    );
 }
 
 
-function cleanText(text) {
+function cleanText(
+  text
+) {
 
-  return decodeEntities(text)
-    .replace(/\u00a0/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n\s+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
+  return decodeEntities(
+    text
+  )
+    .replace(
+      /\u00a0/g,
+      " "
+    )
+    .replace(
+      /[ \t]+/g,
+      " "
+    )
+    .replace(
+      /\n\s+/g,
+      "\n"
+    )
+    .replace(
+      /\n{3,}/g,
+      "\n\n"
+    )
     .trim();
 }
 
 
-function stripTags(html) {
+function stripTags(
+  html
+) {
 
-  return String(html || "")
+  return String(
+    html || ""
+  )
     .replace(
       /<br\s*\/?>/gi,
       "\n"
@@ -415,9 +658,13 @@ function stripTags(html) {
 }
 
 
-function removeBlocks(html) {
+function removeBlocks(
+  html
+) {
 
-  return String(html || "")
+  return String(
+    html || ""
+  )
     .replace(
       /<!--[\s\S]*?-->/g,
       " "
@@ -441,7 +688,9 @@ function extractBetween(
     );
 
   return (
-    html.match(re)?.[1] ||
+    html.match(
+      re
+    )?.[1] ||
     ""
   );
 }
@@ -466,8 +715,12 @@ function extractMeta(
     );
 
   return (
-    re1.exec(html)?.[1] ||
-    re2.exec(html)?.[1] ||
+    re1.exec(
+      html
+    )?.[1] ||
+    re2.exec(
+      html
+    )?.[1] ||
     ""
   );
 }
@@ -483,8 +736,12 @@ function extractCanonical(
 ) {
 
   const match =
-    /<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i.exec(html) ||
-    /<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["'][^>]*>/i.exec(html);
+    /<link\b[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i.exec(
+      html
+    ) ||
+    /<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["']canonical["'][^>]*>/i.exec(
+      html
+    );
 
   if (!match) {
     return baseUrl;
@@ -504,10 +761,14 @@ function extractCanonical(
    MAIN CONTENT
 ========================================================= */
 
-function extractMainContent(html) {
+function extractMainContent(
+  html
+) {
 
   const cleaned =
-    removeBlocks(html);
+    removeBlocks(
+      html
+    );
 
   let content =
     extractBetween(
@@ -526,15 +787,20 @@ function extractMainContent(html) {
 
   let text =
     cleanText(
-      stripTags(content)
+      stripTags(
+        content
+      )
     );
 
   if (
     text.length < 200
   ) {
+
     text =
       cleanText(
-        stripTags(cleaned)
+        stripTags(
+          cleaned
+        )
       );
   }
 
@@ -549,7 +815,9 @@ function extractMainContent(html) {
    TITLE
 ========================================================= */
 
-function extractTitle(html) {
+function extractTitle(
+  html
+) {
 
   const og =
     extractMeta(
@@ -559,8 +827,13 @@ function extractTitle(html) {
     );
 
   if (og) {
-    return cleanText(og)
-      .slice(0, 500);
+
+    return cleanText(
+      og
+    ).slice(
+      0,
+      500
+    );
   }
 
   const title =
@@ -570,8 +843,13 @@ function extractTitle(html) {
     );
 
   return cleanText(
-    stripTags(title)
-  ).slice(0, 500);
+    stripTags(
+      title
+    )
+  ).slice(
+    0,
+    500
+  );
 }
 
 
@@ -579,7 +857,9 @@ function extractTitle(html) {
    DESCRIPTION
 ========================================================= */
 
-function extractDescription(html) {
+function extractDescription(
+  html
+) {
 
   const description =
     extractMeta(
@@ -606,47 +886,89 @@ function extractDescription(html) {
    LANGUAGE
 ========================================================= */
 
-function detectLanguage(text) {
+function detectLanguage(
+  text
+) {
 
   const sample =
-    String(text || "")
-      .slice(0, 8000);
+    String(
+      text || ""
+    ).slice(
+      0,
+      8000
+    );
 
   if (
-    /[\u0C00-\u0C7F]/.test(sample)
-  ) return "as";
+    /[\u0C00-\u0C7F]/.test(
+      sample
+    )
+  ) {
+    return "as";
+  }
 
   if (
-    /[\u0900-\u097F]/.test(sample)
-  ) return "hi";
+    /[\u0900-\u097F]/.test(
+      sample
+    )
+  ) {
+    return "hi";
+  }
 
   if (
-    /[\u0980-\u09FF]/.test(sample)
-  ) return "bn";
+    /[\u0980-\u09FF]/.test(
+      sample
+    )
+  ) {
+    return "bn";
+  }
 
   if (
-    /[\u0B80-\u0BFF]/.test(sample)
-  ) return "ta";
+    /[\u0B80-\u0BFF]/.test(
+      sample
+    )
+  ) {
+    return "ta";
+  }
 
   if (
-    /[\u0A80-\u0AFF]/.test(sample)
-  ) return "gu";
+    /[\u0A80-\u0AFF]/.test(
+      sample
+    )
+  ) {
+    return "gu";
+  }
 
   if (
-    /[\u0A00-\u0A7F]/.test(sample)
-  ) return "pa";
+    /[\u0A00-\u0A7F]/.test(
+      sample
+    )
+  ) {
+    return "pa";
+  }
 
   if (
-    /[\u4E00-\u9FFF]/.test(sample)
-  ) return "zh";
+    /[\u4E00-\u9FFF]/.test(
+      sample
+    )
+  ) {
+    return "zh";
+  }
 
   if (
-    /[\u3040-\u30FF]/.test(sample)
-  ) return "ja";
+    /[\u3040-\u30FF]/.test(
+      sample
+    )
+  ) {
+    return "ja";
+  }
 
   if (
-    /[\uAC00-\uD7AF]/.test(sample)
-  ) return "ko";
+    /[\uAC00-\uD7AF]/.test(
+      sample
+    )
+  ) {
+    return "ko";
+  }
 
   return "en";
 }
@@ -670,8 +992,12 @@ function extractLinks(
   let match;
 
   while (
-    links.size < MAX_LINKS &&
-    (match = regex.exec(html)) !== null
+    links.size <
+      MAX_LINKS &&
+    (match =
+      regex.exec(
+        html
+      )) !== null
   ) {
 
     const normalized =
@@ -682,8 +1008,11 @@ function extractLinks(
 
     if (
       normalized &&
-      shouldCrawl(normalized)
+      shouldCrawl(
+        normalized
+      )
     ) {
+
       links.add(
         normalized
       );
@@ -697,10 +1026,12 @@ function extractLinks(
 
 
 /* =========================================================
-   FETCH
+   FETCH PAGE
 ========================================================= */
 
-async function fetchPage(url) {
+async function fetchPage(
+  url
+) {
 
   const controller =
     new AbortController();
@@ -718,12 +1049,14 @@ async function fetchPage(url) {
       await fetch(
         url,
         {
-          redirect: "follow",
+          redirect:
+            "follow",
 
           signal:
             controller.signal,
 
           headers: {
+
             "User-Agent":
               USER_AGENT,
 
@@ -789,14 +1122,17 @@ async function fetchPage(url) {
         await response.text()
     };
 
-  } catch (error) {
+  } catch (
+    error
+  ) {
 
     return {
       ok: false,
       status: 0,
       finalUrl: url,
       reason:
-        error?.name === "AbortError"
+        error?.name ===
+        "AbortError"
           ? "timeout"
           : String(
               error?.message ||
@@ -817,15 +1153,22 @@ async function fetchPage(url) {
    ROBOTS.TXT
 ========================================================= */
 
-function parseRobots(text) {
+function parseRobots(
+  text
+) {
 
-  const groups = [];
+  const groups =
+    [];
 
-  let current = null;
+  let current =
+    null;
 
   for (
-    const raw of String(text || "")
-      .split(/\r?\n/)
+    const raw of String(
+      text || ""
+    ).split(
+      /\r?\n/
+    )
   ) {
 
     const line =
@@ -838,7 +1181,9 @@ function parseRobots(text) {
     }
 
     const i =
-      line.indexOf(":");
+      line.indexOf(
+        ":"
+      );
 
     if (i < 0) {
       continue;
@@ -846,17 +1191,23 @@ function parseRobots(text) {
 
     const key =
       line
-        .slice(0, i)
+        .slice(
+          0,
+          i
+        )
         .trim()
         .toLowerCase();
 
     const value =
       line
-        .slice(i + 1)
+        .slice(
+          i + 1
+        )
         .trim();
 
     if (
-      key === "user-agent"
+      key ===
+      "user-agent"
     ) {
 
       current = {
@@ -879,18 +1230,22 @@ function parseRobots(text) {
     }
 
     if (
-      key === "allow" &&
+      key ===
+        "allow" &&
       value
     ) {
+
       current.allow.push(
         value
       );
     }
 
     if (
-      key === "disallow" &&
+      key ===
+        "disallow" &&
       value
     ) {
+
       current.disallow.push(
         value
       );
@@ -899,7 +1254,9 @@ function parseRobots(text) {
 
   return groups.filter(
     group =>
-      group.agents.includes("*") ||
+      group.agents.includes(
+        "*"
+      ) ||
       group.agents.includes(
         "hexora-bot"
       )
@@ -912,46 +1269,61 @@ function robotsAllowed(
   groups
 ) {
 
-  if (!groups.length) {
+  if (
+    !groups.length
+  ) {
     return true;
   }
 
-  let bestLength = -1;
-  let allowed = true;
+  let bestLength =
+    -1;
+
+  let allowed =
+    true;
 
   for (
     const group of groups
   ) {
 
     for (
-      const rule of group.disallow
+      const rule of
+        group.disallow
     ) {
 
       if (
-        pathname.startsWith(rule) &&
-        rule.length > bestLength
+        pathname.startsWith(
+          rule
+        ) &&
+        rule.length >
+          bestLength
       ) {
 
         bestLength =
           rule.length;
 
-        allowed = false;
+        allowed =
+          false;
       }
     }
 
     for (
-      const rule of group.allow
+      const rule of
+        group.allow
     ) {
 
       if (
-        pathname.startsWith(rule) &&
-        rule.length >= bestLength
+        pathname.startsWith(
+          rule
+        ) &&
+        rule.length >=
+          bestLength
       ) {
 
         bestLength =
           rule.length;
 
-        allowed = true;
+        allowed =
+          true;
       }
     }
   }
@@ -960,12 +1332,16 @@ function robotsAllowed(
 }
 
 
-async function canCrawl(url) {
+async function canCrawl(
+  url
+) {
 
   try {
 
     const target =
-      new URL(url);
+      new URL(
+        url
+      );
 
     const origin =
       target.origin;
@@ -980,7 +1356,10 @@ async function canCrawl(url) {
       cached.expires >
         Date.now()
     ) {
-      return cached.allowed;
+
+      return (
+        cached.allowed
+      );
     }
 
     const robotsUrl =
@@ -1077,12 +1456,14 @@ async function respectDomainDelay(
 ) {
 
   const host =
-    new URL(url)
-      .hostname;
+    new URL(
+      url
+    ).hostname;
 
   const previous =
-    lastVisit.get(host) ||
-    0;
+    lastVisit.get(
+      host
+    ) || 0;
 
   const wait =
     DOMAIN_DELAY -
@@ -1094,7 +1475,10 @@ async function respectDomainDelay(
   if (
     wait > 0
   ) {
-    await sleep(wait);
+
+    await sleep(
+      wait
+    );
   }
 
   lastVisit.set(
@@ -1105,7 +1489,43 @@ async function respectDomainDelay(
 
 
 /* =========================================================
-   SAVE PAGE
+   DATABASE TEST
+========================================================= */
+
+async function checkNeon() {
+
+  const result =
+    await neon.query(
+      "SELECT 1 AS ok"
+    );
+
+  return (
+    result.rows?.[0]?.ok ===
+    1
+  );
+}
+
+
+async function checkSupabase() {
+
+  if (!supabase) {
+    return false;
+  }
+
+  const {
+    error
+  } =
+    await supabase
+      .from("pages")
+      .select("id")
+      .limit(1);
+
+  return !error;
+}
+
+
+/* =========================================================
+   SAVE PAGE -> NEON
 ========================================================= */
 
 async function savePage({
@@ -1118,69 +1538,85 @@ async function savePage({
 
   const contentHash =
     crypto
-      .createHash("sha256")
-      .update(content)
-      .digest("hex");
+      .createHash(
+        "sha256"
+      )
+      .update(
+        content
+      )
+      .digest(
+        "hex"
+      );
 
   const wordCount =
     content
       .split(/\s+/)
-      .filter(Boolean)
+      .filter(
+        Boolean
+      )
       .length;
 
   const now =
     new Date()
       .toISOString();
 
-  const record = {
 
-    url,
-
-    title:
-      title ||
+  await neon.query(
+    `
+      INSERT INTO pages (
+        url,
+        title,
+        description,
+        content,
+        content_hash,
+        word_count,
+        language,
+        updated_at,
+        last_crawled_at
+      )
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $8
+      )
+      ON CONFLICT (url)
+      DO UPDATE SET
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        content = EXCLUDED.content,
+        content_hash = EXCLUDED.content_hash,
+        word_count = EXCLUDED.word_count,
+        language = EXCLUDED.language,
+        updated_at = EXCLUDED.updated_at,
+        last_crawled_at = EXCLUDED.last_crawled_at
+    `,
+    [
       url,
-
-    description:
+      title ||
+        url,
       description ||
-      "",
-
-    content,
-
-    content_hash:
+        "",
+      content,
       contentHash,
-
-    word_count:
       wordCount,
-
-    language:
       language ||
-      "unknown",
-
-    updated_at:
+        "unknown",
       now
-  };
-
-  const { error } =
-    await supabase
-      .from("pages")
-      .upsert(
-        record,
-        {
-          onConflict:
-            "url"
-        }
-      );
-
-  if (error) {
-    throw error;
-  }
+    ]
+  );
 
   return wordCount;
 }
 
 
 /* =========================================================
-   QUEUE LINKS
+   QUEUE LINKS -> NEON
 ========================================================= */
 
 async function queueLinks(
@@ -1193,46 +1629,66 @@ async function queueLinks(
     return;
   }
 
-  const rows =
-    links.map(
-      url => ({
-        url,
+  const client =
+    await neon.connect();
 
-        status:
-          "queued",
+  try {
 
-        created_at:
-          new Date()
-            .toISOString()
-      })
+    await client.query(
+      "BEGIN"
     );
 
-  const { error } =
-    await supabase
-      .from("crawl_queue")
-      .upsert(
-        rows,
-        {
-          onConflict:
-            "url",
+    for (
+      const url of links
+    ) {
 
-          ignoreDuplicates:
-            true
-        }
+      await client.query(
+        `
+          INSERT INTO crawl_queue (
+            url,
+            status,
+            created_at
+          )
+          VALUES (
+            $1,
+            'queued',
+            NOW()
+          )
+          ON CONFLICT (url)
+          DO NOTHING
+        `,
+        [url]
       );
+    }
 
-  if (error) {
+    await client.query(
+      "COMMIT"
+    );
+
+  } catch (
+    error
+  ) {
+
+    try {
+      await client.query(
+        "ROLLBACK"
+      );
+    } catch {}
 
     console.error(
       "[HEXORA] Queue insert error:",
       error.message
     );
+
+  } finally {
+
+    client.release();
   }
 }
 
 
 /* =========================================================
-   QUEUE STATUS
+   QUEUE STATUS -> NEON
 ========================================================= */
 
 async function markStatus(
@@ -1241,38 +1697,32 @@ async function markStatus(
   errorMessage = null
 ) {
 
-  const patch = {
+  try {
 
-    status,
-
-    last_crawled_at:
-      status === "done" ||
-      status === "failed"
-        ? new Date()
-            .toISOString()
-        : undefined,
-
-    last_error:
-      errorMessage
-  };
-
-  if (
-    patch.last_crawled_at ===
-    undefined
-  ) {
-    delete patch.last_crawled_at;
-  }
-
-  const { error } =
-    await supabase
-      .from("crawl_queue")
-      .update(patch)
-      .eq(
-        "url",
+    await neon.query(
+      `
+        UPDATE crawl_queue
+        SET
+          status = $1,
+          last_crawled_at =
+            CASE
+              WHEN $1 IN ('done','failed')
+              THEN NOW()
+              ELSE last_crawled_at
+            END,
+          error = $2
+        WHERE url = $3
+      `,
+      [
+        status,
+        errorMessage,
         url
-      );
+      ]
+    );
 
-  if (error) {
+  } catch (
+    error
+  ) {
 
     console.error(
       "[HEXORA] Queue status error:",
@@ -1291,7 +1741,9 @@ async function crawlOne(
 ) {
 
   if (
-    !shouldCrawl(url)
+    !shouldCrawl(
+      url
+    )
   ) {
 
     console.log(
@@ -1310,14 +1762,18 @@ async function crawlOne(
     };
   }
 
+
   console.log(
     `[HEXORA] Crawling: ${url}`
   );
 
+
   try {
 
     if (
-      !(await canCrawl(url))
+      !(await canCrawl(
+        url
+      ))
     ) {
 
       console.log(
@@ -1336,22 +1792,28 @@ async function crawlOne(
       };
     }
 
+
     await respectDomainDelay(
       url
     );
+
 
     const page =
       await fetchPage(
         url
       );
 
-    if (!page.ok) {
+
+    if (
+      !page.ok
+    ) {
 
       throw new Error(
         page.reason ||
         `HTTP ${page.status}`
       );
     }
+
 
     if (
       !shouldCrawl(
@@ -1375,6 +1837,7 @@ async function crawlOne(
       };
     }
 
+
     const title =
       extractTitle(
         page.html
@@ -1390,8 +1853,10 @@ async function crawlOne(
         page.html
       );
 
+
     if (
-      content.length < 80
+      content.length <
+      80
     ) {
 
       throw new Error(
@@ -1399,16 +1864,19 @@ async function crawlOne(
       );
     }
 
+
     const canonical =
       extractCanonical(
         page.html,
         page.finalUrl
       );
 
+
     const language =
       detectLanguage(
         content
       );
+
 
     const links =
       extractLinks(
@@ -1416,24 +1884,29 @@ async function crawlOne(
         canonical
       );
 
+
     const words =
       await savePage({
-        url: canonical,
+        url:
+          canonical,
         title,
         description,
         content,
         language
       });
 
+
     await queueLinks(
       links
     );
+
 
     await markStatus(
       url,
       "done",
       null
     );
+
 
     console.log(
       `[HEXORA] Indexed: ${title || canonical}`
@@ -1443,12 +1916,16 @@ async function crawlOne(
       `[HEXORA] Words: ${words} | Links: ${links.length} | Language: ${language}`
     );
 
+
     return {
       success: true,
       skipped: false
     };
 
-  } catch (error) {
+
+  } catch (
+    error
+  ) {
 
     const message =
       String(
@@ -1456,9 +1933,11 @@ async function crawlOne(
         error
       );
 
+
     console.error(
       `[HEXORA] Crawl failed: ${url} -> ${message}`
     );
+
 
     await markStatus(
       url,
@@ -1469,6 +1948,7 @@ async function crawlOne(
       )
     );
 
+
     return {
       success: false,
       skipped: false
@@ -1478,100 +1958,83 @@ async function crawlOne(
 
 
 /* =========================================================
-   GET QUEUED
+   GET QUEUED -> NEON
 ========================================================= */
 
 async function getQueued(
   batchSize
 ) {
 
-  const { data, error } =
-    await supabase
-      .from("crawl_queue")
-      .select("url")
-      .eq(
-        "status",
-        "queued"
-      )
-      .order(
-        "created_at",
-        {
-          ascending: true
-        }
-      )
-      .limit(
-        batchSize
-      );
+  const result =
+    await neon.query(
+      `
+        SELECT url
+        FROM crawl_queue
+        WHERE status = 'queued'
+        ORDER BY created_at ASC
+        LIMIT $1
+      `,
+      [batchSize]
+    );
 
-  if (error) {
-    throw error;
-  }
-
-  return data || [];
+  return (
+    result.rows ||
+    []
+  );
 }
 
 
 /* =========================================================
-   OLD QUEUE STATUS RECOVERY
+   NORMALIZE OLD QUEUE STATUSES
 ========================================================= */
 
 async function normalizeOldQueueStatuses() {
 
-  const {
-    error:
-      pendingError
-  } =
-    await supabase
-      .from("crawl_queue")
-      .update({
-        status:
-          "queued"
-      })
-      .eq(
-        "status",
-        "pending"
-      );
+  try {
 
-  if (
-    pendingError
+    await neon.query(
+      `
+        UPDATE crawl_queue
+        SET status = 'queued'
+        WHERE status = 'pending'
+      `
+    );
+
+  } catch (
+    error
   ) {
 
     console.error(
       "[HEXORA] pending->queued migration:",
-      pendingError.message
+      error.message
     );
   }
 
 
-  const {
-    error:
-      processingError
-  } =
-    await supabase
-      .from("crawl_queue")
-      .update({
-        status:
-          "queued"
-      })
-      .eq(
-        "status",
-        "processing"
-      );
+  try {
 
-  if (
-    processingError
+    await neon.query(
+      `
+        UPDATE crawl_queue
+        SET status = 'queued'
+        WHERE status = 'processing'
+      `
+    );
+
+  } catch (
+    error
   ) {
 
     console.error(
       "[HEXORA] processing->queued recovery:",
-      processingError.message
+      error.message
     );
   }
 }
 
 
 /* =========================================================
-   SEED QUEUE
+   SEED QUEUE -> NEON
 ========================================================= */
 
 async function seedQueue() {
@@ -1582,42 +2045,77 @@ async function seedQueue() {
         shouldCrawl
       )
       .map(
-        url => ({
-          url:
-            normalizeUrl(
-              url
-            ),
-
-          status:
-            "queued",
-
-          created_at:
-            new Date()
-              .toISOString()
-        })
+        url =>
+          normalizeUrl(
+            url
+          )
+      )
+      .filter(
+        Boolean
       );
 
-  const { error } =
-    await supabase
-      .from("crawl_queue")
-      .upsert(
-        rows,
-        {
-          onConflict:
-            "url",
 
-          ignoreDuplicates:
-            true
-        }
+  for (
+    const url of rows
+  ) {
+
+    try {
+
+      await neon.query(
+        `
+          INSERT INTO crawl_queue (
+            url,
+            status,
+            created_at
+          )
+          VALUES (
+            $1,
+            'queued',
+            NOW()
+          )
+          ON CONFLICT (url)
+          DO NOTHING
+        `,
+        [url]
       );
 
-  if (error) {
+    } catch (
+      error
+    ) {
 
-    console.error(
-      "[HEXORA] Seed error:",
-      error.message
-    );
+      console.error(
+        `[HEXORA] Seed error: ${url}`,
+        error.message
+      );
+    }
   }
+}
+
+
+/* =========================================================
+   CLAIM URL
+========================================================= */
+
+async function claimUrl(
+  url
+) {
+
+  const result =
+    await neon.query(
+      `
+        UPDATE crawl_queue
+        SET status = 'processing'
+        WHERE url = $1
+          AND status = 'queued'
+        RETURNING url
+      `,
+      [url]
+    );
+
+  return (
+    result.rows?.length >
+    0
+  );
 }
 
 
@@ -1630,11 +2128,14 @@ export async function crawlBatch(
 ) {
 
   const batchSize =
-    typeof options === "number"
+    typeof options ===
+    "number"
 
       ? Math.max(
           1,
-          Math.floor(options)
+          Math.floor(
+            options
+          )
         )
 
       : Math.max(
@@ -1648,14 +2149,17 @@ export async function crawlBatch(
           )
         );
 
+
   console.log(
     `[HEXORA] Starting crawl batch: ${batchSize}`
   );
+
 
   const jobs =
     await getQueued(
       batchSize
     );
+
 
   if (
     !jobs.length
@@ -1673,52 +2177,58 @@ export async function crawlBatch(
   }
 
 
-  /*
-   * Claim URLs
-   */
+  /* -------------------------------------------------------
+     CLAIM
+  ------------------------------------------------------- */
 
-  const claimed = [];
+  const claimed =
+    [];
 
   for (
     const job of jobs
   ) {
 
-    const {
-      data,
-      error
-    } =
-      await supabase
-        .from("crawl_queue")
-        .update({
-          status:
-            "processing"
-        })
-        .eq(
-          "url",
-          job.url
-        )
-        .eq(
-          "status",
-          "queued"
-        )
-        .select("url");
+    try {
 
-    if (
-      !error &&
-      data?.length
+      const ok =
+        await claimUrl(
+          job.url
+        );
+
+      if (ok) {
+        claimed.push(
+          job.url
+        );
+      }
+
+    } catch (
+      error
     ) {
-      claimed.push(
-        job.url
+
+      console.error(
+        "[HEXORA] Claim error:",
+        error.message
       );
     }
   }
 
 
-  let processed = 0;
-  let successful = 0;
-  let failed = 0;
-  let index = 0;
+  let processed =
+    0;
 
+  let successful =
+    0;
+
+  let failed =
+    0;
+
+  let index =
+    0;
+
+
+  /* -------------------------------------------------------
+     WORKER
+  ------------------------------------------------------- */
 
   async function worker() {
 
@@ -1734,22 +2244,28 @@ export async function crawlBatch(
         return;
       }
 
+
       const result =
         await crawlOne(
-          claimed[current]
+          claimed[
+            current
+          ]
         );
 
+
       processed++;
+
 
       if (
         result.success
       ) {
-        successful++;
-      }
 
-      else if (
+        successful++;
+
+      } else if (
         !result.skipped
       ) {
+
         failed++;
       }
     }
@@ -1765,8 +2281,10 @@ export async function crawlBatch(
             claimed.length
           )
       },
-      () => worker()
+      () =>
+        worker()
     );
+
 
   await Promise.all(
     workers
@@ -1776,6 +2294,7 @@ export async function crawlBatch(
   console.log(
     `[HEXORA] Batch completed | processed: ${processed} | successful: ${successful} | failed: ${failed}`
   );
+
 
   return {
     processed,
@@ -1790,6 +2309,75 @@ export async function crawlBatch(
 ========================================================= */
 
 export async function runCrawler() {
+
+  console.log(
+    "[HEXORA] Checking Neon database..."
+  );
+
+  try {
+
+    const connected =
+      await checkNeon();
+
+    if (!connected) {
+
+      throw new Error(
+        "Neon database check failed"
+      );
+    }
+
+    console.log(
+      "[HEXORA] Neon database connected"
+    );
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      "[HEXORA] Neon database error:",
+      error.message
+    );
+
+    throw error;
+  }
+
+
+  /* -------------------------------------------------------
+     SUPABASE CHECK
+  ------------------------------------------------------- */
+
+  if (supabase) {
+
+    try {
+
+      const connected =
+        await checkSupabase();
+
+      if (connected) {
+
+        console.log(
+          "[HEXORA] Supabase connected"
+        );
+
+      } else {
+
+        console.warn(
+          "[HEXORA] Supabase unavailable - continuing with Neon"
+        );
+      }
+
+    } catch (
+      error
+    ) {
+
+      console.warn(
+        "[HEXORA] Supabase check failed:",
+        error.message
+      );
+    }
+  }
+
 
   await normalizeOldQueueStatuses();
 
@@ -1822,6 +2410,10 @@ if (
           "crawl cycle",
           result
         );
+
+        process.exit(
+          0
+        );
       }
     )
     .catch(
@@ -1832,7 +2424,9 @@ if (
           error
         );
 
-        process.exit(1);
+        process.exit(
+          1
+        );
       }
     );
 }
