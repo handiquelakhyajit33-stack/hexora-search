@@ -1,43 +1,54 @@
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+// ============================================================
+// HEXORA SEARCH ENGINE - SERVER
+// ============================================================
+
+import http from "http";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-/* =======================================================
-   CONFIG
-======================================================= */
+// ============================================================
+// CONFIG
+// ============================================================
 
 const PORT = Number(process.env.PORT || 8080);
 
-const SUPABASE_URL =
-  process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL;
 
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
   process.env.SUPABASE_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error(
-    "[HEXORA] Missing SUPABASE_URL or Supabase key"
-  );
+if (!SUPABASE_URL) {
+  console.error("[HEXORA] SUPABASE_URL is missing");
 }
 
-const supabase = createClient(
-  SUPABASE_URL || "",
-  SUPABASE_KEY || ""
-);
+if (!SUPABASE_KEY) {
+  console.error("[HEXORA] SUPABASE key is missing");
+}
 
-/* =======================================================
-   BASIC HELPERS
-======================================================= */
+const supabase =
+  SUPABASE_URL && SUPABASE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_KEY)
+    : null;
+
+// ============================================================
+// PATH
+// ============================================================
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ============================================================
+// BASIC HELPERS
+// ============================================================
 
 function cleanQuery(value) {
-  return String(value || "")
+  if (!value) return "";
+
+  return String(value)
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 300);
@@ -47,753 +58,462 @@ function normalizeText(value) {
   return String(value || "")
     .toLowerCase()
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function tokenize(value) {
-  return normalizeText(value)
-    .split(" ")
-    .map(x => x.trim())
+function tokenize(text) {
+  return normalizeText(text)
+    .split(/\s+/)
     .filter(Boolean);
 }
 
-function uniqueTokens(value) {
-  return [...new Set(tokenize(value))];
+function uniqueTokens(tokens) {
+  return [...new Set(tokens)];
 }
 
-function countWholeWordOccurrences(text, word) {
-  const source = normalizeText(text);
-  const target = normalizeText(word);
-
-  if (!source || !target) {
-    return 0;
-  }
-
-  return source
-    .split(" ")
-    .filter(part => part === target)
-    .length;
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function hasWholeWord(text, word) {
-  return countWholeWordOccurrences(text, word) > 0;
+  if (!text || !word) return false;
+
+  const regex = new RegExp(
+    `(^|\\s)${escapeRegex(word)}(?=\\s|$)`,
+    "i"
+  );
+
+  return regex.test(normalizeText(text));
 }
 
 function hasExactPhrase(text, phrase) {
-  const source = normalizeText(text);
-  const target = normalizeText(phrase);
+  if (!text || !phrase) return false;
 
-  if (!source || !target) {
-    return false;
-  }
-
-  return source.includes(target);
+  return normalizeText(text).includes(normalizeText(phrase));
 }
 
-function detectMode(mode) {
-  const value =
-    String(mode || "web").toLowerCase();
+function countWholeWordOccurrences(text, word) {
+  if (!text || !word) return 0;
 
-  const allowed = [
-    "web",
-    "images",
-    "news",
-    "videos",
-    "maps"
-  ];
+  const normalized = normalizeText(text);
+  const target = normalizeText(word);
 
-  return allowed.includes(value)
-    ? value
-    : "web";
+  if (!target) return 0;
+
+  const regex = new RegExp(
+    `(^|\\s)${escapeRegex(target)}(?=\\s|$)`,
+    "gi"
+  );
+
+  const matches = normalized.match(regex);
+
+  return matches ? matches.length : 0;
 }
 
-/* =======================================================
-   WEB RANKING
-======================================================= */
+// ============================================================
+// SEARCH MODE
+// ============================================================
 
-function calculateProximityScore(page, query) {
-  const words = uniqueTokens(query);
+function detectMode(query) {
+  const q = normalizeText(query);
 
-  if (words.length <= 1) {
-    return 0;
-  }
-
-  const title = tokenize(page.title);
-  const description = tokenize(page.description);
-
-  let score = 0;
-
-  for (
-    let i = 0;
-    i < words.length - 1;
-    i++
+  if (
+    q.startsWith("news ") ||
+    q.endsWith(" news") ||
+    q === "news"
   ) {
-    const a = words[i];
-    const b = words[i + 1];
-
-    const titleA = title.indexOf(a);
-    const titleB = title.indexOf(b);
-
-    if (
-      titleA !== -1 &&
-      titleB !== -1
-    ) {
-      const distance =
-        Math.abs(titleA - titleB);
-
-      if (distance === 1) {
-        score += 80;
-      } else if (distance <= 3) {
-        score += 35;
-      } else {
-        score += 10;
-      }
-    }
-
-    const descA =
-      description.indexOf(a);
-
-    const descB =
-      description.indexOf(b);
-
-    if (
-      descA !== -1 &&
-      descB !== -1
-    ) {
-      const distance =
-        Math.abs(descA - descB);
-
-      if (distance === 1) {
-        score += 20;
-      } else if (distance <= 5) {
-        score += 8;
-      }
-    }
-  }
-
-  return score;
-}
-
-function calculateAuthorityBonus(page) {
-  let score = 0;
-
-  const url =
-    String(page.url || "").toLowerCase();
-
-  const authority =
-    Number(page.authority_score || 0);
-
-  const popularity =
-    Number(page.popularity_score || 0);
-
-  if (Number.isFinite(authority)) {
-    score +=
-      Math.min(authority, 100) * 0.8;
-  }
-
-  if (Number.isFinite(popularity)) {
-    score +=
-      Math.min(popularity, 100) * 0.4;
-  }
-
-  if (url.startsWith("https://")) {
-    score += 2;
+    return "news";
   }
 
   if (
-    url.includes(".gov.") ||
-    url.includes(".gov/") ||
-    url.includes(".edu.") ||
-    url.includes(".edu/")
+    q.startsWith("image ") ||
+    q.startsWith("images ") ||
+    q.endsWith(" images")
   ) {
-    score += 5;
+    return "images";
+  }
+
+  if (
+    q.startsWith("video ") ||
+    q.startsWith("videos ") ||
+    q.endsWith(" videos")
+  ) {
+    return "videos";
+  }
+
+  if (
+    q.startsWith("map ") ||
+    q.startsWith("maps ") ||
+    q.endsWith(" map")
+  ) {
+    return "maps";
+  }
+
+  return "web";
+}
+
+// ============================================================
+// QUERY QUALITY
+// ============================================================
+
+function isShortQuery(query) {
+  const tokens = uniqueTokens(tokenize(query));
+
+  return tokens.length <= 2;
+}
+
+function queryTerms(query) {
+  return uniqueTokens(
+    tokenize(query).filter((word) => word.length >= 2)
+  );
+}
+
+// ============================================================
+// WEB SEARCH SCORING
+// ============================================================
+
+function calculateProximityScore(query, title, description, content) {
+  const qTokens = queryTerms(query);
+
+  if (!qTokens.length) return 0;
+
+  const titleText = normalizeText(title);
+  const descText = normalizeText(description);
+  const contentText = normalizeText(content);
+
+  let score = 0;
+
+  // All query words close together in title
+  if (
+    qTokens.every((word) => titleText.includes(word))
+  ) {
+    score += 35;
+  }
+
+  // All query words in description
+  if (
+    qTokens.every((word) => descText.includes(word))
+  ) {
+    score += 20;
+  }
+
+  // Exact phrase
+  if (qTokens.length > 1) {
+    const phrase = qTokens.join(" ");
+
+    if (titleText.includes(phrase)) {
+      score += 45;
+    }
+
+    if (descText.includes(phrase)) {
+      score += 25;
+    }
+
+    if (contentText.includes(phrase)) {
+      score += 15;
+    }
   }
 
   return score;
 }
 
-function calculateFreshnessBonus(dateValue) {
-  if (!dateValue) {
-    return 0;
-  }
+function calculateAuthorityBonus(row) {
+  const authority = Number(row.authority_score || 0);
 
-  const time =
-    new Date(dateValue).getTime();
+  if (!Number.isFinite(authority)) return 0;
 
-  if (!Number.isFinite(time)) {
-    return 0;
-  }
+  return Math.min(20, Math.max(0, authority));
+}
+
+function calculateFreshnessBonus(row) {
+  const date =
+    row.published_at ||
+    row.updated_at ||
+    row.last_crawled_at;
+
+  if (!date) return 0;
+
+  const time = new Date(date).getTime();
+
+  if (!Number.isFinite(time)) return 0;
 
   const ageDays =
-    (Date.now() - time) /
-    (1000 * 60 * 60 * 24);
+    (Date.now() - time) / (1000 * 60 * 60 * 24);
 
-  if (ageDays < 1) {
-    return 30;
-  }
-
-  if (ageDays < 3) {
-    return 20;
-  }
-
-  if (ageDays < 7) {
-    return 12;
-  }
-
-  if (ageDays < 30) {
-    return 6;
-  }
+  if (ageDays <= 1) return 12;
+  if (ageDays <= 7) return 10;
+  if (ageDays <= 30) return 7;
+  if (ageDays <= 90) return 4;
+  if (ageDays <= 365) return 2;
 
   return 0;
 }
 
-function isShortQuery(query) {
-  const words = uniqueTokens(query);
+// ============================================================
+// IMPORTANT RELEVANCE FILTER
+// ============================================================
 
-  return (
-    words.length === 1 &&
-    words[0].length <= 2
-  );
-}
+function calculateScore(row, query) {
+  const title = String(row.title || "");
+  const description = String(row.description || "");
+  const url = String(row.url || "");
+  const content = String(row.content || "");
 
-function hasStrictShortQueryMatch(page, query) {
-  const word = normalizeText(query);
+  const q = normalizeText(query);
+  const qTokens = queryTerms(query);
 
-  if (!word) {
-    return false;
+  const titleText = normalizeText(title);
+  const descText = normalizeText(description);
+  const urlText = normalizeText(url);
+  const contentText = normalizeText(content);
+
+  if (!q || !qTokens.length) {
+    return 0;
   }
 
-  return (
-    hasWholeWord(page.title, word) ||
-    hasWholeWord(page.description, word) ||
-    hasWholeWord(page.url, word)
-  );
-}
-
-function calculateScore(page, query) {
-  const words = uniqueTokens(query);
-
-  const title = page.title || "";
-  const description =
-    page.description || "";
-  const content = page.content || "";
-  const url = page.url || "";
-
   let score = 0;
+
   let matchedWords = 0;
 
-  for (const word of words) {
-    let matched = false;
+  for (const word of qTokens) {
+    let found = false;
 
-    const titleCount =
-      countWholeWordOccurrences(
-        title,
-        word
-      );
-
-    const descriptionCount =
-      countWholeWordOccurrences(
-        description,
-        word
-      );
-
-    const urlCount =
-      countWholeWordOccurrences(
-        url,
-        word
-      );
-
-    const contentCount =
-      countWholeWordOccurrences(
-        content,
-        word
-      );
-
-    if (titleCount > 0) {
-      matched = true;
-      score += 80;
-
-      score +=
-        Math.min(titleCount, 5) * 5;
-    }
-
-    if (descriptionCount > 0) {
-      matched = true;
+    if (hasWholeWord(titleText, word)) {
+      score += 60;
+      found = true;
+    } else if (hasWholeWord(descText, word)) {
       score += 30;
-
-      score +=
-        Math.min(descriptionCount, 3) * 3;
-    }
-
-    if (urlCount > 0) {
-      matched = true;
+      found = true;
+    } else if (hasWholeWord(urlText, word)) {
       score += 12;
-
-      score +=
-        Math.min(urlCount, 2);
+      found = true;
+    } else if (hasWholeWord(contentText, word)) {
+      score += 4;
+      found = true;
     }
 
-    if (contentCount > 0) {
-      matched = true;
-      score += 3;
-
-      score +=
-        Math.min(contentCount, 50);
-    }
-
-    if (matched) {
+    if (found) {
       matchedWords++;
     }
   }
 
-  const queryPhrase =
-    normalizeText(query);
+  // ==========================================================
+  // EXACT PHRASE
+  // ==========================================================
 
-  if (
-    hasExactPhrase(
-      title,
-      queryPhrase
-    )
-  ) {
-    score += 180;
+  if (hasExactPhrase(titleText, q)) {
+    score += 160;
   }
 
-  if (
-    hasExactPhrase(
-      description,
-      queryPhrase
-    )
-  ) {
+  if (hasExactPhrase(descText, q)) {
     score += 70;
   }
 
-  if (
-    hasExactPhrase(
-      url,
-      queryPhrase
-    )
-  ) {
+  if (hasExactPhrase(urlText, q)) {
+    score += 35;
+  }
+
+  if (hasExactPhrase(contentText, q)) {
     score += 25;
   }
 
-  if (
-    normalizeText(title) ===
-      queryPhrase &&
-    queryPhrase
-  ) {
-    score += 400;
+  // ==========================================================
+  // TITLE MATCH
+  // ==========================================================
+
+  if (titleText === q) {
+    score += 300;
   }
 
-  if (
-    normalizeText(title).startsWith(
-      queryPhrase
-    ) &&
-    queryPhrase
-  ) {
-    score += 120;
+  if (titleText.startsWith(q)) {
+    score += 100;
   }
 
+  // ==========================================================
+  // WORD COVERAGE
+  // ==========================================================
+
+  const coverage =
+    qTokens.length > 0
+      ? matchedWords / qTokens.length
+      : 0;
+
+  if (coverage === 1) {
+    score += 40;
+  }
+
+  if (coverage >= 0.75) {
+    score += 20;
+  }
+
+  // ==========================================================
+  // PROXIMITY
+  // ==========================================================
+
+  score += calculateProximityScore(
+    query,
+    title,
+    description,
+    content
+  );
+
+  // ==========================================================
+  // FREQUENCY
+  // ==========================================================
+
+  for (const word of qTokens) {
+    const titleCount = countWholeWordOccurrences(
+      title,
+      word
+    );
+
+    const descCount = countWholeWordOccurrences(
+      description,
+      word
+    );
+
+    const contentCount = countWholeWordOccurrences(
+      content,
+      word
+    );
+
+    score += Math.min(titleCount * 12, 36);
+    score += Math.min(descCount * 5, 15);
+    score += Math.min(contentCount * 1, 8);
+  }
+
+  // ==========================================================
+  // AUTHORITY + FRESHNESS
+  // ==========================================================
+
+  score += calculateAuthorityBonus(row);
+  score += calculateFreshnessBonus(row);
+
+  // ==========================================================
+  // WEAK RESULT PENALTY
+  // ==========================================================
+
   if (
-    words.length > 1 &&
-    words.every(word =>
-      hasWholeWord(
-        title,
-        word
-      )
-    )
+    matchedWords === 1 &&
+    qTokens.length > 1
   ) {
-    score += 180;
+    score -= 60;
+  }
+
+  // Generic pages penalty
+  const genericPatterns = [
+    "encyclopedia index",
+    "category:",
+    "latest headlines",
+    "news",
+    "directory",
+    "homepage",
+    "home page",
+    "tag:",
+    "search results"
+  ];
+
+  const genericTitle = titleText;
+
+  for (const pattern of genericPatterns) {
+    if (
+      genericTitle.includes(pattern) &&
+      !genericTitle.includes(q)
+    ) {
+      score -= 25;
+      break;
+    }
+  }
+
+  return Math.round(score);
+}
+
+// ============================================================
+// STRICT RELEVANCE CHECK
+// ============================================================
+
+function isRelevantResult(row, query, score) {
+  const qTokens = queryTerms(query);
+
+  const title = normalizeText(row.title);
+  const description = normalizeText(row.description);
+  const content = normalizeText(row.content);
+  const url = normalizeText(row.url);
+
+  if (!qTokens.length) return false;
+
+  let matched = 0;
+
+  for (const word of qTokens) {
+    if (
+      hasWholeWord(title, word) ||
+      hasWholeWord(description, word) ||
+      hasWholeWord(url, word) ||
+      hasWholeWord(content, word)
+    ) {
+      matched++;
+    }
   }
 
   const coverage =
-    words.length > 0
-      ? matchedWords / words.length
-      : 0;
+    matched / qTokens.length;
 
-  score += coverage * 100;
-
-  score +=
-    calculateProximityScore(
-      page,
-      query
-    );
-
-  if (
-    words.length === 1 &&
-    matchedWords === 1 &&
-    !hasWholeWord(
-      title,
-      words[0]
-    ) &&
-    !hasWholeWord(
-      description,
-      words[0]
-    ) &&
-    !hasWholeWord(
-      url,
-      words[0]
-    )
-  ) {
-    score -= 100;
-  }
-
-  if (
-    words.length > 1 &&
-    coverage < 1
-  ) {
-    score -=
-      (1 - coverage) * 100;
-  }
-
-  score +=
-    calculateFreshnessBonus(
-      page.published_at ||
-        page.updated_at ||
-        page.last_crawled_at
-    );
-
-  score +=
-    calculateAuthorityBonus(page);
-
-  return {
-    score,
-    matchedWords,
-    coverage
-  };
-}
-
-/* =======================================================
-   HEXORA SPONSORED ADS
-======================================================= */
-
-function adMatchesQuery(ad, query) {
-  const keywords =
-    Array.isArray(ad.keywords)
-      ? ad.keywords
-      : [];
-
-  const normalizedQuery =
-    normalizeText(query);
-
-  if (!normalizedQuery) {
+  // Multi-word query must have reasonable coverage
+  if (qTokens.length >= 2 && coverage < 0.5) {
     return false;
   }
 
-  const queryWords =
-    uniqueTokens(query);
+  // Single-word query:
+  // do not allow extremely weak content-only matches
+  if (qTokens.length === 1) {
+    const word = qTokens[0];
 
-  for (const keyword of keywords) {
-    const normalizedKeyword =
-      normalizeText(keyword);
-
-    if (!normalizedKeyword) {
-      continue;
-    }
-
-    if (
-      normalizedQuery.includes(
-        normalizedKeyword
-      )
-    ) {
-      return true;
-    }
-
-    const keywordWords =
-      uniqueTokens(keyword);
+    const inTitle = hasWholeWord(title, word);
+    const inDescription =
+      hasWholeWord(description, word);
+    const inUrl = hasWholeWord(url, word);
+    const inContent =
+      hasWholeWord(content, word);
 
     if (
-      keywordWords.length &&
-      keywordWords.every(word =>
-        queryWords.includes(word)
-      )
+      !inTitle &&
+      !inDescription &&
+      !inUrl &&
+      (!inContent || score < 18)
     ) {
-      return true;
+      return false;
     }
   }
 
-  return false;
+  if (score < 15) {
+    return false;
+  }
+
+  return true;
 }
 
-async function getSponsoredAds(query) {
-  query = cleanQuery(query);
-
-  if (!query) {
-    return [];
-  }
-
-  try {
-    const {
-      data,
-      error
-    } =
-      await supabase
-        .from("ad_campaigns")
-        .select(`
-          id,
-          advertiser_id,
-          title,
-          description,
-          target_url,
-          keywords,
-          daily_budget,
-          cost_per_click,
-          impressions,
-          clicks,
-          advertisers (
-            business_name,
-            website_url
-          )
-        `)
-        .eq("status", "active")
-        .limit(100);
-
-    if (error) {
-      console.error(
-        "[HEXORA ADS ERROR]",
-        error
-      );
-
-      return [];
-    }
-
-    if (!Array.isArray(data)) {
-      return [];
-    }
-
-    const matching =
-      data.filter(ad =>
-        adMatchesQuery(
-          ad,
-          query
-        )
-      );
-
-    const ranked =
-      matching
-        .map(ad => {
-          let score = 0;
-
-          const keywords =
-            Array.isArray(ad.keywords)
-              ? ad.keywords
-              : [];
-
-          const normalizedQuery =
-            normalizeText(query);
-
-          for (
-            const keyword of keywords
-          ) {
-            const normalizedKeyword =
-              normalizeText(keyword);
-
-            if (
-              normalizedQuery ===
-              normalizedKeyword
-            ) {
-              score += 100;
-            } else if (
-              normalizedQuery.includes(
-                normalizedKeyword
-              )
-            ) {
-              score += 60;
-            }
-          }
-
-          score += Math.min(
-            Number(
-              ad.cost_per_click || 0
-            ),
-            20
-          );
-
-          return {
-            ...ad,
-            ad_score: score
-          };
-        })
-        .sort(
-          (a, b) =>
-            b.ad_score -
-            a.ad_score
-        );
-
-    const ads =
-      ranked
-        .slice(0, 3)
-        .map(ad => ({
-          id: ad.id,
-
-          type:
-            "sponsored",
-
-          sponsored:
-            true,
-
-          title:
-            ad.title,
-
-          description:
-            ad.description || "",
-
-          target_url:
-            ad.target_url,
-
-          click_url:
-            `/api/ads/click?id=${encodeURIComponent(
-              ad.id
-            )}&q=${encodeURIComponent(
-              query
-            )}`,
-
-          business_name:
-            ad.advertisers?.business_name ||
-            "",
-
-          website_url:
-            ad.advertisers?.website_url ||
-            "",
-
-          score:
-            ad.ad_score
-        }));
-
-    /*
-     * Record impressions.
-     */
-
-    for (const ad of ads) {
-      try {
-        const current =
-          Number(
-            matching.find(
-              item =>
-                String(item.id) ===
-                String(ad.id)
-            )?.impressions || 0
-          );
-
-        await supabase
-          .from("ad_campaigns")
-          .update({
-            impressions:
-              current + 1
-          })
-          .eq(
-            "id",
-            ad.id
-          );
-      } catch (error) {
-        console.error(
-          "[HEXORA AD IMPRESSION ERROR]",
-          error
-        );
-      }
-    }
-
-    return ads;
-
-  } catch (error) {
-    console.error(
-      "[HEXORA ADS EXCEPTION]",
-      error
-    );
-
-    return [];
-  }
-}
-
-/* =======================================================
-   AD CLICK TRACKING
-======================================================= */
-
-async function trackAdClick(
-  campaignId,
-  query
-) {
-  try {
-    const {
-      data: campaign,
-      error
-    } =
-      await supabase
-        .from("ad_campaigns")
-        .select(`
-          id,
-          target_url,
-          clicks
-        `)
-        .eq(
-          "id",
-          campaignId
-        )
-        .eq(
-          "status",
-          "active"
-        )
-        .maybeSingle();
-
-    if (
-      error ||
-      !campaign
-    ) {
-      return null;
-    }
-
-    await supabase
-      .from("ad_clicks")
-      .insert({
-        campaign_id:
-          campaign.id,
-
-        search_query:
-          cleanQuery(query)
-      });
-
-    await supabase
-      .from("ad_campaigns")
-      .update({
-        clicks:
-          Number(
-            campaign.clicks || 0
-          ) + 1
-      })
-      .eq(
-        "id",
-        campaign.id
-      );
-
-    return campaign.target_url;
-
-  } catch (error) {
-    console.error(
-      "[HEXORA AD CLICK ERROR]",
-      error
-    );
-
-    return null;
-  }
-}
-
-/* =======================================================
-   WEB SEARCH
-======================================================= */
+// ============================================================
+// WEB SEARCH
+// ============================================================
 
 async function searchWeb(
   query,
   pageNumber = 1,
   limit = 20
 ) {
-  query = cleanQuery(query);
+  if (!supabase) {
+    throw new Error("Supabase is not configured");
+  }
 
-  if (!query) {
+  const q = cleanQuery(query);
+
+  if (!q) {
     return {
       ok: true,
       mode: "web",
-      query,
+      query: "",
       total: 0,
       page: pageNumber,
       limit,
@@ -802,494 +522,262 @@ async function searchWeb(
     };
   }
 
-  console.log(
-    `[HEXORA SEARCH] query="${query}" page=${pageNumber} limit=${limit}`
-  );
-
   let rows = [];
 
+  // ==========================================================
+  // FIRST: DATABASE FULL TEXT SEARCH
+  // ==========================================================
+
   try {
-    const {
-      data,
-      error
-    } =
-      await supabase
-        .from("pages")
-        .select(`
-          id,
-          url,
-          title,
-          description,
-          content,
-          author,
-          image_url,
-          published_at,
-          last_crawled_at,
-          updated_at,
-          authority_score,
-          popularity_score
-        `)
-        .textSearch(
-          "search_vector",
-          query,
-          {
-            type: "websearch",
-            config: "english"
-          }
-        )
-        .limit(500);
+    const { data, error } = await supabase
+      .from("pages")
+      .select(`
+        id,
+        url,
+        title,
+        description,
+        content,
+        author,
+        image_url,
+        published_at,
+        last_crawled_at,
+        updated_at,
+        authority_score,
+        popularity_score
+      `)
+      .textSearch(
+        "search_vector",
+        q,
+        {
+          type: "websearch",
+          config: "english"
+        }
+      )
+      .limit(500);
 
-    if (error) {
-      console.error(
-        "[HEXORA FTS ERROR]",
-        error
-      );
-    } else if (
-      Array.isArray(data)
-    ) {
+    if (!error && Array.isArray(data)) {
       rows = data;
-
-      console.log(
-        `[HEXORA FTS] ${rows.length} rows found`
-      );
     }
   } catch (error) {
-    console.error(
-      "[HEXORA FTS EXCEPTION]",
-      error
+    console.log(
+      "[HEXORA] Full text search unavailable:",
+      error.message
     );
   }
 
+  // ==========================================================
+  // SECOND: FALLBACK ILIKE SEARCH
+  // ==========================================================
+
   if (!rows.length) {
-    try {
-      const words =
-        uniqueTokens(query)
-          .filter(
-            word =>
-              word.length >= 2
-          )
-          .slice(0, 8);
+    const words = queryTerms(q);
 
-      if (words.length) {
-        const orParts = [];
+    const orParts = [];
 
-        for (
-          const word of words
-        ) {
-          const safeWord =
-            word
-              .replace(
-                /[%_,().]/g,
-                " "
-              )
-              .replace(
-                /\s+/g,
-                " "
-              )
-              .trim();
+    for (const word of words.slice(0, 8)) {
+      const safe = word
+        .replace(/[%_]/g, "");
 
-          if (!safeWord) {
-            continue;
-          }
+      if (!safe) continue;
 
-          orParts.push(
-            `title.ilike.%${safeWord}%`
-          );
-
-          orParts.push(
-            `description.ilike.%${safeWord}%`
-          );
-
-          orParts.push(
-            `url.ilike.%${safeWord}%`
-          );
-        }
-
-        if (orParts.length) {
-          const {
-            data: fallbackData,
-            error: fallbackError
-          } =
-            await supabase
-              .from("pages")
-              .select(`
-                id,
-                url,
-                title,
-                description,
-                content,
-                author,
-                image_url,
-                published_at,
-                last_crawled_at,
-                updated_at,
-                authority_score,
-                popularity_score
-              `)
-              .or(
-                orParts.join(",")
-              )
-              .limit(500);
-
-          if (fallbackError) {
-            console.error(
-              "[HEXORA FALLBACK ERROR]",
-              fallbackError
-            );
-          } else if (
-            Array.isArray(
-              fallbackData
-            )
-          ) {
-            rows =
-              fallbackData;
-
-            console.log(
-              `[HEXORA FALLBACK] ${rows.length} rows found`
-            );
-          }
-        }
-      }
-    } catch (error) {
-      console.error(
-        "[HEXORA FALLBACK EXCEPTION]",
-        error
+      orParts.push(
+        `title.ilike.%${safe}%`,
+        `description.ilike.%${safe}%`,
+        `url.ilike.%${safe}%`,
+        `content.ilike.%${safe}%`
       );
+    }
+
+    if (orParts.length) {
+      try {
+        const { data, error } = await supabase
+          .from("pages")
+          .select(`
+            id,
+            url,
+            title,
+            description,
+            content,
+            author,
+            image_url,
+            published_at,
+            last_crawled_at,
+            updated_at,
+            authority_score,
+            popularity_score
+          `)
+          .or(orParts.join(","))
+          .limit(1000);
+
+        if (!error && Array.isArray(data)) {
+          rows = data;
+        }
+      } catch (error) {
+        console.log(
+          "[HEXORA] Fallback search error:",
+          error.message
+        );
+      }
     }
   }
 
-  const seen =
-    new Set();
+  // ==========================================================
+  // DEDUPE
+  // ==========================================================
 
-  rows =
-    rows.filter(row => {
-      const key =
-        String(
-          row.url || ""
-        ).trim() ||
-        String(
-          row.id || ""
-        );
+  const unique = new Map();
 
-      if (!key) {
-        return false;
-      }
+  for (const row of rows) {
+    const key =
+      String(row.url || "").toLowerCase().trim() ||
+      String(row.id);
 
-      if (seen.has(key)) {
-        return false;
-      }
-
-      seen.add(key);
-
-      return true;
-    });
-
-  if (isShortQuery(query)) {
-    rows =
-      rows.filter(row =>
-        hasStrictShortQueryMatch(
-          row,
-          query
-        )
-      );
+    if (!unique.has(key)) {
+      unique.set(key, row);
+    }
   }
 
-  const ranked =
-    rows
-      .map(row => ({
-        ...row,
-        ...calculateScore(
-          row,
-          query
-        )
-      }))
-      .filter(
-        row =>
-          row.score > 0
-      )
-      .sort((a, b) => {
-        if (
-          b.score !==
-          a.score
-        ) {
-          return (
-            b.score -
-            a.score
-          );
-        }
+  // ==========================================================
+  // SCORE + FILTER
+  // ==========================================================
 
-        return String(
-          a.title || ""
-        ).localeCompare(
-          String(
-            b.title || ""
-          )
-        );
-      });
+  const ranked = [];
 
-  const total =
-    ranked.length;
+  for (const row of unique.values()) {
+    const score = calculateScore(row, q);
+
+    if (!isRelevantResult(row, q, score)) {
+      continue;
+    }
+
+    const qTokens = queryTerms(q);
+
+    let matchedWords = 0;
+
+    const allText = normalizeText(
+      `${row.title || ""} ${row.description || ""} ${
+        row.url || ""
+      } ${row.content || ""}`
+    );
+
+    for (const word of qTokens) {
+      if (hasWholeWord(allText, word)) {
+        matchedWords++;
+      }
+    }
+
+    ranked.push({
+      ...row,
+      score,
+      matched_words: matchedWords,
+      coverage:
+        qTokens.length
+          ? Number(
+              (matchedWords / qTokens.length).toFixed(2)
+            )
+          : 0
+    });
+  }
+
+  // ==========================================================
+  // SORT
+  // ==========================================================
+
+  ranked.sort((a, b) => {
+    // Score first
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+
+    // Title match
+    const at = normalizeText(a.title);
+    const bt = normalizeText(b.title);
+    const nq = normalizeText(q);
+
+    const aTitle = at.includes(nq) ? 1 : 0;
+    const bTitle = bt.includes(nq) ? 1 : 0;
+
+    if (bTitle !== aTitle) {
+      return bTitle - aTitle;
+    }
+
+    // Freshness
+    const ad = new Date(
+      a.published_at ||
+      a.updated_at ||
+      a.last_crawled_at ||
+      0
+    ).getTime();
+
+    const bd = new Date(
+      b.published_at ||
+      b.updated_at ||
+      b.last_crawled_at ||
+      0
+    ).getTime();
+
+    return bd - ad;
+  });
+
+  // ==========================================================
+  // PAGINATION
+  // ==========================================================
+
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
+    (pageNumber - 1) * limit;
 
   const results =
-    ranked
-      .slice(
-        start,
-        start + limit
-      )
-      .map(row => ({
-        id: row.id,
+    ranked.slice(
+      start,
+      start + limit
+    );
 
-        url: row.url,
-
-        title:
-          row.title ||
-          "Untitled",
-
-        description:
-          row.description ||
-          "",
-
-        author:
-          row.author ||
-          null,
-
-        image_url:
-          row.image_url ||
-          null,
-
-        published_at:
-          row.published_at ||
-          null,
-
-        last_crawled_at:
-          row.last_crawled_at ||
-          null,
-
-        score:
-          Math.round(
-            row.score * 100
-          ) / 100,
-
-        matched_words:
-          row.matchedWords,
-
-        coverage:
-          row.coverage
-      }));
-
-  /*
-   * Sponsored ads only on first search page.
-   */
-
-  const sponsored =
-    pageNumber === 1
-      ? await getSponsoredAds(
-          query
-        )
-      : [];
-
-  console.log(
-    `[HEXORA RESULT] query="${query}" total=${total} returned=${results.length} sponsored=${sponsored.length}`
-  );
+  // ==========================================================
+  // CLEAN RESPONSE
+  // ==========================================================
 
   return {
     ok: true,
-
     mode: "web",
-
-    query,
-
+    query: q,
     total,
-
     page: pageNumber,
-
     limit,
-
-    sponsored,
-
+    sponsored: [],
     results
   };
 }
 
-/* =======================================================
-   IMAGE SEARCH
-======================================================= */
+// ============================================================
+// IMAGE SEARCH
+// ============================================================
 
-function calculateImageScore(
-  item,
-  query
-) {
-  const words =
-    uniqueTokens(query);
+function calculateImageScore(row, query) {
+  const q = normalizeText(query);
 
-  const title =
-    item.title || "";
-
-  const alt =
-    item.alt_text || "";
-
-  const domain =
-    item.source_domain || "";
-
-  const pageUrl =
-    item.page_url || "";
-
-  const imageUrl =
-    item.image_url || "";
-
-  const combined =
-    `${title} ${alt} ${domain} ${pageUrl} ${imageUrl}`;
+  const title = normalizeText(row.title);
+  const alt = normalizeText(row.alt_text);
+  const page = normalizeText(row.page_url);
+  const image = normalizeText(row.image_url);
+  const domain = normalizeText(row.source_domain);
 
   let score = 0;
-  let matched = 0;
 
-  for (const word of words) {
-    let wordMatched = false;
+  if (title === q) score += 200;
+  if (title.includes(q)) score += 100;
+  if (alt.includes(q)) score += 70;
+  if (page.includes(q)) score += 25;
+  if (image.includes(q)) score += 15;
+  if (domain.includes(q)) score += 10;
 
-    const titleCount =
-      countWholeWordOccurrences(
-        title,
-        word
-      );
-
-    const altCount =
-      countWholeWordOccurrences(
-        alt,
-        word
-      );
-
-    const domainCount =
-      countWholeWordOccurrences(
-        domain,
-        word
-      );
-
-    const pageCount =
-      countWholeWordOccurrences(
-        pageUrl,
-        word
-      );
-
-    const imageCount =
-      countWholeWordOccurrences(
-        imageUrl,
-        word
-      );
-
-    if (titleCount > 0) {
-      score += 120;
-
-      score +=
-        Math.min(
-          titleCount,
-          5
-        ) * 10;
-
-      wordMatched = true;
-    }
-
-    if (altCount > 0) {
-      score += 100;
-
-      score +=
-        Math.min(
-          altCount,
-          5
-        ) * 8;
-
-      wordMatched = true;
-    }
-
-    if (domainCount > 0) {
-      score += 30;
-      wordMatched = true;
-    }
-
-    if (pageCount > 0) {
-      score += 25;
-      wordMatched = true;
-    }
-
-    if (imageCount > 0) {
-      score += 15;
-      wordMatched = true;
-    }
-
-    if (wordMatched) {
-      matched++;
-    }
+  for (const word of queryTerms(q)) {
+    if (title.includes(word)) score += 20;
+    if (alt.includes(word)) score += 10;
   }
 
-  const normalizedQuery =
-    normalizeText(query);
-
-  if (
-    hasExactPhrase(
-      title,
-      normalizedQuery
-    )
-  ) {
-    score += 250;
-  }
-
-  if (
-    hasExactPhrase(
-      alt,
-      normalizedQuery
-    )
-  ) {
-    score += 220;
-  }
-
-  if (
-    hasExactPhrase(
-      pageUrl,
-      normalizedQuery
-    )
-  ) {
-    score += 60;
-  }
-
-  if (
-    normalizeText(title) ===
-    normalizedQuery
-  ) {
-    score += 350;
-  }
-
-  if (
-    normalizeText(alt) ===
-    normalizedQuery
-  ) {
-    score += 300;
-  }
-
-  const coverage =
-    words.length > 0
-      ? matched / words.length
-      : 0;
-
-  score += coverage * 150;
-
-  if (
-    normalizeText(
-      combined
-    ).includes(
-      normalizedQuery
-    )
-  ) {
-    score += 80;
-  }
-
-  return {
-    score,
-    matchedWords: matched,
-    coverage
-  };
+  return score;
 }
 
 async function searchImages(
@@ -1297,368 +785,81 @@ async function searchImages(
   pageNumber = 1,
   limit = 20
 ) {
-  query = cleanQuery(query);
-
-  if (!query) {
-    return {
-      ok: true,
-      mode: "images",
-      query,
-      total: 0,
-      page: pageNumber,
-      limit,
-      results: []
-    };
+  if (!supabase) {
+    throw new Error("Supabase is not configured");
   }
 
-  console.log(
-    `[HEXORA IMAGE SEARCH] query="${query}" page=${pageNumber} limit=${limit}`
-  );
+  const q = cleanQuery(query);
 
-  const words =
-    uniqueTokens(query)
-      .filter(
-        word =>
-          word.length >= 1
-      )
-      .slice(0, 12);
+  const { data, error } = await supabase
+    .from("images")
+    .select("*")
+    .limit(1000);
 
-  if (!words.length) {
-    return {
-      ok: true,
-      mode: "images",
-      query,
-      total: 0,
-      page: pageNumber,
-      limit,
-      results: []
-    };
-  }
-
-  const orParts = [];
-
-  for (const word of words) {
-    const safeWord =
-      String(word)
-        .replace(
-          /[%_(),]/g,
-          " "
-        )
-        .replace(
-          /\s+/g,
-          " "
-        )
-        .trim();
-
-    if (!safeWord) {
-      continue;
-    }
-
-    orParts.push(
-      `title.ilike.%${safeWord}%`
-    );
-
-    orParts.push(
-      `alt_text.ilike.%${safeWord}%`
-    );
-
-    orParts.push(
-      `page_url.ilike.%${safeWord}%`
-    );
-
-    orParts.push(
-      `image_url.ilike.%${safeWord}%`
-    );
-
-    orParts.push(
-      `source_domain.ilike.%${safeWord}%`
-    );
-  }
-
-  if (!orParts.length) {
-    return {
-      ok: true,
-      mode: "images",
-      query,
-      total: 0,
-      page: pageNumber,
-      limit,
-      results: []
-    };
-  }
-
-  let data = [];
-  let count = null;
-
-  try {
-    const response =
-      await supabase
-        .from("images")
-        .select(
-          `
-            id,
-            page_url,
-            image_url,
-            alt_text,
-            title,
-            source_domain,
-            created_at,
-            updated_at
-          `,
-          {
-            count: "exact"
-          }
-        )
-        .or(
-          orParts.join(",")
-        )
-        .limit(1000);
-
-    data =
-      response.data || [];
-
-    count =
-      response.count;
-
-    if (response.error) {
-      console.error(
-        "[HEXORA IMAGE SEARCH ERROR]",
-        response.error
-      );
-
-      return {
-        ok: false,
-        mode: "images",
-        query,
-        total: 0,
-        page: pageNumber,
-        limit,
-        results: [],
-        error:
-          response.error.message ||
-          "Image search failed"
-      };
-    }
-  } catch (error) {
-    console.error(
-      "[HEXORA IMAGE SEARCH EXCEPTION]",
-      error
-    );
-
+  if (error) {
     return {
       ok: false,
       mode: "images",
-      query,
+      query: q,
       total: 0,
-      page: pageNumber,
-      limit,
       results: [],
-      error:
-        error?.message ||
-        "Image search failed"
+      error: error.message
     };
   }
 
-  const ranked =
-    data
-      .map(item => ({
-        ...item,
-        ...calculateImageScore(
-          item,
-          query
-        )
-      }))
-      .filter(
-        item =>
-          item.matchedWords > 0 &&
-          item.score > 0
-      )
-      .sort((a, b) => {
-        if (
-          b.score !==
-          a.score
-        ) {
-          return (
-            b.score -
-            a.score
-          );
-        }
+  const rows = Array.isArray(data) ? data : [];
 
-        return String(
-          b.created_at || ""
-        ).localeCompare(
-          String(
-            a.created_at || ""
-          )
-        );
-      });
+  const ranked = rows
+    .map((row) => ({
+      ...row,
+      score: calculateImageScore(row, q)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score);
 
-  const seenImages =
-    new Set();
-
-  const unique =
-    ranked.filter(item => {
-      const key =
-        String(
-          item.image_url || ""
-        )
-          .trim()
-          .toLowerCase();
-
-      if (!key) {
-        return false;
-      }
-
-      if (
-        seenImages.has(key)
-      ) {
-        return false;
-      }
-
-      seenImages.add(key);
-
-      return true;
-    });
-
-  const total =
-    unique.length;
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
-
-  const results =
-    unique
-      .slice(
-        start,
-        start + limit
-      )
-      .map(item => ({
-        id: item.id,
-
-        page_url:
-          item.page_url,
-
-        image_url:
-          item.image_url,
-
-        alt_text:
-          item.alt_text ||
-          "",
-
-        title:
-          item.title ||
-          "",
-
-        source_domain:
-          item.source_domain ||
-          "",
-
-        created_at:
-          item.created_at ||
-          null,
-
-        updated_at:
-          item.updated_at ||
-          null,
-
-        score:
-          Math.round(
-            item.score * 100
-          ) / 100,
-
-        matched_words:
-          item.matchedWords,
-
-        coverage:
-          item.coverage
-      }));
-
-  console.log(
-    `[HEXORA IMAGE RESULT] query="${query}" db_matches=${count ?? 0} ranked=${unique.length} returned=${results.length}`
-  );
+    (pageNumber - 1) * limit;
 
   return {
     ok: true,
     mode: "images",
-    query,
+    query: q,
     total,
     page: pageNumber,
     limit,
-    results
+    results: ranked.slice(
+      start,
+      start + limit
+    )
   };
 }
 
-/* =======================================================
-   VIDEO SEARCH
-======================================================= */
+// ============================================================
+// VIDEO SEARCH
+// ============================================================
 
-function calculateVideoScore(
-  item,
-  query
-) {
-  const words =
-    uniqueTokens(query);
+function calculateVideoScore(row, query) {
+  const q = normalizeText(query);
 
-  const text =
-    normalizeText(
-      `${item.title || ""} ${
-        item.description || ""
-      } ${
-        item.source_domain || ""
-      } ${
-        item.page_url || ""
-      }`
-    );
+  const title = normalizeText(row.title);
+  const description = normalizeText(row.description);
+  const url = normalizeText(row.video_url || row.url);
 
   let score = 0;
-  let matched = 0;
 
-  for (const word of words) {
-    if (
-      hasWholeWord(
-        text,
-        word
-      )
-    ) {
-      matched++;
-      score += 60;
-    }
+  if (title === q) score += 250;
+  if (title.includes(q)) score += 120;
+  if (description.includes(q)) score += 50;
+  if (url.includes(q)) score += 20;
+
+  for (const word of queryTerms(q)) {
+    if (title.includes(word)) score += 25;
+    if (description.includes(word)) score += 8;
   }
 
-  if (
-    query &&
-    hasExactPhrase(
-      item.title,
-      query
-    )
-  ) {
-    score += 120;
-  }
-
-  if (
-    query &&
-    hasExactPhrase(
-      item.description,
-      query
-    )
-  ) {
-    score += 60;
-  }
-
-  const coverage =
-    words.length
-      ? matched / words.length
-      : 0;
-
-  score +=
-    coverage * 100;
-
-  return {
-    score,
-    matchedWords: matched,
-    coverage
-  };
+  return score;
 }
 
 async function searchVideos(
@@ -1666,213 +867,94 @@ async function searchVideos(
   pageNumber = 1,
   limit = 20
 ) {
-  query = cleanQuery(query);
+  if (!supabase) {
+    throw new Error("Supabase is not configured");
+  }
 
-  let rows = [];
+  const q = cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("videos")
-      .select(`
-        id,
-        page_url,
-        video_url,
-        title,
-        description,
-        source_domain,
-        thumbnail_url,
-        created_at,
-        updated_at
-      `)
-      .limit(1000);
+  const { data, error } = await supabase
+    .from("videos")
+    .select("*")
+    .limit(1000);
 
   if (error) {
-    console.error(
-      "Video search error:",
-      error
-    );
-
     return {
       ok: false,
       mode: "videos",
-      query,
+      query: q,
       total: 0,
-      page: pageNumber,
-      limit,
       results: [],
-      error:
-        "Video search failed"
+      error: error.message
     };
   }
 
-  if (Array.isArray(data)) {
-    rows = data;
-  }
+  const rows = Array.isArray(data) ? data : [];
 
-  const words =
-    uniqueTokens(query);
+  const ranked = rows
+    .map((row) => ({
+      ...row,
+      score: calculateVideoScore(row, q)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score);
 
-  if (words.length) {
-    rows =
-      rows.filter(item => {
-        const text =
-          normalizeText(
-            `${item.title || ""} ${
-              item.description || ""
-            } ${
-              item.source_domain || ""
-            } ${
-              item.page_url || ""
-            } ${
-              item.video_url || ""
-            }`
-          );
-
-        return words.some(
-          word =>
-            hasWholeWord(
-              text,
-              word
-            )
-        );
-      });
-  }
-
-  const ranked =
-    rows
-      .map(item => ({
-        ...item,
-        ...calculateVideoScore(
-          item,
-          query
-        )
-      }))
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  const total =
-    ranked.length;
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
-
-  const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
+    (pageNumber - 1) * limit;
 
   return {
     ok: true,
     mode: "videos",
-    query,
+    query: q,
     total,
     page: pageNumber,
     limit,
-    results
+    results: ranked.slice(
+      start,
+      start + limit
+    )
   };
 }
 
-/* =======================================================
-   MAP SEARCH
-======================================================= */
+// ============================================================
+// MAP / PLACES SEARCH
+// ============================================================
 
-function calculatePlaceScore(
-  item,
-  query
-) {
-  const words =
-    uniqueTokens(query);
+function calculatePlaceScore(row, query) {
+  const q = normalizeText(query);
 
-  const text =
-    normalizeText(
-      `${item.name || ""} ${
-        item.address || ""
-      } ${item.city || ""} ${
-        item.district || ""
-      } ${item.state || ""} ${
-        item.country || ""
-      } ${
-        item.source_domain || ""
-      }`
-    );
+  const name = normalizeText(
+    row.name || row.title
+  );
+
+  const address = normalizeText(
+    row.address
+  );
+
+  const city = normalizeText(
+    row.city
+  );
+
+  const state = normalizeText(
+    row.state
+  );
+
+  const country = normalizeText(
+    row.country
+  );
 
   let score = 0;
-  let matched = 0;
 
-  for (const word of words) {
-    if (
-      hasWholeWord(
-        text,
-        word
-      )
-    ) {
-      matched++;
-      score += 70;
-    }
-  }
+  if (name === q) score += 300;
+  if (name.includes(q)) score += 150;
+  if (address.includes(q)) score += 70;
+  if (city.includes(q)) score += 40;
+  if (state.includes(q)) score += 30;
+  if (country.includes(q)) score += 20;
 
-  if (
-    query &&
-    hasExactPhrase(
-      item.name,
-      query
-    )
-  ) {
-    score += 160;
-  }
-
-  if (
-    query &&
-    hasExactPhrase(
-      item.city,
-      query
-    )
-  ) {
-    score += 100;
-  }
-
-  if (
-    query &&
-    hasExactPhrase(
-      item.state,
-      query
-    )
-  ) {
-    score += 70;
-  }
-
-  const coverage =
-    words.length
-      ? matched / words.length
-      : 0;
-
-  score +=
-    coverage * 100;
-
-  if (
-    Number.isFinite(
-      Number(item.latitude)
-    ) &&
-    Number.isFinite(
-      Number(item.longitude)
-    )
-  ) {
-    score += 20;
-  }
-
-  return {
-    score,
-    matchedWords: matched,
-    coverage
-  };
+  return score;
 }
 
 async function searchMaps(
@@ -1880,223 +962,99 @@ async function searchMaps(
   pageNumber = 1,
   limit = 20
 ) {
-  query = cleanQuery(query);
+  if (!supabase) {
+    throw new Error("Supabase is not configured");
+  }
 
-  let rows = [];
+  const q = cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("places")
-      .select(`
-        id,
-        page_url,
-        name,
-        address,
-        city,
-        district,
-        state,
-        country,
-        latitude,
-        longitude,
-        source_domain,
-        created_at,
-        updated_at
-      `)
-      .limit(1000);
+  const { data, error } = await supabase
+    .from("places")
+    .select("*")
+    .limit(1000);
 
   if (error) {
-    console.error(
-      "Maps search error:",
-      error
-    );
-
     return {
       ok: false,
       mode: "maps",
-      query,
+      query: q,
       total: 0,
-      page: pageNumber,
-      limit,
       results: [],
-      error:
-        "Maps search failed"
+      error: error.message
     };
   }
 
-  if (Array.isArray(data)) {
-    rows = data;
-  }
+  const rows = Array.isArray(data) ? data : [];
 
-  const words =
-    uniqueTokens(query);
+  const ranked = rows
+    .map((row) => ({
+      ...row,
+      score: calculatePlaceScore(row, q)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score);
 
-  if (words.length) {
-    rows =
-      rows.filter(item => {
-        const text =
-          normalizeText(
-            `${item.name || ""} ${
-              item.address || ""
-            } ${item.city || ""} ${
-              item.district || ""
-            } ${item.state || ""} ${
-              item.country || ""
-            } ${
-              item.source_domain || ""
-            }`
-          );
-
-        return words.some(
-          word =>
-            hasWholeWord(
-              text,
-              word
-            )
-        );
-      });
-  }
-
-  const ranked =
-    rows
-      .map(item => ({
-        ...item,
-        ...calculatePlaceScore(
-          item,
-          query
-        )
-      }))
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  const total =
-    ranked.length;
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
-
-  const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
+    (pageNumber - 1) * limit;
 
   return {
     ok: true,
     mode: "maps",
-    query,
+    query: q,
     total,
     page: pageNumber,
     limit,
-    results
+    results: ranked.slice(
+      start,
+      start + limit
+    )
   };
 }
 
-/* =======================================================
-   NEWS SEARCH
-======================================================= */
+// ============================================================
+// NEWS SEARCH
+// ============================================================
 
-function calculateNewsScore(
-  item,
-  query
-) {
-  const words =
-    uniqueTokens(query);
+function calculateNewsScore(row, query) {
+  const q = normalizeText(query);
 
-  const title =
-    item.title || "";
-
-  const description =
-    item.description || "";
-
-  const source =
-    item.source_name || "";
+  const title = normalizeText(row.title);
+  const description = normalizeText(row.description);
+  const content = normalizeText(row.content);
+  const source = normalizeText(
+    row.source || row.source_domain
+  );
 
   let score = 0;
-  let matched = 0;
 
-  for (const word of words) {
-    let found = false;
+  if (title === q) score += 300;
+  if (title.includes(q)) score += 160;
+  if (description.includes(q)) score += 70;
+  if (content.includes(q)) score += 25;
+  if (source.includes(q)) score += 15;
 
-    if (
-      hasWholeWord(
-        title,
-        word
-      )
-    ) {
-      score += 120;
-      found = true;
-    }
-
-    if (
-      hasWholeWord(
-        description,
-        word
-      )
-    ) {
-      score += 35;
-      found = true;
-    }
-
-    if (
-      hasWholeWord(
-        source,
-        word
-      )
-    ) {
-      score += 20;
-      found = true;
-    }
-
-    if (found) {
-      matched++;
-    }
+  for (const word of queryTerms(q)) {
+    if (title.includes(word)) score += 25;
+    if (description.includes(word)) score += 10;
   }
 
-  const phrase =
-    normalizeText(query);
+  const published =
+    row.published_at;
 
-  if (
-    hasExactPhrase(
-      title,
-      phrase
-    )
-  ) {
-    score += 220;
+  if (published) {
+    const ageDays =
+      (Date.now() -
+        new Date(published).getTime()) /
+      (1000 * 60 * 60 * 24);
+
+    if (ageDays <= 1) score += 30;
+    else if (ageDays <= 7) score += 20;
+    else if (ageDays <= 30) score += 10;
   }
 
-  if (
-    normalizeText(title) ===
-    phrase
-  ) {
-    score += 300;
-  }
-
-  score +=
-    calculateFreshnessBonus(
-      item.published_at ||
-        item.fetched_at
-    );
-
-  const coverage =
-    words.length
-      ? matched / words.length
-      : 0;
-
-  score +=
-    coverage * 100;
-
-  return {
-    score,
-    coverage,
-    matchedWords: matched
-  };
+  return score;
 }
 
 async function searchNews(
@@ -2104,720 +1062,485 @@ async function searchNews(
   pageNumber = 1,
   limit = 20
 ) {
-  query = cleanQuery(query);
+  if (!supabase) {
+    throw new Error("Supabase is not configured");
+  }
 
-  let rows = [];
+  const q = cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("news")
-      .select(`
-        id,
-        title,
-        description,
-        url,
-        source_name,
-        source_domain,
-        published_at,
-        image_url,
-        fetched_at
-      `)
-      .order(
-        "published_at",
-        {
-          ascending: false,
-          nullsFirst: false
-        }
-      )
-      .limit(500);
+  const { data, error } = await supabase
+    .from("news")
+    .select("*")
+    .order("published_at", {
+      ascending: false
+    })
+    .limit(500);
 
   if (error) {
-    console.error(
-      "News search error:",
-      error
-    );
-
     return {
       ok: false,
       mode: "news",
-      query,
+      query: q,
       total: 0,
-      page: pageNumber,
-      limit,
       results: [],
-      error:
-        "News search failed"
+      error: error.message
     };
   }
 
-  if (Array.isArray(data)) {
-    rows = data;
-  }
+  const rows = Array.isArray(data) ? data : [];
 
-  const queryWords =
-    uniqueTokens(query);
+  const ranked = rows
+    .map((row) => ({
+      ...row,
+      score: calculateNewsScore(row, q)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
 
-  if (queryWords.length) {
-    rows =
-      rows.filter(item => {
-        const text =
-          normalizeText(
-            `${item.title || ""} ${
-              item.description || ""
-            } ${
-              item.source_name || ""
-            }`
-          );
-
-        return queryWords.some(
-          word =>
-            hasWholeWord(
-              text,
-              word
-            )
-        );
-      });
-  }
-
-  const ranked =
-    rows
-      .map(item => ({
-        ...item,
-        ...calculateNewsScore(
-          item,
-          query
-        )
-      }))
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
+      return (
+        new Date(b.published_at || 0) -
+        new Date(a.published_at || 0)
       );
+    });
 
-  const total =
-    ranked.length;
+  const total = ranked.length;
 
   const start =
-    (pageNumber - 1) *
-    limit;
-
-  const results =
-    ranked.slice(
-      start,
-      start + limit
-    );
+    (pageNumber - 1) * limit;
 
   return {
     ok: true,
     mode: "news",
-    query,
+    query: q,
     total,
     page: pageNumber,
     limit,
-    results
+    results: ranked.slice(
+      start,
+      start + limit
+    )
   };
 }
 
-/* =======================================================
-   HTTP HELPERS
-======================================================= */
+// ============================================================
+// HTTP RESPONSE
+// ============================================================
 
 function jsonResponse(
   res,
   status,
   data
 ) {
-  const body =
-    JSON.stringify(data);
+  const body = JSON.stringify(data);
 
-  res.writeHead(
-    status,
-    {
-      "Content-Type":
-        "application/json; charset=utf-8",
+  res.writeHead(status, {
+    "Content-Type":
+      "application/json; charset=utf-8",
 
-      "Cache-Control":
-        "no-store",
+    "Access-Control-Allow-Origin": "*",
 
-      "Access-Control-Allow-Origin":
-        "*"
-    }
-  );
+    "Access-Control-Allow-Methods":
+      "GET,POST,OPTIONS",
+
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization",
+
+    "Cache-Control":
+      "no-store"
+  });
 
   res.end(body);
 }
+
+// ============================================================
+// STATIC FILE
+// ============================================================
 
 function sendFile(
   res,
   filePath
 ) {
-  if (
-    !fs.existsSync(
-      filePath
-    )
-  ) {
-    res.writeHead(404);
-    res.end("Not Found");
-    return;
+  if (!fs.existsSync(filePath)) {
+    return false;
   }
 
   const ext =
-    path.extname(
-      filePath
-    ).toLowerCase();
+    path.extname(filePath)
+      .toLowerCase();
 
-  const types = {
-    ".html":
-      "text/html; charset=utf-8",
-
-    ".js":
-      "application/javascript; charset=utf-8",
-
-    ".css":
-      "text/css; charset=utf-8",
-
-    ".json":
-      "application/json; charset=utf-8",
-
-    ".svg":
-      "image/svg+xml",
-
-    ".png":
-      "image/png",
-
-    ".jpg":
-      "image/jpeg",
-
-    ".jpeg":
-      "image/jpeg",
-
-    ".webp":
-      "image/webp",
-
-    ".ico":
-      "image/x-icon"
+  const contentTypes = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon"
   };
 
-  res.writeHead(
-    200,
-    {
-      "Content-Type":
-        types[ext] ||
-        "application/octet-stream"
-    }
+  const contentType =
+    contentTypes[ext] ||
+    "application/octet-stream";
+
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Access-Control-Allow-Origin": "*"
+  });
+
+  res.end(
+    fs.readFileSync(filePath)
   );
 
-  fs.createReadStream(
-    filePath
-  ).pipe(res);
+  return true;
 }
 
-/* =======================================================
-   HTTP SERVER
-======================================================= */
+// ============================================================
+// SERVER
+// ============================================================
 
-const server =
-  http.createServer(
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const requestUrl =
-          new URL(
-            req.url,
-            `http://${
-              req.headers.host ||
-              "localhost"
-            }`
-          );
+const server = http.createServer(
+  async (req, res) => {
+    try {
+      // ======================================================
+      // CORS
+      // ======================================================
 
-        const pathname =
-          requestUrl.pathname;
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods":
+            "GET,POST,OPTIONS",
+          "Access-Control-Allow-Headers":
+            "Content-Type, Authorization"
+        });
 
-        /* =================================================
-           CORS / OPTIONS
-        ================================================= */
+        res.end();
+        return;
+      }
 
-        if (
-          req.method ===
-          "OPTIONS"
-        ) {
-          res.writeHead(
-            204,
-            {
-              "Access-Control-Allow-Origin":
-                "*",
-
-              "Access-Control-Allow-Methods":
-                "GET,OPTIONS",
-
-              "Access-Control-Allow-Headers":
-                "Content-Type"
-            }
-          );
-
-          res.end();
-
-          return;
-        }
-
-        /* =================================================
-           HEALTH
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/health" ||
-          pathname ===
-            "/health"
-        ) {
-          return jsonResponse(
-            res,
-            200,
-            {
-              ok: true,
-              service:
-                "HEXORA",
-              index:
-                "Supabase",
-              status:
-                "online",
-              port: PORT
-            }
-          );
-        }
-
-        /* =================================================
-           SPONSORED AD CLICK
-        ================================================= */
-
-        if (
-          pathname ===
-          "/api/ads/click"
-        ) {
-          const campaignId =
-            requestUrl
-              .searchParams
-              .get("id");
-
-          const query =
-            requestUrl
-              .searchParams
-              .get("q") ||
-            "";
-
-          if (!campaignId) {
-            return jsonResponse(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  "Missing campaign id"
-              }
-            );
-          }
-
-          const targetUrl =
-            await trackAdClick(
-              campaignId,
-              query
-            );
-
-          if (!targetUrl) {
-            return jsonResponse(
-              res,
-              404,
-              {
-                ok: false,
-                error:
-                  "Advertisement not found"
-              }
-            );
-          }
-
-          let destination;
-
-          try {
-            destination =
-              new URL(
-                targetUrl
-              );
-
-            if (
-              destination.protocol !==
-                "http:" &&
-              destination.protocol !==
-                "https:"
-            ) {
-              throw new Error(
-                "Invalid protocol"
-              );
-            }
-          } catch {
-            return jsonResponse(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  "Invalid advertisement URL"
-              }
-            );
-          }
-
-          res.writeHead(
-            302,
-            {
-              Location:
-                destination.toString(),
-
-              "Cache-Control":
-                "no-store"
-            }
-          );
-
-          res.end();
-
-          return;
-        }
-
-        /* =================================================
-           SEARCH
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/search" ||
-          pathname ===
-            "/search"
-        ) {
-          const query =
-            requestUrl
-              .searchParams
-              .get("q") ||
-            "";
-
-          const mode =
-            detectMode(
-              requestUrl
-                .searchParams
-                .get("mode") ||
-                "web"
-            );
-
-          const requestedPage =
-            Number(
-              requestUrl
-                .searchParams
-                .get("page") ||
-                1
-            );
-
-          const page =
-            Number.isFinite(
-              requestedPage
-            )
-              ? Math.max(
-                  1,
-                  Math.floor(
-                    requestedPage
-                  )
-                )
-              : 1;
-
-          const requestedLimit =
-            Number(
-              requestUrl
-                .searchParams
-                .get("limit") ||
-                20
-            );
-
-          const limit =
-            Number.isFinite(
-              requestedLimit
-            )
-              ? Math.min(
-                  50,
-                  Math.max(
-                    1,
-                    Math.floor(
-                      requestedLimit
-                    )
-                  )
-                )
-              : 20;
-
-          let result;
-
-          if (
-            mode === "news"
-          ) {
-            result =
-              await searchNews(
-                query,
-                page,
-                limit
-              );
-          } else if (
-            mode === "images"
-          ) {
-            result =
-              await searchImages(
-                query,
-                page,
-                limit
-              );
-          } else if (
-            mode === "videos"
-          ) {
-            result =
-              await searchVideos(
-                query,
-                page,
-                limit
-              );
-          } else if (
-            mode === "maps"
-          ) {
-            result =
-              await searchMaps(
-                query,
-                page,
-                limit
-              );
-          } else {
-            result =
-              await searchWeb(
-                query,
-                page,
-                limit
-              );
-          }
-
-          return jsonResponse(
-            res,
-            200,
-            result
-          );
-        }
-
-        /* =================================================
-           NEWS FEED
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/news" ||
-          pathname ===
-            "/news"
-        ) {
-          const result =
-            await searchNews(
-              "",
-              1,
-              30
-            );
-
-          return jsonResponse(
-            res,
-            200,
-            result
-          );
-        }
-
-        /* =================================================
-           STATIC FILES
-        ================================================= */
-
-        let filePath;
-
-        if (
-          pathname === "/"
-        ) {
-          filePath =
-            path.join(
-              __dirname,
-              "index.html"
-            );
-        } else {
-          let requested;
-
-          try {
-            requested =
-              decodeURIComponent(
-                pathname
-              );
-          } catch {
-            res.writeHead(
-              400
-            );
-
-            res.end(
-              "Bad Request"
-            );
-
-            return;
-          }
-
-          filePath =
-            path.join(
-              __dirname,
-              requested
-            );
-        }
-
-        /* =================================================
-           SECURITY
-        ================================================= */
-
-        const safeBase =
-          path.resolve(
-            __dirname
-          );
-
-        const safePath =
-          path.resolve(
-            filePath
-          );
-
-        const relativePath =
-          path.relative(
-            safeBase,
-            safePath
-          );
-
-        if (
-          relativePath.startsWith(
-            ".." +
-              path.sep
-          ) ||
-          path.isAbsolute(
-            relativePath
-          )
-        ) {
-          res.writeHead(
-            403
-          );
-
-          res.end(
-            "Forbidden"
-          );
-
-          return;
-        }
-
-        /* =================================================
-           EXISTING STATIC FILE
-        ================================================= */
-
-        if (
-          fs.existsSync(
-            safePath
-          ) &&
-          fs.statSync(
-            safePath
-          ).isFile()
-        ) {
-          return sendFile(
-            res,
-            safePath
-          );
-        }
-
-        /* =================================================
-           SPA FALLBACK
-        ================================================= */
-
-        const indexFile =
-          path.join(
-            __dirname,
-            "index.html"
-          );
-
-        if (
-          fs.existsSync(
-            indexFile
-          )
-        ) {
-          return sendFile(
-            res,
-            indexFile
-          );
-        }
-
-        res.writeHead(
-          404
+      const requestUrl =
+        new URL(
+          req.url,
+          `http://${req.headers.host || "localhost"}`
         );
 
-        res.end(
-          "Not Found"
-        );
+      const pathname =
+        requestUrl.pathname;
 
-      } catch (error) {
-        console.error(
-          "[HEXORA SERVER ERROR]",
-          error
-        );
+      // ======================================================
+      // HEALTH
+      // ======================================================
 
+      if (
+        pathname === "/health" ||
+        pathname === "/api/health"
+      ) {
         return jsonResponse(
           res,
-          500,
+          200,
           {
-            ok: false,
-
-            error:
-              "HEXORA server error",
-
-            message:
-              error?.message ||
-              "Unknown server error"
+            status: "ok",
+            engine: "HEXORA",
+            crawler: "active",
+            search: "active",
+            timestamp:
+              new Date().toISOString()
           }
         );
       }
-    }
-  );
 
-/* =======================================================
-   START SERVER
-======================================================= */
+      // ======================================================
+      // SEARCH
+      // ======================================================
+
+      if (
+        pathname === "/search" ||
+        pathname === "/api/search"
+      ) {
+        const query =
+          cleanQuery(
+            requestUrl.searchParams.get("q") ||
+            requestUrl.searchParams.get("query") ||
+            ""
+          );
+
+        const requestedMode =
+          requestUrl.searchParams.get(
+            "mode"
+          );
+
+        const mode =
+          requestedMode ||
+          detectMode(query);
+
+        const pageNumber = Math.max(
+          1,
+          Number(
+            requestUrl.searchParams.get(
+              "page"
+            ) || 1
+          )
+        );
+
+        const limit = Math.min(
+          50,
+          Math.max(
+            1,
+            Number(
+              requestUrl.searchParams.get(
+                "limit"
+              ) || 20
+            )
+          )
+        );
+
+        if (!query) {
+          return jsonResponse(
+            res,
+            400,
+            {
+              ok: false,
+              error:
+                "Search query is required"
+            }
+          );
+        }
+
+        let result;
+
+        if (mode === "images") {
+          result =
+            await searchImages(
+              query,
+              pageNumber,
+              limit
+            );
+        } else if (mode === "videos") {
+          result =
+            await searchVideos(
+              query,
+              pageNumber,
+              limit
+            );
+        } else if (mode === "maps") {
+          result =
+            await searchMaps(
+              query,
+              pageNumber,
+              limit
+            );
+        } else if (mode === "news") {
+          result =
+            await searchNews(
+              query,
+              pageNumber,
+              limit
+            );
+        } else {
+          result =
+            await searchWeb(
+              query,
+              pageNumber,
+              limit
+            );
+        }
+
+        return jsonResponse(
+          res,
+          200,
+          result
+        );
+      }
+
+      // ======================================================
+      // NEWS
+      // ======================================================
+
+      if (
+        pathname === "/news" ||
+        pathname === "/api/news"
+      ) {
+        const query =
+          cleanQuery(
+            requestUrl.searchParams.get(
+              "q"
+            ) || ""
+          );
+
+        if (!query) {
+          return jsonResponse(
+            res,
+            400,
+            {
+              ok: false,
+              error:
+                "News query is required"
+            }
+          );
+        }
+
+        const result =
+          await searchNews(
+            query,
+            1,
+            20
+          );
+
+        return jsonResponse(
+          res,
+          200,
+          result
+        );
+      }
+
+      // ======================================================
+      // STATIC FILES
+      // ======================================================
+
+      let requestedPath =
+        decodeURIComponent(pathname);
+
+      if (
+        requestedPath === "/" ||
+        requestedPath === ""
+      ) {
+        requestedPath = "/index.html";
+      }
+
+      // Prevent path traversal
+      const safePath =
+        path.normalize(
+          path.join(
+            __dirname,
+            requestedPath
+          )
+        );
+
+      if (
+        !safePath.startsWith(
+          path.normalize(__dirname)
+        )
+      ) {
+        return jsonResponse(
+          res,
+          403,
+          {
+            ok: false,
+            error: "Forbidden"
+          }
+        );
+      }
+
+      if (
+        fs.existsSync(safePath) &&
+        fs.statSync(safePath).isFile()
+      ) {
+        if (
+          sendFile(
+            res,
+            safePath
+          )
+        ) {
+          return;
+        }
+      }
+
+      // ======================================================
+      // SPA FALLBACK
+      // ======================================================
+
+      const indexPath =
+        path.join(
+          __dirname,
+          "index.html"
+        );
+
+      if (
+        fs.existsSync(indexPath)
+      ) {
+        sendFile(
+          res,
+          indexPath
+        );
+        return;
+      }
+
+      // ======================================================
+      // 404
+      // ======================================================
+
+      return jsonResponse(
+        res,
+        404,
+        {
+          ok: false,
+          error: "Not found"
+        }
+      );
+
+    } catch (error) {
+      console.error(
+        "[HEXORA] Server error:",
+        error
+      );
+
+      return jsonResponse(
+        res,
+        500,
+        {
+          ok: false,
+          error:
+            error?.message ||
+            "Internal server error"
+        }
+      );
+    }
+  }
+);
+
+// ============================================================
+// START
+// ============================================================
 
 server.listen(
   PORT,
   "0.0.0.0",
   () => {
     console.log(
-      `HEXORA search server running on port ${PORT}`
+      `[HEXORA] Search server running on http://0.0.0.0:${PORT}`
     );
 
     console.log(
-      `[HEXORA] Supabase URL configured: ${
-        SUPABASE_URL
-          ? "YES"
-          : "NO"
-      }`
-    );
-
-    console.log(
-      `[HEXORA] Supabase key configured: ${
-        SUPABASE_KEY
-          ? "YES"
-          : "NO"
-      }`
+      `[HEXORA] Search API: /search?q=tractor`
     );
   }
 );
 
-server.on(
-  "error",
-  error => {
+// ============================================================
+// ERROR HANDLING
+// ============================================================
+
+process.on(
+  "unhandledRejection",
+  (error) => {
     console.error(
-      "[HEXORA LISTEN ERROR]",
+      "[HEXORA] Unhandled rejection:",
+      error
+    );
+  }
+);
+
+process.on(
+  "uncaughtException",
+  (error) => {
+    console.error(
+      "[HEXORA] Uncaught exception:",
       error
     );
   }
