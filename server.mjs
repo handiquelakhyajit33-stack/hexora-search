@@ -185,21 +185,18 @@ function calculateProximityScore(query, title, description, content) {
 
   let score = 0;
 
-  // All query words close together in title
   if (
     qTokens.every((word) => titleText.includes(word))
   ) {
     score += 35;
   }
 
-  // All query words in description
   if (
     qTokens.every((word) => descText.includes(word))
   ) {
     score += 20;
   }
 
-  // Exact phrase
   if (qTokens.length > 1) {
     const phrase = qTokens.join(" ");
 
@@ -274,7 +271,6 @@ function calculateScore(row, query) {
   }
 
   let score = 0;
-
   let matchedWords = 0;
 
   for (const word of qTokens) {
@@ -299,10 +295,6 @@ function calculateScore(row, query) {
     }
   }
 
-  // ==========================================================
-  // EXACT PHRASE
-  // ==========================================================
-
   if (hasExactPhrase(titleText, q)) {
     score += 160;
   }
@@ -319,10 +311,6 @@ function calculateScore(row, query) {
     score += 25;
   }
 
-  // ==========================================================
-  // TITLE MATCH
-  // ==========================================================
-
   if (titleText === q) {
     score += 300;
   }
@@ -330,10 +318,6 @@ function calculateScore(row, query) {
   if (titleText.startsWith(q)) {
     score += 100;
   }
-
-  // ==========================================================
-  // WORD COVERAGE
-  // ==========================================================
 
   const coverage =
     qTokens.length > 0
@@ -348,20 +332,12 @@ function calculateScore(row, query) {
     score += 20;
   }
 
-  // ==========================================================
-  // PROXIMITY
-  // ==========================================================
-
   score += calculateProximityScore(
     query,
     title,
     description,
     content
   );
-
-  // ==========================================================
-  // FREQUENCY
-  // ==========================================================
 
   for (const word of qTokens) {
     const titleCount = countWholeWordOccurrences(
@@ -384,16 +360,8 @@ function calculateScore(row, query) {
     score += Math.min(contentCount * 1, 8);
   }
 
-  // ==========================================================
-  // AUTHORITY + FRESHNESS
-  // ==========================================================
-
   score += calculateAuthorityBonus(row);
   score += calculateFreshnessBonus(row);
-
-  // ==========================================================
-  // WEAK RESULT PENALTY
-  // ==========================================================
 
   if (
     matchedWords === 1 &&
@@ -402,7 +370,6 @@ function calculateScore(row, query) {
     score -= 60;
   }
 
-  // Generic pages penalty
   const genericPatterns = [
     "encyclopedia index",
     "category:",
@@ -460,13 +427,10 @@ function isRelevantResult(row, query, score) {
   const coverage =
     matched / qTokens.length;
 
-  // Multi-word query must have reasonable coverage
   if (qTokens.length >= 2 && coverage < 0.5) {
     return false;
   }
 
-  // Single-word query:
-  // do not allow extremely weak content-only matches
   if (qTokens.length === 1) {
     const word = qTokens[0];
 
@@ -522,135 +486,134 @@ async function searchWeb(
     };
   }
 
-  let rows = [];
+  const words = queryTerms(q);
 
-  // ==========================================================
-  // FIRST: DATABASE FULL TEXT SEARCH
-  // ==========================================================
-
-  try {
-    const { data, error } = await supabase
-      .from("pages")
-      .select(`
-        id,
-        url,
-        title,
-        description,
-        content,
-        author,
-        image_url,
-        published_at,
-        last_crawled_at,
-        updated_at,
-        authority_score,
-        popularity_score
-      `)
-      .textSearch(
-        "search_vector",
-        q,
-        {
-          type: "websearch",
-          config: "english"
-        }
-      )
-      .limit(500);
-
-    if (!error && Array.isArray(data)) {
-      rows = data;
-    }
-  } catch (error) {
-    console.log(
-      "[HEXORA] Full text search unavailable:",
-      error.message
-    );
+  if (!words.length) {
+    return {
+      ok: true,
+      mode: "web",
+      query: q,
+      total: 0,
+      page: pageNumber,
+      limit,
+      sponsored: [],
+      results: []
+    };
   }
 
-  // ==========================================================
-  // SECOND: FALLBACK ILIKE SEARCH
-  // ==========================================================
+  const selectFields = `
+    id,
+    url,
+    title,
+    description,
+    content,
+    author,
+    image_url,
+    published_at,
+    last_crawled_at,
+    updated_at,
+    authority_score,
+    popularity_score
+  `;
 
-  if (!rows.length) {
-    const words = queryTerms(q);
+  const safeWords = words
+    .slice(0, 8)
+    .map((word) =>
+      word
+        .replace(/[%_]/g, "")
+        .replace(/[,()]/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
 
-    const orParts = [];
+  const rowsByKey = new Map();
 
-    for (const word of words.slice(0, 8)) {
-      const safe = word
-        .replace(/[%_]/g, "");
+  function addRows(data) {
+    if (!Array.isArray(data)) return;
 
-      if (!safe) continue;
+    for (const row of data) {
+      const key =
+        String(row.url || "").toLowerCase().trim() ||
+        String(row.id || "");
 
-      orParts.push(
-        `title.ilike.%${safe}%`,
-        `description.ilike.%${safe}%`,
-        `url.ilike.%${safe}%`,
-        `content.ilike.%${safe}%`
-      );
+      if (key && !rowsByKey.has(key)) {
+        rowsByKey.set(key, row);
+      }
     }
+  }
 
-    if (orParts.length) {
+  async function searchColumn(column, limitPerTerm = 300) {
+    for (const word of safeWords) {
       try {
         const { data, error } = await supabase
           .from("pages")
-          .select(`
-            id,
-            url,
-            title,
-            description,
-            content,
-            author,
-            image_url,
-            published_at,
-            last_crawled_at,
-            updated_at,
-            authority_score,
-            popularity_score
-          `)
-          .or(orParts.join(","))
-          .limit(1000);
+          .select(selectFields)
+          .ilike(column, `%${word}%`)
+          .limit(limitPerTerm);
 
-        if (!error && Array.isArray(data)) {
-          rows = data;
+        if (error) {
+          console.log(
+            `[HEXORA] ${column} search error:`,
+            error.message
+          );
+          continue;
         }
+
+        addRows(data);
       } catch (error) {
         console.log(
-          "[HEXORA] Fallback search error:",
-          error.message
+          `[HEXORA] ${column} search exception:`,
+          error?.message || error
         );
       }
     }
   }
 
-  // ==========================================================
-  // DEDUPE
-  // ==========================================================
+  await Promise.all([
+    searchColumn("title", 500),
+    searchColumn("description", 300),
+    searchColumn("url", 300)
+  ]);
 
-  const unique = new Map();
+  await searchColumn("content", 500);
 
-  for (const row of rows) {
-    const key =
-      String(row.url || "").toLowerCase().trim() ||
-      String(row.id);
+  try {
+    const { data, error } = await supabase
+      .from("pages")
+      .select(selectFields)
+      .textSearch(
+        "search_vector",
+        q,
+        {
+          type: "websearch",
+          config: "simple"
+        }
+      )
+      .limit(500);
 
-    if (!unique.has(key)) {
-      unique.set(key, row);
+    if (!error) {
+      addRows(data);
+    } else {
+      console.log(
+        "[HEXORA] Optional full-text search skipped:",
+        error.message
+      );
     }
+  } catch (error) {
+    console.log(
+      "[HEXORA] Optional full-text search unavailable:",
+      error?.message || error
+    );
   }
-
-  // ==========================================================
-  // SCORE + FILTER
-  // ==========================================================
 
   const ranked = [];
 
-  for (const row of unique.values()) {
+  for (const row of rowsByKey.values()) {
     const score = calculateScore(row, q);
 
     if (!isRelevantResult(row, q, score)) {
       continue;
     }
-
-    const qTokens = queryTerms(q);
 
     let matchedWords = 0;
 
@@ -660,8 +623,10 @@ async function searchWeb(
       } ${row.content || ""}`
     );
 
-    for (const word of qTokens) {
-      if (hasWholeWord(allText, word)) {
+    for (const word of words) {
+      if (
+        allText.includes(normalizeText(word))
+      ) {
         matchedWords++;
       }
     }
@@ -670,26 +635,19 @@ async function searchWeb(
       ...row,
       score,
       matched_words: matchedWords,
-      coverage:
-        qTokens.length
-          ? Number(
-              (matchedWords / qTokens.length).toFixed(2)
-            )
-          : 0
+      coverage: words.length
+        ? Number(
+            (matchedWords / words.length).toFixed(2)
+          )
+        : 0
     });
   }
 
-  // ==========================================================
-  // SORT
-  // ==========================================================
-
   ranked.sort((a, b) => {
-    // Score first
     if (b.score !== a.score) {
       return b.score - a.score;
     }
 
-    // Title match
     const at = normalizeText(a.title);
     const bt = normalizeText(b.title);
     const nq = normalizeText(q);
@@ -701,7 +659,6 @@ async function searchWeb(
       return bTitle - aTitle;
     }
 
-    // Freshness
     const ad = new Date(
       a.published_at ||
       a.updated_at ||
@@ -719,10 +676,6 @@ async function searchWeb(
     return bd - ad;
   });
 
-  // ==========================================================
-  // PAGINATION
-  // ==========================================================
-
   const total = ranked.length;
 
   const start =
@@ -733,10 +686,6 @@ async function searchWeb(
       start,
       start + limit
     );
-
-  // ==========================================================
-  // CLEAN RESPONSE
-  // ==========================================================
 
   return {
     ok: true,
@@ -1207,10 +1156,6 @@ function sendFile(
 const server = http.createServer(
   async (req, res) => {
     try {
-      // ======================================================
-      // CORS
-      // ======================================================
-
       if (req.method === "OPTIONS") {
         res.writeHead(204, {
           "Access-Control-Allow-Origin": "*",
@@ -1233,10 +1178,6 @@ const server = http.createServer(
       const pathname =
         requestUrl.pathname;
 
-      // ======================================================
-      // HEALTH
-      // ======================================================
-
       if (
         pathname === "/health" ||
         pathname === "/api/health"
@@ -1254,10 +1195,6 @@ const server = http.createServer(
           }
         );
       }
-
-      // ======================================================
-      // SEARCH
-      // ======================================================
 
       if (
         pathname === "/search" ||
@@ -1358,10 +1295,6 @@ const server = http.createServer(
         );
       }
 
-      // ======================================================
-      // NEWS
-      // ======================================================
-
       if (
         pathname === "/news" ||
         pathname === "/api/news"
@@ -1399,10 +1332,6 @@ const server = http.createServer(
         );
       }
 
-      // ======================================================
-      // STATIC FILES
-      // ======================================================
-
       let requestedPath =
         decodeURIComponent(pathname);
 
@@ -1413,7 +1342,6 @@ const server = http.createServer(
         requestedPath = "/index.html";
       }
 
-      // Prevent path traversal
       const safePath =
         path.normalize(
           path.join(
@@ -1451,10 +1379,6 @@ const server = http.createServer(
         }
       }
 
-      // ======================================================
-      // SPA FALLBACK
-      // ======================================================
-
       const indexPath =
         path.join(
           __dirname,
@@ -1470,10 +1394,6 @@ const server = http.createServer(
         );
         return;
       }
-
-      // ======================================================
-      // 404
-      // ======================================================
 
       return jsonResponse(
         res,
@@ -1504,10 +1424,6 @@ const server = http.createServer(
   }
 );
 
-// ============================================================
-// START
-// ============================================================
-
 server.listen(
   PORT,
   "0.0.0.0",
@@ -1521,10 +1437,6 @@ server.listen(
     );
   }
 );
-
-// ============================================================
-// ERROR HANDLING
-// ============================================================
 
 process.on(
   "unhandledRejection",
