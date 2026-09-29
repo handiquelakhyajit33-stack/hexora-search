@@ -1,16 +1,18 @@
+// ============================================================
 // HEXORA CRAWLER
-// Clean webpage content + Supabase indexing
-// Compatible with worker/worker.mjs:
-// import { crawlBatch } from "../crawler.mjs";
+// Compatible with existing worker/worker.mjs
+// Clean content + Supabase indexing
+// ============================================================
 
 import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
 
-// =====================================================
+// ============================================================
 // CONFIG
-// =====================================================
+// ============================================================
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL =
+  process.env.SUPABASE_URL;
 
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -19,9 +21,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
 const USER_AGENT =
   "HEXORA-Bot/1.0 (+https://hexora-search-production.up.railway.app/)";
 
-const DEFAULT_BATCH_SIZE = Number(
-  process.env.CRAWL_BATCH_SIZE || 10
-);
+const DEFAULT_BATCH_SIZE = 12;
 
 const CONCURRENCY = Number(
   process.env.CRAWL_CONCURRENCY || 2
@@ -35,11 +35,14 @@ const MAX_CONTENT_LENGTH = 100000;
 
 const MAX_LINKS_PER_PAGE = 100;
 
-// =====================================================
+// ============================================================
 // SUPABASE
-// =====================================================
+// ============================================================
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+if (
+  !SUPABASE_URL ||
+  !SUPABASE_SERVICE_ROLE_KEY
+) {
   throw new Error(
     "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing"
   );
@@ -51,32 +54,37 @@ const supabase = createClient(
   {
     auth: {
       persistSession: false,
-      autoRefreshToken: false,
-    },
+      autoRefreshToken: false
+    }
   }
 );
 
-// =====================================================
+// ============================================================
 // SEEDS
-// =====================================================
+// ============================================================
 
 const SEED_URLS = [
   "https://www.wikipedia.org/",
   "https://www.india.gov.in/",
   "https://assam.gov.in/",
   "https://www.python.org/",
-  "https://www.w3.org/",
+  "https://www.w3.org/"
 ];
 
-// =====================================================
-// UTILS
-// =====================================================
+// ============================================================
+// BASIC HELPERS
+// ============================================================
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
+  );
 }
 
-function normalizeUrl(url, baseUrl = null) {
+function normalizeUrl(
+  url,
+  baseUrl = null
+) {
   try {
     const parsed = new URL(
       url,
@@ -101,10 +109,12 @@ function normalizeUrl(url, baseUrl = null) {
       "fbclid",
       "gclid",
       "mc_cid",
-      "mc_eid",
+      "mc_eid"
     ];
 
-    for (const param of trackingParams) {
+    for (
+      const param of trackingParams
+    ) {
       parsed.searchParams.delete(param);
     }
 
@@ -119,6 +129,7 @@ function isBadUrl(url) {
 
   try {
     const parsed = new URL(url);
+
     const pathname =
       parsed.pathname.toLowerCase();
 
@@ -149,11 +160,11 @@ function isBadUrl(url) {
       ".woff",
       ".woff2",
       ".ttf",
-      ".otf",
+      ".otf"
     ];
 
     if (
-      blockedExtensions.some((ext) =>
+      blockedExtensions.some(ext =>
         pathname.endsWith(ext)
       )
     ) {
@@ -171,11 +182,11 @@ function isBadUrl(url) {
       "/checkout",
       "/account",
       "/admin",
-      "/cdn-cgi/",
+      "/cdn-cgi/"
     ];
 
     if (
-      blockedPaths.some((path) =>
+      blockedPaths.some(path =>
         pathname.includes(path)
       )
     ) {
@@ -188,17 +199,9 @@ function isBadUrl(url) {
   }
 }
 
-function cleanText(text) {
-  if (!text) return "";
-
-  return text
-    .replace(/\u00a0/g, " ")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+// ============================================================
+// TEXT CLEANING
+// ============================================================
 
 function decodeHtmlEntities(text) {
   if (!text) return "";
@@ -214,7 +217,9 @@ function decodeHtmlEntities(text) {
     .replace(
       /&#(\d+);/g,
       (_, n) =>
-        String.fromCharCode(Number(n))
+        String.fromCharCode(
+          Number(n)
+        )
     )
     .replace(
       /&#x([0-9a-f]+);/gi,
@@ -225,10 +230,22 @@ function decodeHtmlEntities(text) {
     );
 }
 
+function cleanText(text) {
+  if (!text) return "";
+
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function stripTags(html) {
   return html
     .replace(
-      /<(br|\/p|\/div|\/section|\/article|\/li)[^>]*>/gi,
+      /<(br|\/p|\/div|\/section|\/article|\/li|\/h[1-6])[^>]*>/gi,
       "\n"
     )
     .replace(/<[^>]+>/g, " ");
@@ -241,9 +258,9 @@ function removeComments(html) {
   );
 }
 
-// =====================================================
-// HTML CLEANING
-// =====================================================
+// ============================================================
+// REMOVE ONLY CLEARLY USELESS BLOCKS
+// ============================================================
 
 function removeElementBlocks(
   html,
@@ -264,57 +281,32 @@ function removeElementBlocks(
   return html;
 }
 
-function removeNoiseByClass(html) {
+// ============================================================
+// NOISE CLEANING
+// ============================================================
+
+function removeNoiseBlocks(html) {
   const noiseWords = [
-    "advert",
     "advertisement",
-    "advertisements",
-    "ads",
     "ad-container",
     "adbox",
-    "banner",
-    "cookie",
-    "cookies",
-    "social",
-    "share",
-    "sharing",
-    "comment",
-    "comments",
-    "related",
-    "recommend",
-    "recommended",
-    "recommendation",
+    "cookie-banner",
+    "cookie-consent",
     "newsletter",
-    "subscribe",
-    "subscription",
-    "popup",
-    "modal",
-    "overlay",
-    "sidebar",
-    "side-bar",
-    "breadcrumb",
-    "breadcrumbs",
-    "navigation",
-    "nav-menu",
-    "menu",
-    "footer",
-    "header",
-    "promo",
-    "promotion",
-    "sponsor",
-    "sponsored",
-    "login",
-    "signup",
-    "register",
-    "print",
+    "subscribe-box",
+    "social-share",
     "share-buttons",
-    "social-buttons",
-    "latest-news",
-    "trending",
+    "comments-section",
+    "related-posts",
+    "related-content",
+    "recommended-posts",
+    "recommendations",
+    "trending-posts",
     "most-read",
     "popular-posts",
-    "more-stories",
-    "related-stories",
+    "popup",
+    "modal",
+    "newsletter-box"
   ];
 
   const pattern =
@@ -331,9 +323,9 @@ function removeNoiseByClass(html) {
   );
 }
 
-// =====================================================
+// ============================================================
 // TITLE
-// =====================================================
+// ============================================================
 
 function extractTitle(html) {
   const match =
@@ -350,9 +342,9 @@ function extractTitle(html) {
   );
 }
 
-// =====================================================
+// ============================================================
 // DESCRIPTION
-// =====================================================
+// ============================================================
 
 function extractDescription(html) {
   const patterns = [
@@ -362,10 +354,12 @@ function extractDescription(html) {
 
     /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["'][^>]*>/i,
 
-    /<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:description["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:description["'][^>]*>/i
   ];
 
-  for (const regex of patterns) {
+  for (
+    const regex of patterns
+  ) {
     const match =
       html.match(regex);
 
@@ -384,9 +378,9 @@ function extractDescription(html) {
   return "";
 }
 
-// =====================================================
+// ============================================================
 // CANONICAL
-// =====================================================
+// ============================================================
 
 function extractCanonical(
   html,
@@ -397,7 +391,9 @@ function extractCanonical(
       /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["'][^>]*>/i
     );
 
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
 
   return normalizeUrl(
     match[1],
@@ -405,67 +401,53 @@ function extractCanonical(
   );
 }
 
-// =====================================================
-// MAIN CONTENT
-// =====================================================
+// ============================================================
+// MAIN CONTENT EXTRACTION
+// ============================================================
 
 function extractMainContent(html) {
   let source = html;
 
-  source = removeComments(
-    source
-  );
-
-  // Remove scripts and useless blocks
-  source = removeElementBlocks(
-    source,
-    [
-      "script",
-      "style",
-      "noscript",
-      "svg",
-      "canvas",
-      "iframe",
-      "object",
-      "embed",
-      "template",
-      "form",
-      "dialog",
-    ]
-  );
-
-  // Remove navigation structures
-  source = removeElementBlocks(
-    source,
-    [
-      "nav",
-      "footer",
-      "aside",
-    ]
-  );
-
-  // Remove advertisement /
-  // social / recommendation blocks
   source =
-    removeNoiseByClass(
-      source
+    removeComments(source);
+
+  // Remove only definitely non-content tags
+  source =
+    removeElementBlocks(
+      source,
+      [
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "canvas",
+        "iframe",
+        "object",
+        "embed",
+        "template",
+        "form"
+      ]
     );
 
-  // -------------------------------------------------
-  // ARTICLE FIRST
-  // -------------------------------------------------
+  // Remove obvious advertisement/social blocks
+  source =
+    removeNoiseBlocks(source);
+
+  // ----------------------------------------------------------
+  // ARTICLE
+  // ----------------------------------------------------------
 
   const articles = [
     ...source.matchAll(
       /<article\b[^>]*>([\s\S]*?)<\/article>/gi
-    ),
+    )
   ];
 
   if (articles.length) {
     const articleText =
       articles
-        .map((m) =>
-          stripTags(m[1])
+        .map(match =>
+          stripTags(match[1])
         )
         .join("\n");
 
@@ -486,21 +468,21 @@ function extractMainContent(html) {
     }
   }
 
-  // -------------------------------------------------
-  // MAIN SECOND
-  // -------------------------------------------------
+  // ----------------------------------------------------------
+  // MAIN
+  // ----------------------------------------------------------
 
   const mains = [
     ...source.matchAll(
       /<main\b[^>]*>([\s\S]*?)<\/main>/gi
-    ),
+    )
   ];
 
   if (mains.length) {
     const mainText =
       mains
-        .map((m) =>
-          stripTags(m[1])
+        .map(match =>
+          stripTags(match[1])
         )
         .join("\n");
 
@@ -521,9 +503,9 @@ function extractMainContent(html) {
     }
   }
 
-  // -------------------------------------------------
+  // ----------------------------------------------------------
   // BODY FALLBACK
-  // -------------------------------------------------
+  // ----------------------------------------------------------
 
   const bodyMatch =
     source.match(
@@ -539,40 +521,38 @@ function extractMainContent(html) {
     stripTags(body);
 
   text =
-    decodeHtmlEntities(
-      text
-    );
+    decodeHtmlEntities(text);
 
   text =
     cleanText(text);
 
-  // Remove common text noise
-  const noisePatterns = [
+  // ----------------------------------------------------------
+  // REMOVE VERY COMMON NOISE LINES
+  // ----------------------------------------------------------
+
+  const badLines = [
     /^advertisement$/i,
     /^advertisements$/i,
     /^loading\.{0,3}$/i,
     /^load more$/i,
-    /^subscribe now$/i,
     /^sign in$/i,
     /^log in$/i,
-    /^follow us$/i,
-    /^share this$/i,
-    /^share on$/i,
+    /^subscribe now$/i,
+    /^follow us$/i
   ];
 
   const lines =
     text
       .split("\n")
-      .map((line) =>
+      .map(line =>
         line.trim()
       )
       .filter(Boolean)
-      .filter(
-        (line) =>
-          !noisePatterns.some(
-            (regex) =>
-              regex.test(line)
-          )
+      .filter(line =>
+        !badLines.some(
+          regex =>
+            regex.test(line)
+        )
       );
 
   text =
@@ -586,9 +566,9 @@ function extractMainContent(html) {
   );
 }
 
-// =====================================================
+// ============================================================
 // LINKS
-// =====================================================
+// ============================================================
 
 function extractLinks(
   html,
@@ -630,13 +610,13 @@ function extractLinks(
   }
 
   return [
-    ...links,
+    ...links
   ];
 }
 
-// =====================================================
+// ============================================================
 // HASH
-// =====================================================
+// ============================================================
 
 function makeHash(text) {
   return crypto
@@ -645,13 +625,11 @@ function makeHash(text) {
     .digest("hex");
 }
 
-// =====================================================
+// ============================================================
 // FETCH
-// =====================================================
+// ============================================================
 
-async function fetchPage(
-  url
-) {
+async function fetchPage(url) {
   const controller =
     new AbortController();
 
@@ -677,14 +655,14 @@ async function fetchPage(
               "text/html,application/xhtml+xml",
 
             "Accept-Language":
-              "en-US,en;q=0.9",
+              "en-US,en;q=0.9"
           },
 
           redirect:
             "follow",
 
           signal:
-            controller.signal,
+            controller.signal
         }
       );
 
@@ -721,47 +699,46 @@ async function fetchPage(
       finalUrl:
         normalizeUrl(
           response.url
-        ) || url,
+        ) || url
     };
   } finally {
-    clearTimeout(
-      timeout
-    );
+    clearTimeout(timeout);
   }
 }
 
-// =====================================================
+// ============================================================
 // SAVE PAGE
-// =====================================================
+// ============================================================
 
-async function savePage(
-  data
-) {
+async function savePage({
+  url,
+  title,
+  description,
+  content,
+  canonicalUrl
+}) {
   const words =
-    data.content
+    content
       .split(/\s+/)
       .filter(Boolean);
 
   const row = {
     url:
-      data.canonicalUrl ||
-      data.url,
+      canonicalUrl ||
+      url,
 
     title:
-      data.title ||
-      data.url,
+      title ||
+      url,
 
     description:
-      data.description ||
+      description ||
       null,
 
-    content:
-      data.content,
+    content,
 
     content_hash:
-      makeHash(
-        data.content
-      ),
+      makeHash(content),
 
     word_count:
       words.length,
@@ -773,7 +750,7 @@ async function savePage(
       new Date().toISOString(),
 
     last_crawled_at:
-      new Date().toISOString(),
+      new Date().toISOString()
   };
 
   const { error } =
@@ -782,8 +759,7 @@ async function savePage(
       .upsert(
         row,
         {
-          onConflict:
-            "url",
+          onConflict: "url"
         }
       );
 
@@ -794,9 +770,9 @@ async function savePage(
   }
 }
 
-// =====================================================
+// ============================================================
 // QUEUE LINKS
-// =====================================================
+// ============================================================
 
 async function queueLinks(
   links
@@ -806,13 +782,10 @@ async function queueLinks(
   }
 
   const rows =
-    links.map(
-      (url) => ({
-        url,
-        status:
-          "queued",
-      })
-    );
+    links.map(url => ({
+      url,
+      status: "queued"
+    }));
 
   const { error } =
     await supabase
@@ -820,11 +793,8 @@ async function queueLinks(
       .upsert(
         rows,
         {
-          onConflict:
-            "url",
-
-          ignoreDuplicates:
-            true,
+          onConflict: "url",
+          ignoreDuplicates: true
         }
       );
 
@@ -836,13 +806,11 @@ async function queueLinks(
   }
 }
 
-// =====================================================
+// ============================================================
 // QUEUE STATUS
-// =====================================================
+// ============================================================
 
-async function markDone(
-  id
-) {
+async function markDone(id) {
   const { error } =
     await supabase
       .from("crawl_queue")
@@ -852,13 +820,9 @@ async function markDone(
         last_crawled_at:
           new Date().toISOString(),
 
-        last_error:
-          null,
+        last_error: null
       })
-      .eq(
-        "id",
-        id
-      );
+      .eq("id", id);
 
   if (error) {
     console.log(
@@ -885,28 +849,23 @@ async function markFailed(
           String(message).slice(
             0,
             1000
-          ),
+          )
       })
-      .eq(
-        "id",
-        id
-      );
+      .eq("id", id);
 
   if (error) {
     console.log(
-      "[HEXORA] Queue failure update warning:",
+      "[HEXORA] Queue failure warning:",
       error.message
     );
   }
 }
 
-// =====================================================
+// ============================================================
 // CRAWL ONE URL
-// =====================================================
+// ============================================================
 
-async function crawlOne(
-  item
-) {
+async function crawlOne(item) {
   const url =
     item.url;
 
@@ -916,9 +875,7 @@ async function crawlOne(
 
   try {
     const page =
-      await fetchPage(
-        url
-      );
+      await fetchPage(url);
 
     const html =
       page.html;
@@ -927,14 +884,10 @@ async function crawlOne(
       page.finalUrl;
 
     const title =
-      extractTitle(
-        html
-      );
+      extractTitle(html);
 
     const description =
-      extractDescription(
-        html
-      );
+      extractDescription(html);
 
     const canonicalUrl =
       extractCanonical(
@@ -943,13 +896,11 @@ async function crawlOne(
       );
 
     const content =
-      extractMainContent(
-        html
-      );
+      extractMainContent(html);
 
     if (
       !content ||
-      content.length < 50
+      content.length < 80
     ) {
       throw new Error(
         "No useful page content found"
@@ -963,16 +914,11 @@ async function crawlOne(
       );
 
     await savePage({
-      url:
-        finalUrl,
-
+      url: finalUrl,
       title,
-
       description,
-
       content,
-
-      canonicalUrl,
+      canonicalUrl
     });
 
     await queueLinks(
@@ -1002,7 +948,7 @@ async function crawlOne(
 
     return {
       ok: true,
-      url: finalUrl,
+      url: finalUrl
     };
   } catch (error) {
     const message =
@@ -1021,14 +967,14 @@ async function crawlOne(
     return {
       ok: false,
       url,
-      error: message,
+      error: message
     };
   }
 }
 
-// =====================================================
-// GET PENDING QUEUE
-// =====================================================
+// ============================================================
+// GET PENDING URLS
+// ============================================================
 
 async function getPending(
   batchSize
@@ -1046,7 +992,7 @@ async function getPending(
       .order(
         "created_at",
         {
-          ascending: true,
+          ascending: true
         }
       )
       .limit(
@@ -1062,19 +1008,16 @@ async function getPending(
   return data || [];
 }
 
-// =====================================================
-// SEED QUEUE
-// =====================================================
+// ============================================================
+// SEED
+// ============================================================
 
 async function seedQueue() {
   const rows =
-    SEED_URLS.map(
-      (url) => ({
-        url,
-        status:
-          "queued",
-      })
-    );
+    SEED_URLS.map(url => ({
+      url,
+      status: "queued"
+    }));
 
   const { error } =
     await supabase
@@ -1082,11 +1025,8 @@ async function seedQueue() {
       .upsert(
         rows,
         {
-          onConflict:
-            "url",
-
-          ignoreDuplicates:
-            true,
+          onConflict: "url",
+          ignoreDuplicates: true
         }
       );
 
@@ -1098,16 +1038,56 @@ async function seedQueue() {
   }
 }
 
-// =====================================================
+// ============================================================
 // CRAWL BATCH
-// =====================================================
+// ============================================================
 // IMPORTANT:
-// worker/worker.mjs imports this function.
-// =====================================================
+// Existing worker may call:
+// crawlBatch({ batchSize: 12 })
+//
+// This function accepts BOTH:
+// crawlBatch(12)
+// crawlBatch({ batchSize: 12 })
+// ============================================================
 
 export async function crawlBatch(
-  batchSize = DEFAULT_BATCH_SIZE
+  options = DEFAULT_BATCH_SIZE
 ) {
+  let batchSize;
+
+  if (
+    typeof options === "number"
+  ) {
+    batchSize = options;
+  } else if (
+    options &&
+    typeof options === "object"
+  ) {
+    batchSize =
+      Number(
+        options.batchSize ||
+        options.batch ||
+        DEFAULT_BATCH_SIZE
+      );
+  } else {
+    batchSize =
+      DEFAULT_BATCH_SIZE;
+  }
+
+  if (
+    !Number.isFinite(batchSize) ||
+    batchSize <= 0
+  ) {
+    batchSize =
+      DEFAULT_BATCH_SIZE;
+  }
+
+  batchSize =
+    Math.min(
+      Math.floor(batchSize),
+      50
+    );
+
   console.log(
     `[HEXORA] Starting crawl batch: ${batchSize}`
   );
@@ -1125,7 +1105,7 @@ export async function crawlBatch(
     return {
       processed: 0,
       successful: 0,
-      failed: 0,
+      failed: 0
     };
   }
 
@@ -1194,22 +1174,23 @@ export async function crawlBatch(
 
     successful,
 
-    failed,
+    failed
   };
 }
 
-// =====================================================
-// RUN ONE CRAWL CYCLE
-// =====================================================
+// ============================================================
+// FULL CRAWLER
+// ============================================================
 
 export async function runCrawler() {
-  console.log("");
   console.log(
     "======================================"
   );
+
   console.log(
     "       HEXORA CRAWLER"
   );
+
   console.log(
     "======================================"
   );
@@ -1217,9 +1198,10 @@ export async function runCrawler() {
   try {
     await seedQueue();
 
-    return await crawlBatch(
-      DEFAULT_BATCH_SIZE
-    );
+    return await crawlBatch({
+      batchSize:
+        DEFAULT_BATCH_SIZE
+    });
   } catch (error) {
     console.error(
       "[HEXORA] Crawler error:",
@@ -1230,17 +1212,16 @@ export async function runCrawler() {
       processed: 0,
       successful: 0,
       failed: 0,
-
       error:
         error?.message ||
-        String(error),
+        String(error)
     };
   }
 }
 
-// =====================================================
-// DIRECT EXECUTION
-// =====================================================
+// ============================================================
+// DIRECT RUN
+// ============================================================
 
 const isMain =
   process.argv[1] &&
