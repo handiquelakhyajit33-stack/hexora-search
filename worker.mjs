@@ -3,72 +3,27 @@
 // HEXORA SEARCH ENGINE - CRAWLER WORKER
 // ============================================================
 
-import {
-  crawlBatch,
-  normalizeOldQueueStatuses,
-  seedQueue
-} from "../crawler.mjs";
-
-// ============================================================
-// CONFIG
-// ============================================================
+import * as crawler from "../crawler.mjs";
 
 const INTERVAL_MS =
-  Number(
-    process.env.CRAWLER_INTERVAL_MS ||
-      15000
-  );
+  Number(process.env.CRAWLER_INTERVAL_MS || 15000);
 
 const BATCH_SIZE =
-  Number(
-    process.env.CRAWLER_BATCH_SIZE ||
-      12
-  );
+  Number(process.env.CRAWLER_BATCH_SIZE || 12);
 
 let running = false;
 
 // ============================================================
-// QUEUE RECOVERY
+// CHECK CRAWLER MODULE
 // ============================================================
 
-async function recoverQueue() {
-  try {
-    await normalizeOldQueueStatuses();
-
-    console.log(
-      "[HEXORA] Queue recovery completed"
-    );
-  } catch (error) {
-    console.error(
-      "[HEXORA] Queue recovery failed:",
-      error?.message ||
-        error
-    );
-  }
-}
+console.log(
+  "[HEXORA] crawler exports:",
+  Object.keys(crawler).join(", ")
+);
 
 // ============================================================
-// SEED
-// ============================================================
-
-async function prepareSeeds() {
-  try {
-    await seedQueue();
-
-    console.log(
-      "[HEXORA] Seed queue ready"
-    );
-  } catch (error) {
-    console.error(
-      "[HEXORA] Seed queue error:",
-      error?.message ||
-        error
-    );
-  }
-}
-
-// ============================================================
-// RUN BATCH
+// RUN ONE BATCH
 // ============================================================
 
 async function runBatch() {
@@ -76,22 +31,25 @@ async function runBatch() {
     console.log(
       "[HEXORA] Previous crawl batch still running"
     );
-
     return;
   }
 
   running = true;
 
   try {
+    if (typeof crawler.crawlBatch !== "function") {
+      throw new Error(
+        "crawler.mjs does not contain crawlBatch()"
+      );
+    }
+
     console.log(
       "[HEXORA] Starting crawl batch: " +
         BATCH_SIZE
     );
 
     const result =
-      await crawlBatch(
-        BATCH_SIZE
-      );
+      await crawler.crawlBatch(BATCH_SIZE);
 
     console.log(
       "[HEXORA] Batch completed | processed: " +
@@ -104,11 +62,57 @@ async function runBatch() {
   } catch (error) {
     console.error(
       "[HEXORA] Crawl batch error:",
-      error?.message ||
-        error
+      error?.message || error
     );
   } finally {
     running = false;
+  }
+}
+
+// ============================================================
+// RECOVER QUEUE
+// ============================================================
+
+async function recoverQueue() {
+  try {
+    if (
+      typeof crawler.normalizeOldQueueStatuses ===
+      "function"
+    ) {
+      await crawler.normalizeOldQueueStatuses();
+
+      console.log(
+        "[HEXORA] Queue recovery completed"
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[HEXORA] Queue recovery failed:",
+      error?.message || error
+    );
+  }
+}
+
+// ============================================================
+// SEED QUEUE
+// ============================================================
+
+async function prepareSeeds() {
+  try {
+    if (
+      typeof crawler.seedQueue === "function"
+    ) {
+      await crawler.seedQueue();
+
+      console.log(
+        "[HEXORA] Seed queue ready"
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[HEXORA] Seed queue error:",
+      error?.message || error
+    );
   }
 }
 
@@ -118,50 +122,54 @@ async function runBatch() {
 
 async function startWorker() {
   console.log(
-    "[HEXORA] crawler worker started | interval=" +
-      INTERVAL_MS +
-      "ms | batch=" +
-      BATCH_SIZE
+    "[HEXORA] CRAWLER WORKER STARTING"
+  );
+
+  console.log(
+    "[HEXORA] Interval:",
+    INTERVAL_MS,
+    "ms"
+  );
+
+  console.log(
+    "[HEXORA] Batch:",
+    BATCH_SIZE
   );
 
   await recoverQueue();
 
   await prepareSeeds();
 
-  // First crawl immediately
   await runBatch();
 
-  // Continuous crawling
   setInterval(
-    function() {
-      runBatch();
+    async function () {
+      await runBatch();
     },
     INTERVAL_MS
   );
 }
 
 // ============================================================
-// ERROR HANDLERS
+// ERROR HANDLING
 // ============================================================
 
 process.on(
   "unhandledRejection",
-  function(error) {
+  function (error) {
     console.error(
       "[HEXORA] Unhandled rejection:",
-      error?.message ||
-        error
+      error?.message || error
     );
   }
 );
 
 process.on(
   "uncaughtException",
-  function(error) {
+  function (error) {
     console.error(
       "[HEXORA] Uncaught exception:",
-      error?.message ||
-        error
+      error?.message || error
     );
   }
 );
@@ -171,11 +179,10 @@ process.on(
 // ============================================================
 
 startWorker().catch(
-  function(error) {
+  function (error) {
     console.error(
       "[HEXORA] Worker startup failed:",
-      error?.message ||
-        error
+      error?.message || error
     );
 
     process.exit(1);
