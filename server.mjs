@@ -1,5 +1,9 @@
+```javascript
 // ============================================================
 // HEXORA SEARCH ENGINE - SERVER
+// Neon = Primary Search Database
+// Supabase = Legacy / Old Data Read-Only Fallback
+// R2 = Crawler Storage (handled by crawler.mjs)
 // ============================================================
 
 import http from "http";
@@ -15,31 +19,26 @@ const { Pool } = pg;
 // CONFIG
 // ============================================================
 
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(
+  process.env.PORT || 8080
+);
 
 // ============================================================
 // SUPABASE CONFIG
+// IMPORTANT:
+// Supabase is NOT used by the crawler.
+// It is kept only for old/legacy search data.
+// Startup no longer checks Supabase.
 // ============================================================
 
 const SUPABASE_URL =
-  process.env.SUPABASE_URL;
+  process.env.SUPABASE_URL || "";
 
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
-  process.env.SUPABASE_KEY;
-
-if (!SUPABASE_URL) {
-  console.error(
-    "[HEXORA] SUPABASE_URL is missing"
-  );
-}
-
-if (!SUPABASE_KEY) {
-  console.error(
-    "[HEXORA] SUPABASE key is missing"
-  );
-}
+  process.env.SUPABASE_KEY ||
+  "";
 
 const supabase =
   SUPABASE_URL && SUPABASE_KEY
@@ -49,27 +48,88 @@ const supabase =
       )
     : null;
 
+// By default, Neon is primary.
+// Supabase fallback can be enabled later with:
+// ENABLE_SUPABASE_FALLBACK=true
+const ENABLE_SUPABASE_FALLBACK =
+  String(
+    process.env.ENABLE_SUPABASE_FALLBACK ||
+      "false"
+  ).toLowerCase() === "true";
+
 // ============================================================
 // NEON / POSTGRES CONFIG
 // ============================================================
 
-const DATABASE_URL =
-  process.env.DATABASE_URL;
+const RAW_DATABASE_URL =
+  process.env.DATABASE_URL || "";
 
-if (!DATABASE_URL) {
+if (!RAW_DATABASE_URL) {
   console.error(
     "[HEXORA] DATABASE_URL is missing"
   );
 }
+
+// ============================================================
+// NORMALIZE POSTGRES SSL MODE
+// Avoid pg-connection-string future warning.
+// ============================================================
+
+function normalizeDatabaseUrl(
+  value
+) {
+  if (!value) {
+    return value;
+  }
+
+  try {
+    const url =
+      new URL(value);
+
+    const sslmode =
+      url.searchParams.get(
+        "sslmode"
+      );
+
+    if (
+      sslmode === "prefer" ||
+      sslmode === "require" ||
+      sslmode === "verify-ca"
+    ) {
+      url.searchParams.set(
+        "sslmode",
+        "verify-full"
+      );
+    }
+
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+const DATABASE_URL =
+  normalizeDatabaseUrl(
+    RAW_DATABASE_URL
+  );
+
+// ============================================================
+// NEON POOL
+// ============================================================
 
 const neonPool =
   DATABASE_URL
     ? new Pool({
         connectionString:
           DATABASE_URL,
+
         max: 5,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000
+
+        idleTimeoutMillis:
+          30000,
+
+        connectionTimeoutMillis:
+          10000
       })
     : null;
 
@@ -78,60 +138,41 @@ const neonPool =
 // ============================================================
 
 let neonAvailable = false;
-let supabaseAvailable = false;
 
-async function checkDatabases() {
-  if (neonPool) {
-    try {
-      await neonPool.query(
-        "SELECT 1"
-      );
+// Supabase is intentionally NOT checked at startup.
+// This prevents the old schema-cache error from affecting
+// the main HEXORA server.
+let supabaseAvailable =
+  Boolean(supabase);
 
-      neonAvailable = true;
+// ============================================================
+// NEON DATABASE CHECK
+// ============================================================
 
-      console.log(
-        "[HEXORA] Neon PostgreSQL: CONNECTED"
-      );
-    } catch (error) {
-      neonAvailable = false;
+async function checkNeon() {
+  if (!neonPool) {
+    neonAvailable = false;
 
-      console.error(
-        "[HEXORA] Neon PostgreSQL connection failed:",
-        error?.message || error
-      );
-    }
+    return;
   }
 
-  if (supabase) {
-    try {
-      const { error } =
-        await supabase
-          .from("pages")
-          .select("id")
-          .limit(1);
+  try {
+    await neonPool.query(
+      "SELECT 1"
+    );
 
-      if (!error) {
-        supabaseAvailable = true;
+    neonAvailable = true;
 
-        console.log(
-          "[HEXORA] Supabase: CONNECTED"
-        );
-      } else {
-        supabaseAvailable = false;
+    console.log(
+      "[HEXORA] Neon PostgreSQL: CONNECTED"
+    );
+  } catch (error) {
+    neonAvailable = false;
 
-        console.error(
-          "[HEXORA] Supabase connection check failed:",
-          error.message
-        );
-      }
-    } catch (error) {
-      supabaseAvailable = false;
-
-      console.error(
-        "[HEXORA] Supabase connection failed:",
-        error?.message || error
-      );
-    }
+    console.error(
+      "[HEXORA] Neon PostgreSQL connection failed:",
+      error?.message || error
+    );
   }
 }
 
@@ -140,17 +181,23 @@ async function checkDatabases() {
 // ============================================================
 
 const __filename =
-  fileURLToPath(import.meta.url);
+  fileURLToPath(
+    import.meta.url
+  );
 
 const __dirname =
-  path.dirname(__filename);
+  path.dirname(
+    __filename
+  );
 
 // ============================================================
 // BASIC HELPERS
 // ============================================================
 
 function cleanQuery(value) {
-  if (!value) return "";
+  if (!value) {
+    return "";
+  }
 
   return String(value)
     .replace(/\s+/g, " ")
@@ -162,7 +209,10 @@ function normalizeText(value) {
   return String(value || "")
     .toLowerCase()
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(
+      /[^\p{L}\p{N}\s]/gu,
+      " "
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -174,7 +224,9 @@ function tokenize(text) {
 }
 
 function uniqueTokens(tokens) {
-  return [...new Set(tokens)];
+  return [
+    ...new Set(tokens)
+  ];
 }
 
 function escapeRegex(text) {
@@ -184,15 +236,21 @@ function escapeRegex(text) {
   );
 }
 
-function hasWholeWord(text, word) {
-  if (!text || !word) return false;
+function hasWholeWord(
+  text,
+  word
+) {
+  if (!text || !word) {
+    return false;
+  }
 
-  const regex = new RegExp(
-    `(^|\\s)${escapeRegex(
-      word
-    )}(?=\\s|$)`,
-    "i"
-  );
+  const regex =
+    new RegExp(
+      `(^|\\s)${escapeRegex(
+        word
+      )}(?=\\s|$)`,
+      "i"
+    );
 
   return regex.test(
     normalizeText(text)
@@ -203,7 +261,9 @@ function hasExactPhrase(
   text,
   phrase
 ) {
-  if (!text || !phrase) return false;
+  if (!text || !phrase) {
+    return false;
+  }
 
   return normalizeText(
     text
@@ -216,7 +276,9 @@ function countWholeWordOccurrences(
   text,
   word
 ) {
-  if (!text || !word) return 0;
+  if (!text || !word) {
+    return 0;
+  }
 
   const normalized =
     normalizeText(text);
@@ -224,17 +286,22 @@ function countWholeWordOccurrences(
   const target =
     normalizeText(word);
 
-  if (!target) return 0;
+  if (!target) {
+    return 0;
+  }
 
-  const regex = new RegExp(
-    `(^|\\s)${escapeRegex(
-      target
-    )}(?=\\s|$)`,
-    "gi"
-  );
+  const regex =
+    new RegExp(
+      `(^|\\s)${escapeRegex(
+        target
+      )}(?=\\s|$)`,
+      "gi"
+    );
 
   const matches =
-    normalized.match(regex);
+    normalized.match(
+      regex
+    );
 
   return matches
     ? matches.length
@@ -285,19 +352,20 @@ function detectMode(query) {
 }
 
 // ============================================================
-// QUERY QUALITY
+// QUERY TERMS
 // ============================================================
 
 function queryTerms(query) {
   return uniqueTokens(
     tokenize(query).filter(
-      (word) => word.length >= 2
+      (word) =>
+        word.length >= 2
     )
   );
 }
 
 // ============================================================
-// WEB SEARCH SCORING
+// PROXIMITY SCORE
 // ============================================================
 
 function calculateProximityScore(
@@ -309,13 +377,17 @@ function calculateProximityScore(
   const qTokens =
     queryTerms(query);
 
-  if (!qTokens.length) return 0;
+  if (!qTokens.length) {
+    return 0;
+  }
 
   const titleText =
     normalizeText(title);
 
   const descText =
-    normalizeText(description);
+    normalizeText(
+      description
+    );
 
   const contentText =
     normalizeText(content);
@@ -323,39 +395,53 @@ function calculateProximityScore(
   let score = 0;
 
   if (
-    qTokens.every((word) =>
-      titleText.includes(word)
+    qTokens.every(
+      (word) =>
+        titleText.includes(
+          word
+        )
     )
   ) {
     score += 35;
   }
 
   if (
-    qTokens.every((word) =>
-      descText.includes(word)
+    qTokens.every(
+      (word) =>
+        descText.includes(
+          word
+        )
     )
   ) {
     score += 20;
   }
 
-  if (qTokens.length > 1) {
+  if (
+    qTokens.length > 1
+  ) {
     const phrase =
       qTokens.join(" ");
 
     if (
-      titleText.includes(phrase)
+      titleText.includes(
+        phrase
+      )
     ) {
       score += 45;
     }
 
     if (
-      descText.includes(phrase)
+      descText.includes(
+        phrase
+      )
     ) {
       score += 25;
     }
 
     if (
-      contentText.includes(phrase)
+      contentText.includes(
+        phrase
+      )
     ) {
       score += 15;
     }
@@ -364,36 +450,59 @@ function calculateProximityScore(
   return score;
 }
 
-function calculateAuthorityBonus(row) {
+// ============================================================
+// AUTHORITY
+// ============================================================
+
+function calculateAuthorityBonus(
+  row
+) {
   const authority =
     Number(
       row.authority_score || 0
     );
 
   if (
-    !Number.isFinite(authority)
+    !Number.isFinite(
+      authority
+    )
   ) {
     return 0;
   }
 
   return Math.min(
     20,
-    Math.max(0, authority)
+    Math.max(
+      0,
+      authority
+    )
   );
 }
 
-function calculateFreshnessBonus(row) {
+// ============================================================
+// FRESHNESS
+// ============================================================
+
+function calculateFreshnessBonus(
+  row
+) {
   const date =
     row.published_at ||
     row.updated_at ||
     row.last_crawled_at;
 
-  if (!date) return 0;
+  if (!date) {
+    return 0;
+  }
 
   const time =
-    new Date(date).getTime();
+    new Date(
+      date
+    ).getTime();
 
-  if (!Number.isFinite(time)) {
+  if (
+    !Number.isFinite(time)
+  ) {
     return 0;
   }
 
@@ -401,17 +510,26 @@ function calculateFreshnessBonus(row) {
     (Date.now() - time) /
     (1000 * 60 * 60 * 24);
 
-  if (ageDays <= 1) return 12;
-  if (ageDays <= 7) return 10;
-  if (ageDays <= 30) return 7;
-  if (ageDays <= 90) return 4;
-  if (ageDays <= 365) return 2;
+  if (ageDays <= 1)
+    return 12;
+
+  if (ageDays <= 7)
+    return 10;
+
+  if (ageDays <= 30)
+    return 7;
+
+  if (ageDays <= 90)
+    return 4;
+
+  if (ageDays <= 365)
+    return 2;
 
   return 0;
 }
 
 // ============================================================
-// RELEVANCE
+// MAIN RELEVANCE SCORE
 // ============================================================
 
 function calculateScore(
@@ -419,7 +537,9 @@ function calculateScore(
   query
 ) {
   const title =
-    String(row.title || "");
+    String(
+      row.title || ""
+    );
 
   const description =
     String(
@@ -427,10 +547,14 @@ function calculateScore(
     );
 
   const url =
-    String(row.url || "");
+    String(
+      row.url || ""
+    );
 
   const content =
-    String(row.content || "");
+    String(
+      row.content || ""
+    );
 
   const q =
     normalizeText(query);
@@ -442,7 +566,9 @@ function calculateScore(
     normalizeText(title);
 
   const descText =
-    normalizeText(description);
+    normalizeText(
+      description
+    );
 
   const urlText =
     normalizeText(url);
@@ -540,7 +666,9 @@ function calculateScore(
     score += 25;
   }
 
-  if (titleText === q) {
+  if (
+    titleText === q
+  ) {
     score += 300;
   }
 
@@ -556,11 +684,15 @@ function calculateScore(
         qTokens.length
       : 0;
 
-  if (coverage === 1) {
+  if (
+    coverage === 1
+  ) {
     score += 40;
   }
 
-  if (coverage >= 0.75) {
+  if (
+    coverage >= 0.75
+  ) {
     score += 20;
   }
 
@@ -652,8 +784,14 @@ function calculateScore(
     }
   }
 
-  return Math.round(score);
+  return Math.round(
+    score
+  );
 }
+
+// ============================================================
+// RELEVANCE FILTER
+// ============================================================
 
 function isRelevantResult(
   row,
@@ -664,7 +802,9 @@ function isRelevantResult(
     queryTerms(query);
 
   const title =
-    normalizeText(row.title);
+    normalizeText(
+      row.title
+    );
 
   const description =
     normalizeText(
@@ -672,10 +812,14 @@ function isRelevantResult(
     );
 
   const content =
-    normalizeText(row.content);
+    normalizeText(
+      row.content
+    );
 
   const url =
-    normalizeText(row.url);
+    normalizeText(
+      row.url
+    );
 
   if (!qTokens.length) {
     return false;
@@ -709,7 +853,8 @@ function isRelevantResult(
   }
 
   const coverage =
-    matched / qTokens.length;
+    matched /
+    qTokens.length;
 
   if (
     qTokens.length >= 2 &&
@@ -759,7 +904,9 @@ function isRelevantResult(
     }
   }
 
-  if (score < 15) {
+  if (
+    score < 15
+  ) {
     return false;
   }
 
@@ -767,14 +914,16 @@ function isRelevantResult(
 }
 
 // ============================================================
-// ADD / DEDUP RESULTS
+// RESULT MAP
 // ============================================================
 
 function addRowsToMap(
   rowsByKey,
   data
 ) {
-  if (!Array.isArray(data)) {
+  if (
+    !Array.isArray(data)
+  ) {
     return;
   }
 
@@ -858,10 +1007,7 @@ async function searchWebNeon(
     FROM pages
   `;
 
-  // ----------------------------------------------------------
   // TITLE
-  // ----------------------------------------------------------
-
   for (
     const word of words.slice(0, 8)
   ) {
@@ -873,7 +1019,9 @@ async function searchWebNeon(
           WHERE title ILIKE $1
           LIMIT 500
           `,
-          [`%${word}%`]
+          [
+            `%${word}%`
+          ]
         );
 
       addRowsToMap(
@@ -883,15 +1031,13 @@ async function searchWebNeon(
     } catch (error) {
       console.error(
         "[HEXORA] Neon title search:",
-        error?.message || error
+        error?.message ||
+          error
       );
     }
   }
 
-  // ----------------------------------------------------------
   // DESCRIPTION
-  // ----------------------------------------------------------
-
   for (
     const word of words.slice(0, 8)
   ) {
@@ -903,7 +1049,9 @@ async function searchWebNeon(
           WHERE description ILIKE $1
           LIMIT 300
           `,
-          [`%${word}%`]
+          [
+            `%${word}%`
+          ]
         );
 
       addRowsToMap(
@@ -913,15 +1061,13 @@ async function searchWebNeon(
     } catch (error) {
       console.error(
         "[HEXORA] Neon description search:",
-        error?.message || error
+        error?.message ||
+          error
       );
     }
   }
 
-  // ----------------------------------------------------------
   // URL
-  // ----------------------------------------------------------
-
   for (
     const word of words.slice(0, 8)
   ) {
@@ -933,7 +1079,9 @@ async function searchWebNeon(
           WHERE url ILIKE $1
           LIMIT 300
           `,
-          [`%${word}%`]
+          [
+            `%${word}%`
+          ]
         );
 
       addRowsToMap(
@@ -943,15 +1091,13 @@ async function searchWebNeon(
     } catch (error) {
       console.error(
         "[HEXORA] Neon URL search:",
-        error?.message || error
+        error?.message ||
+          error
       );
     }
   }
 
-  // ----------------------------------------------------------
   // CONTENT
-  // ----------------------------------------------------------
-
   for (
     const word of words.slice(0, 8)
   ) {
@@ -963,7 +1109,9 @@ async function searchWebNeon(
           WHERE content ILIKE $1
           LIMIT 500
           `,
-          [`%${word}%`]
+          [
+            `%${word}%`
+          ]
         );
 
       addRowsToMap(
@@ -973,15 +1121,13 @@ async function searchWebNeon(
     } catch (error) {
       console.error(
         "[HEXORA] Neon content search:",
-        error?.message || error
+        error?.message ||
+          error
       );
     }
   }
 
-  // ----------------------------------------------------------
-  // POSTGRES FULL TEXT SEARCH
-  // ----------------------------------------------------------
-
+  // FULL TEXT SEARCH
   try {
     const result =
       await neonPool.query(
@@ -1009,7 +1155,8 @@ async function searchWebNeon(
   } catch (error) {
     console.log(
       "[HEXORA] Neon full-text search skipped:",
-      error?.message || error
+      error?.message ||
+        error
     );
   }
 
@@ -1079,7 +1226,8 @@ async function searchWebNeon(
   ranked.sort(
     (a, b) => {
       if (
-        b.score !== a.score
+        b.score !==
+        a.score
       ) {
         return (
           b.score -
@@ -1164,7 +1312,8 @@ async function searchWebNeon(
 }
 
 // ============================================================
-// SUPABASE WEB FALLBACK
+// SUPABASE LEGACY WEB SEARCH
+// Only used when ENABLE_SUPABASE_FALLBACK=true
 // ============================================================
 
 async function searchWebSupabase(
@@ -1172,9 +1321,12 @@ async function searchWebSupabase(
   pageNumber = 1,
   limit = 20
 ) {
-  if (!supabase) {
+  if (
+    !supabase ||
+    !ENABLE_SUPABASE_FALLBACK
+  ) {
     throw new Error(
-      "Supabase is not configured"
+      "Supabase legacy fallback is disabled"
     );
   }
 
@@ -1183,20 +1335,6 @@ async function searchWebSupabase(
 
   const words =
     queryTerms(q);
-
-  if (!words.length) {
-    return {
-      ok: true,
-      mode: "web",
-      query: q,
-      total: 0,
-      page: pageNumber,
-      limit,
-      sponsored: [],
-      results: [],
-      database: "supabase"
-    };
-  }
 
   const selectFields = `
     id,
@@ -1243,9 +1381,10 @@ async function searchWebSupabase(
 
         if (error) {
           console.log(
-            `[HEXORA] Supabase ${column} search:`,
+            `[HEXORA] Legacy Supabase ${column} search failed:`,
             error.message
           );
+
           continue;
         }
 
@@ -1255,7 +1394,7 @@ async function searchWebSupabase(
         );
       } catch (error) {
         console.log(
-          "[HEXORA] Supabase search exception:",
+          "[HEXORA] Legacy Supabase search exception:",
           error?.message ||
             error
         );
@@ -1282,40 +1421,6 @@ async function searchWebSupabase(
     "content",
     500
   );
-
-  try {
-    const {
-      data,
-      error
-    } =
-      await supabase
-        .from("pages")
-        .select(
-          selectFields
-        )
-        .textSearch(
-          "search_vector",
-          q,
-          {
-            type: "websearch",
-            config: "simple"
-          }
-        )
-        .limit(500);
-
-    if (!error) {
-      addRowsToMap(
-        rowsByKey,
-        data
-      );
-    }
-  } catch (error) {
-    console.log(
-      "[HEXORA] Supabase full-text search unavailable:",
-      error?.message ||
-        error
-    );
-  }
 
   const ranked = [];
 
@@ -1346,7 +1451,8 @@ async function searchWebSupabase(
 
   ranked.sort(
     (a, b) =>
-      b.score - a.score
+      b.score -
+      a.score
   );
 
   const total =
@@ -1364,7 +1470,8 @@ async function searchWebSupabase(
     page: pageNumber,
     limit,
     sponsored: [],
-    database: "supabase-fallback",
+    database:
+      "supabase-legacy",
     results:
       ranked.slice(
         start,
@@ -1382,6 +1489,10 @@ async function searchWeb(
   pageNumber = 1,
   limit = 20
 ) {
+  // ----------------------------------------------------------
+  // NEON FIRST
+  // ----------------------------------------------------------
+
   if (
     neonPool &&
     neonAvailable
@@ -1398,44 +1509,55 @@ async function searchWeb(
         error?.message ||
           error
       );
-
-      if (
-        supabase &&
-        supabaseAvailable
-      ) {
-        console.log(
-          "[HEXORA] Falling back to Supabase..."
-        );
-
-        return await searchWebSupabase(
-          query,
-          pageNumber,
-          limit
-        );
-      }
-
-      throw error;
     }
   }
 
+  // ----------------------------------------------------------
+  // OPTIONAL SUPABASE LEGACY FALLBACK
+  // ----------------------------------------------------------
+
   if (
-    supabase &&
-    supabaseAvailable
+    ENABLE_SUPABASE_FALLBACK &&
+    supabase
   ) {
-    return await searchWebSupabase(
-      query,
-      pageNumber,
-      limit
-    );
+    try {
+      console.log(
+        "[HEXORA] Using Supabase legacy fallback..."
+      );
+
+      return await searchWebSupabase(
+        query,
+        pageNumber,
+        limit
+      );
+    } catch (error) {
+      console.error(
+        "[HEXORA] Supabase legacy fallback failed:",
+        error?.message ||
+          error
+      );
+    }
   }
 
-  throw new Error(
-    "No database is available"
-  );
+  return {
+    ok: true,
+    mode: "web",
+    query:
+      cleanQuery(query),
+    total: 0,
+    page: pageNumber,
+    limit,
+    sponsored: [],
+    database:
+      neonAvailable
+        ? "neon"
+        : "none",
+    results: []
+  };
 }
 
 // ============================================================
-// IMAGE SEARCH - SUPABASE
+// IMAGE SEARCH - LEGACY SUPABASE
 // ============================================================
 
 function calculateImageScore(
@@ -1472,22 +1594,34 @@ function calculateImageScore(
 
   let score = 0;
 
-  if (title === q)
+  if (
+    title === q
+  )
     score += 200;
 
-  if (title.includes(q))
+  if (
+    title.includes(q)
+  )
     score += 100;
 
-  if (alt.includes(q))
+  if (
+    alt.includes(q)
+  )
     score += 70;
 
-  if (page.includes(q))
+  if (
+    page.includes(q)
+  )
     score += 25;
 
-  if (image.includes(q))
+  if (
+    image.includes(q)
+  )
     score += 15;
 
-  if (domain.includes(q))
+  if (
+    domain.includes(q)
+  )
     score += 10;
 
   for (
@@ -1514,85 +1648,111 @@ async function searchImages(
   pageNumber = 1,
   limit = 20
 ) {
-  if (!supabase) {
-    throw new Error(
-      "Supabase is not configured"
-    );
+  if (
+    !supabase ||
+    !ENABLE_SUPABASE_FALLBACK
+  ) {
+    return {
+      ok: true,
+      mode: "images",
+      query:
+        cleanQuery(query),
+      total: 0,
+      page: pageNumber,
+      limit,
+      database:
+        "disabled",
+      results: []
+    };
   }
 
   const q =
     cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("images")
-      .select("*")
-      .limit(1000);
+  try {
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("images")
+        .select("*")
+        .limit(1000);
 
-  if (error) {
+    if (error) {
+      throw error;
+    }
+
+    const rows =
+      Array.isArray(data)
+        ? data
+        : [];
+
+    const ranked =
+      rows
+        .map((row) => ({
+          ...row,
+          score:
+            calculateImageScore(
+              row,
+              q
+            )
+        }))
+        .filter(
+          (row) =>
+            row.score > 0
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
+
+    const total =
+      ranked.length;
+
+    const start =
+      (pageNumber - 1) *
+      limit;
+
     return {
-      ok: false,
+      ok: true,
+      mode: "images",
+      query: q,
+      total,
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results:
+        ranked.slice(
+          start,
+          start + limit
+        )
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] Legacy image search failed:",
+      error?.message ||
+        error
+    );
+
+    return {
+      ok: true,
       mode: "images",
       query: q,
       total: 0,
-      results: [],
-      error: error.message
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results: []
     };
   }
-
-  const rows =
-    Array.isArray(data)
-      ? data
-      : [];
-
-  const ranked =
-    rows
-      .map((row) => ({
-        ...row,
-        score:
-          calculateImageScore(
-            row,
-            q
-          )
-      }))
-      .filter(
-        (row) =>
-          row.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  const total =
-    ranked.length;
-
-  const start =
-    (pageNumber - 1) *
-    limit;
-
-  return {
-    ok: true,
-    mode: "images",
-    query: q,
-    total,
-    page: pageNumber,
-    limit,
-    database: "supabase",
-    results:
-      ranked.slice(
-        start,
-        start + limit
-      )
-  };
 }
 
 // ============================================================
-// VIDEO SEARCH - SUPABASE
+// VIDEO SEARCH - LEGACY SUPABASE
 // ============================================================
 
 function calculateVideoScore(
@@ -1620,10 +1780,14 @@ function calculateVideoScore(
 
   let score = 0;
 
-  if (title === q)
+  if (
+    title === q
+  )
     score += 250;
 
-  if (title.includes(q))
+  if (
+    title.includes(q)
+  )
     score += 120;
 
   if (
@@ -1632,7 +1796,9 @@ function calculateVideoScore(
     score += 50;
   }
 
-  if (url.includes(q))
+  if (
+    url.includes(q)
+  )
     score += 20;
 
   for (
@@ -1659,85 +1825,111 @@ async function searchVideos(
   pageNumber = 1,
   limit = 20
 ) {
-  if (!supabase) {
-    throw new Error(
-      "Supabase is not configured"
-    );
+  if (
+    !supabase ||
+    !ENABLE_SUPABASE_FALLBACK
+  ) {
+    return {
+      ok: true,
+      mode: "videos",
+      query:
+        cleanQuery(query),
+      total: 0,
+      page: pageNumber,
+      limit,
+      database:
+        "disabled",
+      results: []
+    };
   }
 
   const q =
     cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("videos")
-      .select("*")
-      .limit(1000);
+  try {
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("videos")
+        .select("*")
+        .limit(1000);
 
-  if (error) {
+    if (error) {
+      throw error;
+    }
+
+    const rows =
+      Array.isArray(data)
+        ? data
+        : [];
+
+    const ranked =
+      rows
+        .map((row) => ({
+          ...row,
+          score:
+            calculateVideoScore(
+              row,
+              q
+            )
+        }))
+        .filter(
+          (row) =>
+            row.score > 0
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
+
+    const total =
+      ranked.length;
+
+    const start =
+      (pageNumber - 1) *
+      limit;
+
     return {
-      ok: false,
+      ok: true,
+      mode: "videos",
+      query: q,
+      total,
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results:
+        ranked.slice(
+          start,
+          start + limit
+        )
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] Legacy video search failed:",
+      error?.message ||
+        error
+    );
+
+    return {
+      ok: true,
       mode: "videos",
       query: q,
       total: 0,
-      results: [],
-      error: error.message
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results: []
     };
   }
-
-  const rows =
-    Array.isArray(data)
-      ? data
-      : [];
-
-  const ranked =
-    rows
-      .map((row) => ({
-        ...row,
-        score:
-          calculateVideoScore(
-            row,
-            q
-          )
-      }))
-      .filter(
-        (row) =>
-          row.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  const total =
-    ranked.length;
-
-  const start =
-    (pageNumber - 1) *
-    limit;
-
-  return {
-    ok: true,
-    mode: "videos",
-    query: q,
-    total,
-    page: pageNumber,
-    limit,
-    database: "supabase",
-    results:
-      ranked.slice(
-        start,
-        start + limit
-      )
-  };
 }
 
 // ============================================================
-// MAP / PLACES - SUPABASE
+// MAP SEARCH - LEGACY SUPABASE
 // ============================================================
 
 function calculatePlaceScore(
@@ -1775,22 +1967,34 @@ function calculatePlaceScore(
 
   let score = 0;
 
-  if (name === q)
+  if (
+    name === q
+  )
     score += 300;
 
-  if (name.includes(q))
+  if (
+    name.includes(q)
+  )
     score += 150;
 
-  if (address.includes(q))
+  if (
+    address.includes(q)
+  )
     score += 70;
 
-  if (city.includes(q))
+  if (
+    city.includes(q)
+  )
     score += 40;
 
-  if (state.includes(q))
+  if (
+    state.includes(q)
+  )
     score += 30;
 
-  if (country.includes(q))
+  if (
+    country.includes(q)
+  )
     score += 20;
 
   return score;
@@ -1801,85 +2005,111 @@ async function searchMaps(
   pageNumber = 1,
   limit = 20
 ) {
-  if (!supabase) {
-    throw new Error(
-      "Supabase is not configured"
-    );
+  if (
+    !supabase ||
+    !ENABLE_SUPABASE_FALLBACK
+  ) {
+    return {
+      ok: true,
+      mode: "maps",
+      query:
+        cleanQuery(query),
+      total: 0,
+      page: pageNumber,
+      limit,
+      database:
+        "disabled",
+      results: []
+    };
   }
 
   const q =
     cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("places")
-      .select("*")
-      .limit(1000);
+  try {
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("places")
+        .select("*")
+        .limit(1000);
 
-  if (error) {
+    if (error) {
+      throw error;
+    }
+
+    const rows =
+      Array.isArray(data)
+        ? data
+        : [];
+
+    const ranked =
+      rows
+        .map((row) => ({
+          ...row,
+          score:
+            calculatePlaceScore(
+              row,
+              q
+            )
+        }))
+        .filter(
+          (row) =>
+            row.score > 0
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
+
+    const total =
+      ranked.length;
+
+    const start =
+      (pageNumber - 1) *
+      limit;
+
     return {
-      ok: false,
+      ok: true,
+      mode: "maps",
+      query: q,
+      total,
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results:
+        ranked.slice(
+          start,
+          start + limit
+        )
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] Legacy maps search failed:",
+      error?.message ||
+        error
+    );
+
+    return {
+      ok: true,
       mode: "maps",
       query: q,
       total: 0,
-      results: [],
-      error: error.message
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results: []
     };
   }
-
-  const rows =
-    Array.isArray(data)
-      ? data
-      : [];
-
-  const ranked =
-    rows
-      .map((row) => ({
-        ...row,
-        score:
-          calculatePlaceScore(
-            row,
-            q
-          )
-      }))
-      .filter(
-        (row) =>
-          row.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  const total =
-    ranked.length;
-
-  const start =
-    (pageNumber - 1) *
-    limit;
-
-  return {
-    ok: true,
-    mode: "maps",
-    query: q,
-    total,
-    page: pageNumber,
-    limit,
-    database: "supabase",
-    results:
-      ranked.slice(
-        start,
-        start + limit
-      )
-  };
 }
 
 // ============================================================
-// NEWS SEARCH - SUPABASE
+// NEWS SEARCH - LEGACY SUPABASE
 // ============================================================
 
 function calculateNewsScore(
@@ -1912,10 +2142,14 @@ function calculateNewsScore(
 
   let score = 0;
 
-  if (title === q)
+  if (
+    title === q
+  )
     score += 300;
 
-  if (title.includes(q))
+  if (
+    title.includes(q)
+  )
     score += 160;
 
   if (
@@ -1956,19 +2190,35 @@ function calculateNewsScore(
     row.published_at;
 
   if (published) {
-    const ageDays =
-      (Date.now() -
-        new Date(
-          published
-        ).getTime()) /
-      (1000 * 60 * 60 * 24);
+    const publishedTime =
+      new Date(
+        published
+      ).getTime();
 
-    if (ageDays <= 1)
-      score += 30;
-    else if (ageDays <= 7)
-      score += 20;
-    else if (ageDays <= 30)
-      score += 10;
+    if (
+      Number.isFinite(
+        publishedTime
+      )
+    ) {
+      const ageDays =
+        (Date.now() -
+          publishedTime) /
+        (1000 * 60 * 60 * 24);
+
+      if (
+        ageDays <= 1
+      ) {
+        score += 30;
+      } else if (
+        ageDays <= 7
+      ) {
+        score += 20;
+      } else if (
+        ageDays <= 30
+      ) {
+        score += 10;
+      }
+    }
   }
 
   return score;
@@ -1979,110 +2229,136 @@ async function searchNews(
   pageNumber = 1,
   limit = 20
 ) {
-  if (!supabase) {
-    throw new Error(
-      "Supabase is not configured"
-    );
+  if (
+    !supabase ||
+    !ENABLE_SUPABASE_FALLBACK
+  ) {
+    return {
+      ok: true,
+      mode: "news",
+      query:
+        cleanQuery(query),
+      total: 0,
+      page: pageNumber,
+      limit,
+      database:
+        "disabled",
+      results: []
+    };
   }
 
   const q =
     cleanQuery(query);
 
-  const {
-    data,
-    error
-  } =
-    await supabase
-      .from("news")
-      .select("*")
-      .order(
-        "published_at",
-        {
-          ascending: false
-        }
-      )
-      .limit(500);
+  try {
+    const {
+      data,
+      error
+    } =
+      await supabase
+        .from("news")
+        .select("*")
+        .order(
+          "published_at",
+          {
+            ascending: false
+          }
+        )
+        .limit(500);
 
-  if (error) {
+    if (error) {
+      throw error;
+    }
+
+    const rows =
+      Array.isArray(data)
+        ? data
+        : [];
+
+    const ranked =
+      rows
+        .map((row) => ({
+          ...row,
+          score:
+            calculateNewsScore(
+              row,
+              q
+            )
+        }))
+        .filter(
+          (row) =>
+            row.score > 0
+        )
+        .sort(
+          (a, b) => {
+            if (
+              b.score !==
+              a.score
+            ) {
+              return (
+                b.score -
+                a.score
+              );
+            }
+
+            return (
+              new Date(
+                b.published_at ||
+                  0
+              ) -
+              new Date(
+                a.published_at ||
+                  0
+              )
+            );
+          }
+        );
+
+    const total =
+      ranked.length;
+
+    const start =
+      (pageNumber - 1) *
+      limit;
+
     return {
-      ok: false,
+      ok: true,
+      mode: "news",
+      query: q,
+      total,
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results:
+        ranked.slice(
+          start,
+          start + limit
+        )
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] Legacy news search failed:",
+      error?.message ||
+        error
+    );
+
+    return {
+      ok: true,
       mode: "news",
       query: q,
       total: 0,
-      results: [],
-      error: error.message
+      page: pageNumber,
+      limit,
+      database:
+        "supabase-legacy",
+      results: []
     };
   }
-
-  const rows =
-    Array.isArray(data)
-      ? data
-      : [];
-
-  const ranked =
-    rows
-      .map((row) => ({
-        ...row,
-        score:
-          calculateNewsScore(
-            row,
-            q
-          )
-      }))
-      .filter(
-        (row) =>
-          row.score > 0
-      )
-      .sort(
-        (a, b) => {
-          if (
-            b.score !==
-            a.score
-          ) {
-            return (
-              b.score -
-              a.score
-            );
-          }
-
-          return (
-            new Date(
-              b.published_at ||
-                0
-            ) -
-            new Date(
-              a.published_at ||
-                0
-            )
-          );
-        }
-      );
-
-  const total =
-    ranked.length;
-
-  const start =
-    (pageNumber - 1) *
-    limit;
-
-  return {
-    ok: true,
-    mode: "news",
-    query: q,
-    total,
-    page: pageNumber,
-    limit,
-    database: "supabase",
-    results:
-      ranked.slice(
-        start,
-        start + limit
-      )
-  };
 }
 
 // ============================================================
-// HTTP RESPONSE
+// HTTP JSON RESPONSE
 // ============================================================
 
 function jsonResponse(
@@ -2140,22 +2416,31 @@ function sendFile(
   const contentTypes = {
     ".html":
       "text/html; charset=utf-8",
+
     ".js":
       "application/javascript; charset=utf-8",
+
     ".css":
       "text/css; charset=utf-8",
+
     ".json":
       "application/json; charset=utf-8",
+
     ".svg":
       "image/svg+xml",
+
     ".png":
       "image/png",
+
     ".jpg":
       "image/jpeg",
+
     ".jpeg":
       "image/jpeg",
+
     ".webp":
       "image/webp",
+
     ".ico":
       "image/x-icon"
   };
@@ -2185,13 +2470,20 @@ function sendFile(
 }
 
 // ============================================================
-// SERVER
+// HTTP SERVER
 // ============================================================
 
 const server =
   http.createServer(
-    async (req, res) => {
+    async (
+      req,
+      res
+    ) => {
       try {
+        // ------------------------------------------------------
+        // OPTIONS
+        // ------------------------------------------------------
+
         if (
           req.method ===
           "OPTIONS"
@@ -2242,6 +2534,7 @@ const server =
             200,
             {
               status: "ok",
+
               engine:
                 "HEXORA",
 
@@ -2251,6 +2544,16 @@ const server =
               search:
                 "active",
 
+              storage: {
+                search:
+                  neonAvailable
+                    ? "neon"
+                    : "offline",
+
+                raw_pages:
+                  "cloudflare-r2"
+              },
+
               databases: {
                 neon:
                   neonAvailable
@@ -2259,9 +2562,12 @@ const server =
 
                 supabase:
                   supabaseAvailable
-                    ? "connected"
-                    : "offline"
+                    ? "legacy-available"
+                    : "not-configured"
               },
+
+              supabase_fallback:
+                ENABLE_SUPABASE_FALLBACK,
 
               timestamp:
                 new Date().toISOString()
@@ -2473,11 +2779,14 @@ const server =
             )
           );
 
+        const basePath =
+          path.normalize(
+            __dirname
+          );
+
         if (
           !safePath.startsWith(
-            path.normalize(
-              __dirname
-            )
+            basePath
           )
         ) {
           return jsonResponse(
@@ -2537,11 +2846,11 @@ const server =
               "Not found"
           }
         );
-
       } catch (error) {
         console.error(
           "[HEXORA] Server error:",
-          error
+          error?.message ||
+            error
         );
 
         return jsonResponse(
@@ -2574,7 +2883,23 @@ server.listen(
       "[HEXORA] Search API: /search?q=google"
     );
 
-    await checkDatabases();
+    console.log(
+      "[HEXORA] Search database: Neon PostgreSQL"
+    );
+
+    console.log(
+      "[HEXORA] Raw crawl storage: Cloudflare R2"
+    );
+
+    console.log(
+      "[HEXORA] Supabase: legacy read-only mode"
+    );
+
+    console.log(
+      "[HEXORA] Supabase startup check: DISABLED"
+    );
+
+    await checkNeon();
   }
 );
 
@@ -2587,7 +2912,8 @@ process.on(
   (error) => {
     console.error(
       "[HEXORA] Unhandled rejection:",
-      error
+      error?.message ||
+        error
     );
   }
 );
@@ -2597,7 +2923,8 @@ process.on(
   (error) => {
     console.error(
       "[HEXORA] Uncaught exception:",
-      error
+      error?.message ||
+        error
     );
   }
 );
@@ -2634,10 +2961,13 @@ async function shutdown(
 
 process.on(
   "SIGTERM",
-  () => shutdown("SIGTERM")
+  () =>
+    shutdown("SIGTERM")
 );
 
 process.on(
   "SIGINT",
-  () => shutdown("SIGINT")
+  () =>
+    shutdown("SIGINT")
 );
+```
