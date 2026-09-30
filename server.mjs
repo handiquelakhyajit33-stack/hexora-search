@@ -4,10 +4,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
 
-const Pool = pg.Pool;
+const { Pool } = pg;
 
-const filename = fileURLToPath(import.meta.url);
-const dirname = path.dirname(filename);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -23,7 +23,7 @@ idleTimeoutMillis: 30000
 });
 
 pool.on("error", function (error) {
-console.error("[HEXORA] Database error:", error.message);
+console.error("[HEXORA] PostgreSQL error:", error.message);
 });
 } else {
 console.error("[HEXORA] DATABASE_URL is missing");
@@ -72,7 +72,7 @@ for (const word of words) {
 const found = lower.indexOf(word);
 
 ```
-if (found >= 0) {
+if (found !== -1) {
   position = found;
   break;
 }
@@ -80,12 +80,12 @@ if (found >= 0) {
 
 }
 
-if (position < 0) {
+if (position === -1) {
 return text.slice(0, 300);
 }
 
-const start = Math.max(0, position - 100);
-const end = Math.min(text.length, position + 250);
+const start = Math.max(0, position - 120);
+const end = Math.min(text.length, position + 280);
 
 let result = text.slice(start, end);
 
@@ -100,7 +100,7 @@ result = result + " ...";
 return result;
 }
 
-function calculateScore(row, words) {
+function scoreResult(row, words) {
 const title = String(row.title || "").toLowerCase();
 const description = String(row.description || "").toLowerCase();
 const content = String(row.content || "").toLowerCase();
@@ -110,20 +110,20 @@ let score = 0;
 
 for (const word of words) {
 if (title.includes(word)) {
-score = score + 40;
+score += 50;
 }
 
 ```
 if (description.includes(word)) {
-  score = score + 20;
+  score += 25;
 }
 
 if (url.includes(word)) {
-  score = score + 15;
+  score += 15;
 }
 
 if (content.includes(word)) {
-  score = score + 5;
+  score += 5;
 }
 ```
 
@@ -131,19 +131,16 @@ if (content.includes(word)) {
 
 const fullQuery = words.join(" ");
 
-if (fullQuery.length > 0 && title.includes(fullQuery)) {
-score = score + 50;
+if (fullQuery && title.includes(fullQuery)) {
+score += 100;
 }
 
-if (
-fullQuery.length > 0 &&
-description.includes(fullQuery)
-) {
-score = score + 25;
+if (fullQuery && description.includes(fullQuery)) {
+score += 40;
 }
 
-if (fullQuery.length > 0 && url.includes(fullQuery)) {
-score = score + 20;
+if (fullQuery && url.includes(fullQuery)) {
+score += 25;
 }
 
 return score;
@@ -163,19 +160,23 @@ return [];
 const conditions = [];
 const values = [];
 
-for (let i = 0; i < words.length; i = i + 1) {
+for (let i = 0; i < words.length; i += 1) {
 const parameter = i + 1;
 const value = "%" + words[i] + "%";
 
 ```
 conditions.push(
-  "(LOWER(COALESCE(title,'')) LIKE $" +
+  "(" +
+    "LOWER(COALESCE(title,'')) LIKE $" +
     parameter +
-    " OR LOWER(COALESCE(description,'')) LIKE $" +
+    " OR " +
+    "LOWER(COALESCE(description,'')) LIKE $" +
     parameter +
-    " OR LOWER(COALESCE(content,'')) LIKE $" +
+    " OR " +
+    "LOWER(COALESCE(content,'')) LIKE $" +
     parameter +
-    " OR LOWER(COALESCE(url,'')) LIKE $" +
+    " OR " +
+    "LOWER(COALESCE(url,'')) LIKE $" +
     parameter +
     ")"
 );
@@ -188,50 +189,43 @@ values.push(value);
 const limitParameter = words.length + 1;
 
 const sql =
-"SELECT * FROM pages WHERE " +
+"SELECT * FROM pages " +
+"WHERE " +
 conditions.join(" AND ") +
-" ORDER BY updated_at DESC NULLS LAST LIMIT $" +
+" ORDER BY updated_at DESC NULLS LAST " +
+"LIMIT $" +
 limitParameter;
 
 values.push(100);
 
 const result = await pool.query(sql, values);
 
-const items = [];
-
-for (const row of result.rows) {
-items.push({
+const ranked = result.rows.map(function (row) {
+return {
 row: row,
-score: calculateScore(row, words)
+score: scoreResult(row, words)
+};
 });
-}
 
-items.sort(function (a, b) {
+ranked.sort(function (a, b) {
 if (b.score !== a.score) {
 return b.score - a.score;
 }
 
 ```
-const aTime = new Date(
-  a.row.updated_at || 0
-).getTime();
-
-const bTime = new Date(
-  b.row.updated_at || 0
-).getTime();
+const aTime = new Date(a.row.updated_at || 0).getTime();
+const bTime = new Date(b.row.updated_at || 0).getTime();
 
 return bTime - aTime;
 ```
 
 });
 
-const output = [];
-
-for (const item of items.slice(0, 20)) {
+return ranked.slice(0, 20).map(function (item) {
 const row = item.row;
 
 ```
-output.push({
+return {
   title: row.title || row.url || "Untitled",
   url: row.url || "",
   description:
@@ -239,19 +233,17 @@ output.push({
     makeSnippet(row.content, words),
   snippet: makeSnippet(row.content, words),
   language: row.language || "unknown",
-  word_count: row.word_count || 0,
+  word_count: Number(row.word_count || 0),
   updated_at: row.updated_at || null,
   score: item.score
-});
+};
 ```
 
+});
 }
 
-return output;
-}
-
-function getContentType(file) {
-const ext = path.extname(file).toLowerCase();
+function getContentType(filePath) {
+const ext = path.extname(filePath).toLowerCase();
 
 if (ext === ".html" || ext === ".htm") {
 return "text/html; charset=utf-8";
@@ -293,79 +285,62 @@ return "application/octet-stream";
 }
 
 function serveFile(res, pathname) {
-let decoded;
+let decodedPath;
 
 try {
-decoded = decodeURIComponent(pathname);
+decodedPath = decodeURIComponent(pathname);
 } catch (error) {
 sendJson(res, 400, {
 success: false,
 error: "Invalid path"
 });
-
-```
 return;
-```
-
 }
 
-if (decoded.indexOf("\0") !== -1) {
+if (decodedPath.includes("\0")) {
 sendJson(res, 400, {
 success: false,
 error: "Invalid path"
 });
-
-```
 return;
-```
-
 }
 
-if (decoded === "/") {
-decoded = "/index.html";
+if (decodedPath === "/") {
+decodedPath = "/index.html";
 }
 
-const root = path.resolve(dirname);
+const root = path.resolve(__dirname);
 
-const file = path.resolve(
-dirname,
-"." + decoded
+const filePath = path.resolve(
+__dirname,
+"." + decodedPath
 );
 
 if (
-file !== root &&
-file.indexOf(root + path.sep) !== 0
+filePath !== root &&
+!filePath.startsWith(root + path.sep)
 ) {
 sendJson(res, 403, {
 success: false,
 error: "Forbidden"
 });
-
-```
 return;
-```
-
 }
 
 if (
-!fs.existsSync(file) ||
-!fs.statSync(file).isFile()
+!fs.existsSync(filePath) ||
+!fs.statSync(filePath).isFile()
 ) {
-const fallback = path.join(
-dirname,
-"index.html"
-);
+const fallback = path.join(__dirname, "index.html");
 
 ```
 if (fs.existsSync(fallback)) {
   res.writeHead(200, {
-    "Content-Type":
-      "text/html; charset=utf-8",
+    "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-cache"
   });
 
   fs.createReadStream(fallback).pipe(res);
-
   return;
 }
 
@@ -380,18 +355,17 @@ return;
 }
 
 res.writeHead(200, {
-"Content-Type": getContentType(file),
+"Content-Type": getContentType(filePath),
 "Cache-Control": "no-cache"
 });
 
-fs.createReadStream(file).pipe(res);
+fs.createReadStream(filePath).pipe(res);
 }
 
 async function handleRequest(req, res) {
 const requestUrl = new URL(
 req.url || "/",
-"http://" +
-(req.headers.host || "localhost")
+"http://" + (req.headers.host || "localhost")
 );
 
 const pathname = requestUrl.pathname;
@@ -405,7 +379,6 @@ res.writeHead(204, {
 
 ```
 res.end();
-
 return;
 ```
 
@@ -423,8 +396,7 @@ if (pool) {
     await pool.query("SELECT 1");
     databaseStatus = "connected";
   } catch (error) {
-    databaseStatus =
-      "error: " + error.message;
+    databaseStatus = "error: " + error.message;
   }
 }
 
@@ -468,8 +440,7 @@ if (!query.trim()) {
 }
 
 try {
-  const results =
-    await searchDatabase(query);
+  const results = await searchDatabase(query);
 
   sendJson(res, 200, {
     success: true,
@@ -525,8 +496,7 @@ if (!query.trim()) {
 }
 
 try {
-  const results =
-    await searchDatabase(query);
+  const results = await searchDatabase(query);
 
   sendJson(res, 200, {
     success: true,
@@ -613,43 +583,14 @@ server.listen(
 PORT,
 "0.0.0.0",
 function () {
-console.log(
-"======================================"
-);
-
-```
-console.log(
-  "       HEXORA SEARCH ENGINE"
-);
-
-console.log(
-  "======================================"
-);
-
-console.log(
-  "[HEXORA] HTTP server: " + PORT
-);
-
-console.log(
-  "[HEXORA] Database: Neon PostgreSQL"
-);
-
-console.log(
-  "[HEXORA] Supabase search: disabled"
-);
-
-console.log(
-  "[HEXORA] R2: crawler storage only"
-);
-
-console.log(
-  "[HEXORA] Existing UI: enabled"
-);
-
-console.log(
-  "======================================"
-);
-```
-
+console.log("======================================");
+console.log("       HEXORA SEARCH ENGINE");
+console.log("======================================");
+console.log("[HEXORA] HTTP server: " + PORT);
+console.log("[HEXORA] Database: Neon PostgreSQL");
+console.log("[HEXORA] Supabase search: disabled");
+console.log("[HEXORA] R2: crawler storage only");
+console.log("[HEXORA] Existing UI: enabled");
+console.log("======================================");
 }
 );
