@@ -1,35 +1,82 @@
+```javascript
+// ============================================================
+// HEXORA SEARCH ENGINE - CRAWLER WORKER
+// ============================================================
+
 import {
-  runCrawler,
   crawlBatch,
   normalizeOldQueueStatuses,
-  seedQueue,
+  seedQueue
 } from "../crawler.mjs";
 
-const INTERVAL_MS = Number(
-  process.env.CRAWLER_INTERVAL_MS || 15000
-);
+// ============================================================
+// CONFIG
+// ============================================================
 
-const BATCH_SIZE = Number(
-  process.env.CRAWLER_BATCH_SIZE || 12
-);
+const INTERVAL_MS =
+  Number(
+    process.env.CRAWLER_INTERVAL_MS ||
+      15000
+  );
+
+const BATCH_SIZE =
+  Number(
+    process.env.CRAWLER_BATCH_SIZE ||
+      12
+  );
 
 let running = false;
+
+// ============================================================
+// QUEUE RECOVERY
+// ============================================================
 
 async function recoverQueue() {
   try {
     await normalizeOldQueueStatuses();
-    console.log("[HEXORA] Queue recovery completed");
+
+    console.log(
+      "[HEXORA] Queue recovery completed"
+    );
   } catch (error) {
     console.error(
       "[HEXORA] Queue recovery failed:",
-      error?.message || error
+      error?.message ||
+        error
     );
   }
 }
 
+// ============================================================
+// SEED
+// ============================================================
+
+async function prepareSeeds() {
+  try {
+    await seedQueue();
+
+    console.log(
+      "[HEXORA] Seed queue ready"
+    );
+  } catch (error) {
+    console.error(
+      "[HEXORA] Seed queue error:",
+      error?.message ||
+        error
+    );
+  }
+}
+
+// ============================================================
+// RUN BATCH
+// ============================================================
+
 async function runBatch() {
   if (running) {
-    console.log("[HEXORA] Previous crawl batch still running");
+    console.log(
+      "[HEXORA] Previous crawl batch still running"
+    );
+
     return;
   }
 
@@ -37,80 +84,101 @@ async function runBatch() {
 
   try {
     console.log(
-      `[HEXORA] Starting crawl batch: ${BATCH_SIZE}`
+      "[HEXORA] Starting crawl batch: " +
+        BATCH_SIZE
     );
 
-    const result = await crawlBatch(BATCH_SIZE);
+    const result =
+      await crawlBatch(
+        BATCH_SIZE
+      );
 
     console.log(
-      `[HEXORA] Batch completed | processed: ${
-        result?.processed ?? 0
-      } | successful: ${
-        result?.successful ?? 0
-      } | failed: ${
-        result?.failed ?? 0
-      }`
+      "[HEXORA] Batch completed | processed: " +
+        (result?.processed || 0) +
+        " | successful: " +
+        (result?.successful || 0) +
+        " | failed: " +
+        (result?.failed || 0)
     );
-
-    return result;
   } catch (error) {
     console.error(
       "[HEXORA] Crawl batch error:",
-      error?.message || error
+      error?.message ||
+        error
     );
   } finally {
     running = false;
   }
 }
 
+// ============================================================
+// START WORKER
+// ============================================================
+
 async function startWorker() {
   console.log(
-    `[HEXORA] crawler worker started: interval=${INTERVAL_MS}ms batch=${BATCH_SIZE}`
+    "[HEXORA] crawler worker started | interval=" +
+      INTERVAL_MS +
+      "ms | batch=" +
+      BATCH_SIZE
   );
 
-  // Recover old queue states
   await recoverQueue();
 
-  // Make sure seed URLs exist
-  try {
-    await seedQueue();
-    console.log("[HEXORA] Seed queue ready");
-  } catch (error) {
-    console.error(
-      "[HEXORA] Seed queue error:",
-      error?.message || error
-    );
-  }
+  await prepareSeeds();
 
   // First crawl immediately
   await runBatch();
 
   // Continuous crawling
-  setInterval(async () => {
-    await runBatch();
-  }, INTERVAL_MS);
+  setInterval(
+    function() {
+      runBatch();
+    },
+    INTERVAL_MS
+  );
 }
 
-// Prevent unhandled promise crashes
-process.on("unhandledRejection", (error) => {
-  console.error(
-    "[HEXORA] Unhandled rejection:",
-    error?.message || error
-  );
-});
+// ============================================================
+// ERROR HANDLERS
+// ============================================================
 
-process.on("uncaughtException", (error) => {
-  console.error(
-    "[HEXORA] Uncaught exception:",
-    error?.message || error
-  );
-});
+process.on(
+  "unhandledRejection",
+  function(error) {
+    console.error(
+      "[HEXORA] Unhandled rejection:",
+      error?.message ||
+        error
+    );
+  }
+);
 
-startWorker().catch((error) => {
-  console.error(
-    "[HEXORA] Worker startup failed:",
-    error?.message || error
-  );
+process.on(
+  "uncaughtException",
+  function(error) {
+    console.error(
+      "[HEXORA] Uncaught exception:",
+      error?.message ||
+        error
+    );
+  }
+);
 
-  process.exit(1);
-});
+// ============================================================
+// START
+// ============================================================
+
+startWorker().catch(
+  function(error) {
+    console.error(
+      "[HEXORA] Worker startup failed:",
+      error?.message ||
+        error
+    );
+
+    process.exit(1);
+  }
+);
+```
