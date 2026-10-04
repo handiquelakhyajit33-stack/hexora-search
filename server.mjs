@@ -4,352 +4,573 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
-const { Pool } = pg;
+const {
+  Pool
+} = pg;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 8080);
-const DATABASE_URL = process.env.DATABASE_URL || "";
+const __filename =
+  fileURLToPath(import.meta.url);
 
-const pool = DATABASE_URL
-  ? new Pool({
-      connectionString: DATABASE_URL,
-      max: Number(process.env.DB_POOL_MAX || 5),
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      ssl:
-        DATABASE_URL.includes("neon.tech") ||
-        DATABASE_URL.includes("neon.")
-          ? { rejectUnauthorized: false }
-          : undefined
-    })
-  : null;
+const __dirname =
+  path.dirname(__filename);
 
-if (!pool) {
-  console.error("[HEXORA] DATABASE_URL is missing");
-} else {
-  pool.on("error", (error) => {
-    console.error(
-      "[HEXORA] PostgreSQL pool error:",
-      error.message
-    );
-  });
+
+const PORT =
+  Number(
+    process.env.PORT || 8080
+  );
+
+
+const DATABASE_URL =
+  process.env.DATABASE_URL || "";
+
+
+const pool =
+  DATABASE_URL
+    ? new Pool({
+
+        connectionString:
+          DATABASE_URL,
+
+        max:
+          Number(
+            process.env.DB_POOL_MAX || 5
+          ),
+
+        connectionTimeoutMillis:
+          10000,
+
+        idleTimeoutMillis:
+          30000,
+
+        ssl:
+          DATABASE_URL.includes("neon.tech") ||
+          DATABASE_URL.includes("neon.")
+            ? {
+                rejectUnauthorized: false
+              }
+            : undefined
+
+      })
+    : null;
+
+
+function sendJson(
+  res,
+  status,
+  data
+) {
+
+  res.writeHead(
+    status,
+    {
+      "Content-Type":
+        "application/json; charset=utf-8",
+
+      "Access-Control-Allow-Origin":
+        "*",
+
+      "Access-Control-Allow-Methods":
+        "GET,OPTIONS",
+
+      "Access-Control-Allow-Headers":
+        "Content-Type",
+
+      "Cache-Control":
+        "no-store"
+    }
+  );
+
+  res.end(
+    JSON.stringify(data)
+  );
 }
 
-function sendJson(res, status, data) {
-  const body = JSON.stringify(data);
 
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Cache-Control": "no-store"
-  });
+function wordsOf(q) {
 
-  res.end(body);
-}
-
-function getWords(query) {
-  return String(query || "")
-    .toLowerCase()
+  return String(q || "")
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N}\s.-]/gu, " ")
+    .toLowerCase()
+
+    .replace(
+      /[^\p{L}\p{N}\s.-]/gu,
+      " "
+    )
+
     .split(/\s+/)
+
     .filter(Boolean)
+
     .slice(0, 12);
 }
 
-function makeSnippet(content, words) {
-  const text = String(content || "")
-    .replace(/\s+/g, " ")
-    .trim();
 
-  if (!text) {
+function snippet(
+  text,
+  words,
+  max = 320
+) {
+
+  const s =
+    String(text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!s)
     return "";
-  }
 
-  if (!words.length) {
-    return text.slice(0, 300);
-  }
+  if (!words.length)
+    return s.slice(0, max);
 
-  const lower = text.toLowerCase();
+  const low =
+    s.toLocaleLowerCase();
 
-  let position = -1;
+  let pos = -1;
 
-  for (const word of words) {
-    const found = lower.indexOf(word);
+  for (
+    const word of words
+  ) {
 
-    if (found !== -1) {
-      position = found;
+    const p =
+      low.indexOf(word);
+
+    if (p >= 0) {
+
+      pos = p;
+
       break;
     }
   }
 
-  if (position === -1) {
-    return text.slice(0, 300);
-  }
+  if (pos < 0)
+    return s.slice(0, max);
 
-  const start = Math.max(0, position - 120);
-  const end = Math.min(text.length, position + 280);
+  const start =
+    Math.max(
+      0,
+      pos - 110
+    );
 
-  let result = text.slice(start, end);
+  const end =
+    Math.min(
+      s.length,
+      pos + max - 110
+    );
 
-  if (start > 0) {
-    result = "... " + result;
-  }
-
-  if (end < text.length) {
-    result += " ...";
-  }
-
-  return result;
+  return (
+    (start ? "… " : "") +
+    s.slice(start, end) +
+    (end < s.length ? " …" : "")
+  );
 }
 
-function scoreResult(row, words, query) {
-  const title = String(row.title || "").toLowerCase();
-  const description = String(
-    row.description || ""
-  ).toLowerCase();
-  const content = String(
-    row.content || ""
-  ).toLowerCase();
-  const url = String(row.url || "").toLowerCase();
 
-  const fullQuery = String(query || "")
-    .trim()
-    .toLowerCase();
+function freshnessScore(
+  date
+) {
 
-  let score = 0;
+  if (!date)
+    return 0;
 
-  for (const word of words) {
-    if (title.includes(word)) {
-      score += 60;
-    }
+  const age =
+    Math.max(
+      0,
+      (
+        Date.now() -
+        new Date(date).getTime()
+      ) / 86400000
+    );
 
-    if (description.includes(word)) {
-      score += 25;
-    }
-
-    if (url.includes(word)) {
-      score += 12;
-    }
-
-    if (content.includes(word)) {
-      score += 3;
-    }
-  }
-
-  if (
-    fullQuery &&
-    title.includes(fullQuery)
-  ) {
-    score += 140;
-  }
-
-  if (
-    fullQuery &&
-    description.includes(fullQuery)
-  ) {
-    score += 45;
-  }
-
-  if (
-    fullQuery &&
-    url.includes(fullQuery)
-  ) {
-    score += 30;
-  }
-
-  return score;
+  return Math.max(
+    0,
+    30 -
+      Math.log1p(age) * 7
+  );
 }
+
+
+function safeLimit(
+  value
+) {
+
+  return Math.min(
+    Math.max(
+      Number(value) || 20,
+      1
+    ),
+    50
+  );
+}
+
 
 async function searchDatabase(
   query,
   limit = 20
 ) {
-  if (!pool) {
+
+  if (!pool)
     throw new Error(
       "DATABASE_URL is missing"
     );
-  }
 
-  const words = getWords(query);
+  const words =
+    wordsOf(query);
 
-  if (!words.length) {
+  if (!words.length)
     return [];
-  }
 
-  const values = [];
-  const conditions = [];
+  const q =
+    String(query).trim();
 
-  for (let i = 0; i < words.length; i++) {
-    const parameter = i + 1;
+  const tsQuery =
+    words.join(" & ");
 
-    values.push(
-      "%" + words[i] + "%"
-    );
-
-    conditions.push(
-      "(" +
-        "LOWER(COALESCE(title,'')) LIKE $" +
-        parameter +
-        " OR " +
-        "LOWER(COALESCE(description,'')) LIKE $" +
-        parameter +
-        " OR " +
-        "LOWER(COALESCE(content,'')) LIKE $" +
-        parameter +
-        " OR " +
-        "LOWER(COALESCE(url,'')) LIKE $" +
-        parameter +
-        ")"
-    );
-  }
-
-  const safeLimit = Math.min(
-    Math.max(
-      Number(limit) || 20,
-      1
-    ),
-    100
-  );
-
-  values.push(safeLimit);
 
   const sql = `
-    SELECT
-      id,
-      url,
-      title,
-      description,
-      content,
-      language,
-      word_count,
-      updated_at,
-      published_at,
-      last_crawled_at
-    FROM pages
-    WHERE ${conditions.join(" AND ")}
-    ORDER BY
-      updated_at DESC NULLS LAST
-    LIMIT $${values.length}
+
+    WITH candidates AS (
+
+      SELECT
+
+        id,
+        url,
+        canonical_url,
+        title,
+        description,
+        excerpt,
+        content,
+        domain,
+        language,
+
+        updated_at,
+        published_at,
+        last_crawled_at,
+
+        authority_score,
+        freshness_score,
+        quality_score,
+        popularity_score,
+
+        inbound_links,
+        outbound_links,
+
+        ts_rank_cd(
+          search_vector,
+          websearch_to_tsquery(
+            'simple',
+            $1
+          )
+        ) AS fts_rank,
+
+        similarity(
+          COALESCE(title, ''),
+          $2
+        ) AS title_sim,
+
+        similarity(
+          COALESCE(url, ''),
+          $2
+        ) AS url_sim,
+
+        similarity(
+          COALESCE(domain, ''),
+          $2
+        ) AS domain_sim
+
+      FROM pages
+
+      WHERE
+
+        search_vector @@
+          websearch_to_tsquery(
+            'simple',
+            $1
+          )
+
+        OR title % $2
+
+        OR url % $2
+
+        OR domain % $2
+
+        OR EXISTS (
+
+          SELECT 1
+
+          FROM unnest(
+            $3::text[]
+          ) w
+
+          WHERE
+
+            title ILIKE
+              '%' || w || '%'
+
+            OR description ILIKE
+              '%' || w || '%'
+
+            OR excerpt ILIKE
+              '%' || w || '%'
+
+            OR content ILIKE
+              '%' || w || '%'
+        )
+
+      LIMIT 1000
+    )
+
+    SELECT *
+
+    FROM candidates
+
   `;
 
-  const result =
+
+  const {
+    rows
+  } =
     await pool.query(
       sql,
-      values
+      [
+        tsQuery,
+        q,
+        words
+      ]
     );
 
-  return result.rows
-    .map((row) => ({
-      ...row,
 
-      title:
-        row.title ||
-        row.url ||
-        "Untitled",
+  return rows
 
-      description:
-        row.description ||
-        makeSnippet(
-          row.content,
-          words
-        ),
+    .map(
+      row => {
 
-      snippet:
-        makeSnippet(
-          row.content,
-          words
-        ),
+        const title =
+          String(
+            row.title ||
+            row.url ||
+            "Untitled"
+          );
 
-      score:
-        scoreResult(
-          row,
-          words,
-          query
-        )
-    }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
+        const desc =
+          String(
+            row.description ||
+            row.excerpt ||
+            row.content ||
+            ""
+          );
+
+        const full =
+          q.toLocaleLowerCase();
+
+        const tl =
+          title.toLocaleLowerCase();
+
+        const dl =
+          desc.toLocaleLowerCase();
+
+        const ul =
+          String(
+            row.url || ""
+          ).toLocaleLowerCase();
+
+
+        let score =
+          Number(
+            row.fts_rank || 0
+          ) * 100;
+
+
+        score +=
+          Number(
+            row.title_sim || 0
+          ) * 90;
+
+
+        score +=
+          Number(
+            row.url_sim || 0
+          ) * 30;
+
+
+        score +=
+          Number(
+            row.domain_sim || 0
+          ) * 20;
+
+
+        if (tl === full) {
+
+          score += 220;
+
+        } else if (
+          tl.includes(full)
+        ) {
+
+          score += 120;
+
+        }
+
+
+        if (
+          dl.includes(full)
+        ) {
+
+          score += 45;
+
+        }
+
+
+        if (
+          ul.includes(full)
+        ) {
+
+          score += 40;
+
+        }
+
+
+        score +=
+          Math.min(
+            80,
+            Number(
+              row.authority_score || 0
+            )
+          );
+
+
+        score +=
+          Math.min(
+            40,
+            Number(
+              row.quality_score || 0
+            )
+          );
+
+
+        score +=
+          Math.min(
+            25,
+            Number(
+              row.popularity_score || 0
+            )
+          );
+
+
+        score +=
+          Math.min(
+            20,
+            freshnessScore(
+              row.updated_at ||
+              row.published_at
+            )
+          );
+
+
+        score +=
+          Math.min(
+            30,
+            Math.log1p(
+              Number(
+                row.inbound_links || 0
+              )
+            ) * 8
+          );
+
+
+        return {
+
+          ...row,
+
+          title,
+
+          description:
+            desc ||
+            snippet(
+              row.content,
+              words
+            ),
+
+          snippet:
+            snippet(
+              row.content ||
+              row.excerpt ||
+              desc,
+              words
+            ),
+
+          score:
+            Number(
+              score.toFixed(4)
+            )
+        };
+
       }
+    )
 
-      return (
-        new Date(
-          b.updated_at || 0
-        ) -
-        new Date(
-          a.updated_at || 0
-        )
-      );
-    })
-    .slice(0, 20);
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
+
+    .slice(
+      0,
+      safeLimit(limit)
+    );
 }
 
-function getContentType(
-  filePath
-) {
-  const ext =
-    path.extname(
-      filePath
-    ).toLowerCase();
 
-  const types = {
-    ".html":
-      "text/html; charset=utf-8",
+const types = {
 
-    ".htm":
-      "text/html; charset=utf-8",
+  ".html":
+    "text/html; charset=utf-8",
 
-    ".css":
-      "text/css; charset=utf-8",
+  ".htm":
+    "text/html; charset=utf-8",
 
-    ".js":
-      "application/javascript; charset=utf-8",
+  ".css":
+    "text/css; charset=utf-8",
 
-    ".json":
-      "application/json; charset=utf-8",
+  ".js":
+    "application/javascript; charset=utf-8",
 
-    ".svg":
-      "image/svg+xml",
+  ".json":
+    "application/json; charset=utf-8",
 
-    ".png":
-      "image/png",
+  ".svg":
+    "image/svg+xml",
 
-    ".jpg":
-      "image/jpeg",
+  ".png":
+    "image/png",
 
-    ".jpeg":
-      "image/jpeg",
+  ".jpg":
+    "image/jpeg",
 
-    ".webp":
-      "image/webp",
+  ".jpeg":
+    "image/jpeg",
 
-    ".ico":
-      "image/x-icon"
-  };
+  ".webp":
+    "image/webp"
+};
 
-  return (
-    types[ext] ||
-    "application/octet-stream"
-  );
-}
 
 function serveFile(
   res,
   pathname
 ) {
-  let decodedPath;
+
+  let decoded;
 
   try {
-    decodedPath =
+
+    decoded =
       decodeURIComponent(
         pathname
       );
+
   } catch {
+
     return sendJson(
       res,
       400,
@@ -360,9 +581,11 @@ function serveFile(
     );
   }
 
+
   if (
-    decodedPath.includes("\0")
+    decoded.includes("\0")
   ) {
+
     return sendJson(
       res,
       400,
@@ -373,30 +596,36 @@ function serveFile(
     );
   }
 
+
   if (
-    decodedPath === "/"
+    decoded === "/"
   ) {
-    decodedPath =
+
+    decoded =
       "/index.html";
   }
+
 
   const root =
     path.resolve(
       __dirname
     );
 
-  const filePath =
+
+  const fp =
     path.resolve(
       root,
-      "." + decodedPath
+      "." + decoded
     );
 
+
   if (
-    filePath !== root &&
-    !filePath.startsWith(
+    fp !== root &&
+    !fp.startsWith(
       root + path.sep
     )
   ) {
+
     return sendJson(
       res,
       403,
@@ -407,30 +636,29 @@ function serveFile(
     );
   }
 
+
   if (
-    !fs.existsSync(
-      filePath
-    ) ||
-    !fs.statSync(
-      filePath
-    ).isFile()
+    !fs.existsSync(fp) ||
+    !fs.statSync(fp).isFile()
   ) {
+
     const fallback =
       path.join(
         root,
         "index.html"
       );
 
+
     if (
-      fs.existsSync(
-        fallback
-      )
+      fs.existsSync(fallback)
     ) {
+
       res.writeHead(
         200,
         {
           "Content-Type":
             "text/html; charset=utf-8",
+
           "Cache-Control":
             "no-cache"
         }
@@ -443,6 +671,7 @@ function serveFile(
         .pipe(res);
     }
 
+
     return sendJson(
       res,
       404,
@@ -454,50 +683,55 @@ function serveFile(
     );
   }
 
+
   res.writeHead(
     200,
     {
       "Content-Type":
-        getContentType(
-          filePath
-        ),
+        types[
+          path
+            .extname(fp)
+            .toLowerCase()
+        ] ||
+        "application/octet-stream",
+
       "Cache-Control":
         "no-cache"
     }
   );
 
-  fs.createReadStream(
-    filePath
-  ).pipe(res);
+
+  fs
+    .createReadStream(fp)
+    .pipe(res);
 }
 
-async function handleRequest(
+
+async function handle(
   req,
   res
 ) {
-  const requestUrl =
+
+  const u =
     new URL(
       req.url || "/",
-      `http://${
-        req.headers.host ||
-        "localhost"
-      }`
+      `http://${req.headers.host || "localhost"}`
     );
 
-  const pathname =
-    requestUrl.pathname;
 
   if (
-    req.method ===
-    "OPTIONS"
+    req.method === "OPTIONS"
   ) {
+
     res.writeHead(
       204,
       {
         "Access-Control-Allow-Origin":
           "*",
+
         "Access-Control-Allow-Methods":
           "GET,OPTIONS",
+
         "Access-Control-Allow-Headers":
           "Content-Type"
       }
@@ -506,27 +740,35 @@ async function handleRequest(
     return res.end();
   }
 
+
   if (
-    pathname === "/health" ||
-    pathname === "/api/health"
+    u.pathname === "/health" ||
+    u.pathname === "/api/health"
   ) {
-    let databaseStatus =
+
+    let db =
       "missing";
 
+
     if (pool) {
+
       try {
+
         await pool.query(
           "SELECT 1"
         );
 
-        databaseStatus =
+        db =
           "connected";
-      } catch (error) {
-        databaseStatus =
+
+      } catch (e) {
+
+        db =
           "error: " +
-          error.message;
+          e.message;
       }
     }
+
 
     return sendJson(
       res,
@@ -535,8 +777,7 @@ async function handleRequest(
         success: true,
 
         status:
-          databaseStatus ===
-          "connected"
+          db === "connected"
             ? "ok"
             : "degraded",
 
@@ -547,45 +788,55 @@ async function handleRequest(
           "Neon PostgreSQL",
 
         database_status:
-          databaseStatus,
+          db,
 
         index_source:
           "Neon",
 
+        storage:
+          "Cloudflare R2",
+
         supabase_v2:
-          "separate services"
+          "legacy/migration only"
       }
     );
   }
 
-  const searchRoutes = [
+
+  const routes = [
+
     "/search",
     "/api/search",
+
     "/news",
     "/api/news",
+
     "/images",
     "/api/images",
+
     "/videos",
     "/api/videos",
+
     "/maps",
     "/api/maps"
+
   ];
 
+
   if (
-    searchRoutes.includes(
-      pathname
+    routes.includes(
+      u.pathname
     )
   ) {
+
     const query =
-      requestUrl.searchParams.get(
-        "q"
-      ) ||
-      requestUrl.searchParams.get(
-        "query"
-      ) ||
+      u.searchParams.get("q") ||
+      u.searchParams.get("query") ||
       "";
 
+
     if (!query.trim()) {
+
       return sendJson(
         res,
         200,
@@ -598,70 +849,91 @@ async function handleRequest(
       );
     }
 
+
     try {
+
       const results =
         await searchDatabase(
           query,
-          requestUrl.searchParams.get(
+          u.searchParams.get(
             "limit"
           )
         );
+
 
       return sendJson(
         res,
         200,
         {
           success: true,
-          engine: "HEXORA",
+
+          engine:
+            "HEXORA",
+
           query,
+
           total:
             results.length,
+
           results
         }
       );
-    } catch (error) {
+
+    } catch (e) {
+
       console.error(
         "[HEXORA] Search error:",
-        error
+        e
       );
+
 
       return sendJson(
         res,
         500,
         {
           success: false,
+
           query,
+
           total: 0,
+
           results: [],
+
           error:
-            error.message
+            e.message
         }
       );
     }
   }
 
+
   return serveFile(
     res,
-    pathname
+    u.pathname
   );
 }
 
+
 const server =
   http.createServer(
-    (req, res) => {
-      handleRequest(
+    (req, res) =>
+
+      handle(
         req,
         res
       ).catch(
-        (error) => {
+        e => {
+
           console.error(
             "[HEXORA] Request error:",
-            error
+            e
           );
+
 
           if (
             !res.headersSent
           ) {
+
             sendJson(
               res,
               500,
@@ -671,60 +943,46 @@ const server =
                   "Internal server error"
               }
             );
+
           } else {
+
             res.end();
+
           }
+
         }
-      );
-    }
+      )
   );
+
 
 process.on(
   "unhandledRejection",
-  (error) => {
+  e =>
     console.error(
       "[HEXORA] Unhandled rejection:",
-      error
-    );
-  }
+      e
+    )
 );
+
 
 process.on(
   "uncaughtException",
-  (error) => {
+  e =>
     console.error(
       "[HEXORA] Uncaught exception:",
-      error
-    );
-  }
+      e
+    )
 );
+
 
 server.listen(
   PORT,
   "0.0.0.0",
   () => {
-    console.log(
-      "======================================"
-    );
 
     console.log(
-      "       HEXORA SEARCH ENGINE"
+      `[HEXORA] Search server running on http://0.0.0.0:${PORT}`
     );
 
-    console.log(
-      "======================================"
-    );
-
-    console.log(
-      `[HEXORA] HTTP server listening on ${PORT}`
-    );
-
-    console.log(
-      `[HEXORA] Neon database: ${
-        pool
-          ? "configured"
-          : "MISSING DATABASE_URL"
-      }`
-    );
   }
 );
