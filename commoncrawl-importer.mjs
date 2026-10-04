@@ -1,30 +1,21 @@
 // ============================================================
 // HEXORA SEARCH ENGINE
 // COMMON CRAWL IMPORTER
-// ============================================================
-// Features:
-// - Latest Common Crawl collection discovery
-// - 504/429/5xx automatic retry
-// - 120 second request timeout
-// - Smaller Common Crawl index queries
-// - Neon PostgreSQL storage
-// - Cloudflare R2 HTML storage
-// - Duplicate URL/content protection
-// - Crawl queue link discovery
+// Neon + Cloudflare R2
 // ============================================================
 
+import pg from "pg";
 import crypto from "crypto";
 import zlib from "zlib";
-import { promisify } from "util";
-import pg from "pg";
 import * as cheerio from "cheerio";
+
 import {
   S3Client,
   PutObjectCommand,
+  HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
-const gunzip = promisify(zlib.gunzip);
 
 // ============================================================
 // CONFIG
@@ -32,40 +23,14 @@ const gunzip = promisify(zlib.gunzip);
 
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
-const R2_ACCOUNT_ID =
-  process.env.R2_ACCOUNT_ID || "";
-
-const R2_ACCESS_KEY_ID =
-  process.env.R2_ACCESS_KEY_ID || "";
-
-const R2_SECRET_ACCESS_KEY =
-  process.env.R2_SECRET_ACCESS_KEY || "";
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
 
 const R2_BUCKET_NAME =
   process.env.R2_BUCKET_NAME || "hexora";
 
-const REQUEST_TIMEOUT =
-  Number(process.env.COMMONCRAWL_TIMEOUT_MS || 120000);
-
-const MAX_RETRIES =
-  Number(process.env.COMMONCRAWL_MAX_RETRIES || 4);
-
-const PAGES_PER_DOMAIN =
-  Number(process.env.COMMONCRAWL_PAGES_PER_DOMAIN || 20);
-
-const MAX_PAGES =
-  Number(process.env.COMMONCRAWL_MAX_PAGES || 200);
-
-const MAX_CONTENT =
-  Number(process.env.COMMONCRAWL_MAX_CONTENT || 150000);
-
-const MAX_LINKS =
-  Number(process.env.COMMONCRAWL_MAX_LINKS || 100);
-
-const DELAY_MS =
-  Number(process.env.COMMONCRAWL_DELAY_MS || 1000);
-
-const COLLECTION_ENV =
+const COMMONCRAWL_COLLECTION =
   process.env.COMMONCRAWL_COLLECTION || "";
 
 const TARGET_DOMAINS = (
@@ -85,57 +50,82 @@ const TARGET_DOMAINS = (
   ].join(",")
 )
   .split(",")
-  .map((x) => x.trim().toLowerCase())
+  .map((x) => x.trim())
   .filter(Boolean);
 
-// ============================================================
-// USER AGENT
-// ============================================================
+const PAGES_PER_DOMAIN = Math.max(
+  1,
+  Number(process.env.COMMONCRAWL_PAGES_PER_DOMAIN || 20)
+);
+
+const MAX_PAGES = Math.max(
+  1,
+  Number(process.env.COMMONCRAWL_MAX_PAGES || 200)
+);
+
+const TIMEOUT_MS = Math.max(
+  10000,
+  Number(process.env.COMMONCRAWL_TIMEOUT_MS || 120000)
+);
+
+const MAX_RETRIES = Math.max(
+  1,
+  Number(process.env.COMMONCRAWL_MAX_RETRIES || 4)
+);
+
+const MAX_CONTENT = Math.max(
+  10000,
+  Number(process.env.CRAWL_MAX_CONTENT || 100000)
+);
+
+const MAX_LINKS = Math.max(
+  10,
+  Number(process.env.CRAWL_MAX_LINKS || 100)
+);
 
 const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
-  "HEXORA-SearchEngine/1.0 (+https://hexorasearch.com/)";
+  "HEXORA-SearchBot/1.0 (+https://hexorasearch.com/)";
 
 // ============================================================
-// NEON
+// VALIDATION
 // ============================================================
 
 if (!DATABASE_URL) {
-  console.error(
-    "[HEXORA] ERROR: DATABASE_URL is missing."
-  );
-  process.exit(1);
+  throw new Error("[HEXORA] DATABASE_URL is missing");
 }
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 30000,
-  ssl: DATABASE_URL.includes("neon.tech")
-    ? { rejectUnauthorized: false }
-    : undefined,
-});
-
-// ============================================================
-// R2
-// ============================================================
 
 if (
   !R2_ACCOUNT_ID ||
   !R2_ACCESS_KEY_ID ||
   !R2_SECRET_ACCESS_KEY
 ) {
-  console.error(
-    "[HEXORA] ERROR: R2 credentials are missing."
+  throw new Error(
+    "[HEXORA] R2 credentials are missing"
   );
-  process.exit(1);
 }
+
+// ============================================================
+// NEON
+// ============================================================
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 30000,
+});
+
+// ============================================================
+// R2
+// ============================================================
 
 const r2 = new S3Client({
   region: "auto",
+
   endpoint:
     `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+
   credentials: {
     accessKeyId: R2_ACCESS_KEY_ID,
     secretAccessKey: R2_SECRET_ACCESS_KEY,
@@ -143,273 +133,154 @@ const r2 = new S3Client({
 });
 
 // ============================================================
-// STATS
+// LOG
 // ============================================================
 
-const stats = {
-  processed: 0,
-  imported: 0,
-  skipped: 0,
-  failed: 0,
-  records: 0,
-  linksQueued: 0,
-  retries: 0,
-};
+function log(...args) {
+  console.log("[HEXORA]", ...args);
+}
 
 // ============================================================
-// HELPERS
+// SLEEP
 // ============================================================
 
 function sleep(ms) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, ms)
-  );
-}
-
-function normalizeUrl(value) {
-  try {
-    const u = new URL(value);
-
-    u.hash = "";
-
-    u.hostname = u.hostname.toLowerCase();
-
-    if (
-      (u.protocol === "https:" && u.port === "443") ||
-      (u.protocol === "http:" && u.port === "80")
-    ) {
-      u.port = "";
-    }
-
-    return u.toString();
-  } catch {
-    return null;
-  }
-}
-
-function sha256(value) {
-  return crypto
-    .createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
-
-function getR2Key(url, contentHash) {
-  const u = new URL(url);
-
-  const host = u.hostname
-    .toLowerCase()
-    .replace(/[^a-z0-9.-]/g, "_");
-
-  return `pages/${host}/${contentHash}.html`;
-}
-
-function detectLanguage(text) {
-  if (!text) return "unknown";
-
-  if (/[\u0980-\u09FF]/.test(text)) {
-    return "bn";
-  }
-
-  if (/[\u0A00-\u0A7F]/.test(text)) {
-    return "pa";
-  }
-
-  if (/[\u0900-\u097F]/.test(text)) {
-    return "hi";
-  }
-
-  if (/[\u0B80-\u0BFF]/.test(text)) {
-    return "ta";
-  }
-
-  if (/[\u0C00-\u0C7F]/.test(text)) {
-    return "te";
-  }
-
-  if (/[\u0C80-\u0CFF]/.test(text)) {
-    return "kn";
-  }
-
-  if (/[\u0D00-\u0D7F]/.test(text)) {
-    return "ml";
-  }
-
-  // Assamese/Bengali script.
-  // Assamese-specific characters are checked first.
-  if (/[ৰৱয়অআইঈউঊএঐওঔ]/.test(text)) {
-    return "as";
-  }
-
-  if (/[\u0400-\u04FF]/.test(text)) {
-    return "ru";
-  }
-
-  if (/[\u4E00-\u9FFF]/.test(text)) {
-    return "zh";
-  }
-
-  if (/[\u3040-\u30FF]/.test(text)) {
-    return "ja";
-  }
-
-  if (/[\uAC00-\uD7AF]/.test(text)) {
-    return "ko";
-  }
-
-  return "en";
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 // ============================================================
-// FETCH WITH RETRY
+// TIMEOUT FETCH
 // ============================================================
 
-async function fetchWithRetry(
+async function fetchWithTimeout(
   url,
   options = {},
-  label = "request"
+  timeout = TIMEOUT_MS
+) {
+  const controller = new AbortController();
+
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeout);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ============================================================
+// FETCH WITH RETRIES
+// ============================================================
+
+async function fetchRetry(
+  url,
+  options = {},
+  retries = MAX_RETRIES
 ) {
   let lastError = null;
 
-  for (
-    let attempt = 1;
-    attempt <= MAX_RETRIES;
-    attempt++
-  ) {
-    const controller = new AbortController();
-
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, REQUEST_TIMEOUT);
-
+  for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          "User-Agent": USER_AGENT,
-          ...(options.headers || {}),
-        },
-      });
+      const response = await fetchWithTimeout(
+        url,
+        options
+      );
 
-      clearTimeout(timer);
-
-      if (
-        response.ok
-      ) {
+      if (response.ok) {
         return response;
       }
 
-      const retryable =
-        response.status === 408 ||
-        response.status === 425 ||
-        response.status === 429 ||
-        response.status === 500 ||
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504;
+      const status = response.status;
 
-      if (!retryable) {
+      if (
+        status !== 408 &&
+        status !== 429 &&
+        status < 500
+      ) {
         throw new Error(
-          `${label}: HTTP ${response.status}`
+          `HTTP ${status}`
         );
       }
 
-      lastError = new Error(
-        `${label}: HTTP ${response.status}`
+      throw new Error(
+        `HTTP ${status}`
       );
-
-      console.log(
-        `[HEXORA] ${label} failed: HTTP ${response.status} ` +
-        `(attempt ${attempt}/${MAX_RETRIES})`
-      );
-
-      if (attempt < MAX_RETRIES) {
-        stats.retries++;
-
-        const wait =
-          Math.min(
-            30000,
-            2000 * Math.pow(2, attempt - 1)
-          );
-
-        console.log(
-          `[HEXORA] Retry in ${wait}ms...`
-        );
-
-        await sleep(wait);
-      }
     } catch (error) {
-      clearTimeout(timer);
-
       lastError = error;
 
-      const message =
-        error?.name === "AbortError"
-          ? "TIMEOUT"
-          : error?.message || String(error);
-
-      console.log(
-        `[HEXORA] ${label} error: ${message} ` +
-        `(attempt ${attempt}/${MAX_RETRIES})`
+      log(
+        `Request failed: ${url} (attempt ${attempt}/${retries})`
       );
 
-      if (attempt < MAX_RETRIES) {
-        stats.retries++;
+      log(
+        `Reason: ${error.message}`
+      );
 
-        const wait =
+      if (attempt < retries) {
+        const delay =
           Math.min(
             30000,
             2000 * Math.pow(2, attempt - 1)
           );
 
-        await sleep(wait);
+        log(
+          `Retry in ${delay}ms...`
+        );
+
+        await sleep(delay);
       }
     }
   }
 
-  throw lastError || new Error(
-    `${label}: request failed`
-  );
+  throw lastError;
 }
 
 // ============================================================
 // COMMON CRAWL COLLECTION
 // ============================================================
 
-async function getCollection() {
-  if (COLLECTION_ENV) {
-    console.log(
-      `[HEXORA] Using configured collection: ${COLLECTION_ENV}`
-    );
-
-    return COLLECTION_ENV;
+async function discoverCollection() {
+  if (COMMONCRAWL_COLLECTION) {
+    return COMMONCRAWL_COLLECTION;
   }
 
-  console.log(
-    "[HEXORA] Discovering Common Crawl collection..."
+  log(
+    "Discovering Common Crawl collection..."
   );
 
-  const response = await fetchWithRetry(
+  const response = await fetchRetry(
     "https://index.commoncrawl.org/collinfo.json",
-    {},
-    "Collection discovery"
+    {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "application/json",
+      },
+    }
   );
 
   const data = await response.json();
 
-  if (!Array.isArray(data) || data.length === 0) {
+  if (!Array.isArray(data) || !data.length) {
     throw new Error(
-      "Common Crawl collection list is empty."
+      "Common Crawl collection list is empty"
     );
   }
 
+  // First collection is normally newest.
   const collection =
-    data.find((x) => x.id)?.id;
+    data[0]?.id ||
+    data[0]?.name;
 
   if (!collection) {
     throw new Error(
-      "Could not determine Common Crawl collection."
+      "Could not determine Common Crawl collection"
     );
   }
 
@@ -421,66 +292,71 @@ async function getCollection() {
 // ============================================================
 
 async function queryIndex(
-  indexUrl,
+  collection,
   domain
 ) {
+  const indexBase =
+    `https://index.commoncrawl.org/${collection}-index`;
+
   const queries = [
     `https://${domain}/*`,
     `http://${domain}/*`,
+    `*.${domain}/*`,
   ];
 
-  let allRecords = [];
+  let records = [];
 
-  for (const urlPattern of queries) {
+  for (const pattern of queries) {
+    if (records.length >= PAGES_PER_DOMAIN) {
+      break;
+    }
+
     const params = new URLSearchParams();
 
-    params.set(
-      "url",
-      urlPattern
-    );
-
-    params.set(
-      "output",
-      "json"
-    );
-
-    params.set(
-      "filter",
-      "status:200"
-    );
-
+    params.set("url", pattern);
+    params.set("output", "json");
+    params.set("filter", "status:200");
     params.append(
       "filter",
       "mime:text/html"
     );
-
     params.set(
       "collapse",
       "urlkey"
     );
+    params.set(
+      "pageSize",
+      String(
+        Math.max(
+          PAGES_PER_DOMAIN * 2,
+          50
+        )
+      )
+    );
 
     const url =
-      `${indexUrl}?${params.toString()}`;
+      `${indexBase}?${params.toString()}`;
 
-    console.log(
-      `[HEXORA] Querying: ${urlPattern}`
+    log(
+      `Querying: ${pattern}`
     );
 
     try {
       const response =
-        await fetchWithRetry(
-          url,
-          {},
-          `Index ${domain}`
-        );
+        await fetchRetry(url, {
+          headers: {
+            "User-Agent": USER_AGENT,
+            Accept: "application/json",
+          },
+        });
 
       const text =
         await response.text();
 
       const lines =
         text
-          .split("\n")
-          .map((x) => x.trim())
+          .split(/\r?\n/)
+          .map((line) => line.trim())
           .filter(Boolean);
 
       for (const line of lines) {
@@ -495,172 +371,376 @@ async function queryIndex(
             record.offset !== undefined &&
             record.length !== undefined
           ) {
-            allRecords.push(record);
+            records.push(record);
           }
         } catch {
-          // Ignore malformed JSONL line.
+          // Ignore malformed index line.
         }
       }
     } catch (error) {
-      console.log(
-        `[HEXORA] Query failed for ${domain}: ` +
-        `${error.message}`
+      log(
+        `Index query failed: ${error.message}`
       );
     }
-
-    if (
-      allRecords.length >=
-      PAGES_PER_DOMAIN
-    ) {
-      break;
-    }
-
-    await sleep(1000);
   }
 
   // Remove duplicate URLs.
-  const map = new Map();
+  const unique = new Map();
 
-  for (const record of allRecords) {
-    const normalized =
-      normalizeUrl(record.url);
-
-    if (!normalized) continue;
-
-    if (!map.has(normalized)) {
-      map.set(normalized, {
-        ...record,
-        url: normalized,
-      });
+  for (const record of records) {
+    if (!unique.has(record.url)) {
+      unique.set(
+        record.url,
+        record
+      );
     }
   }
 
-  return Array.from(map.values())
-    .slice(0, PAGES_PER_DOMAIN);
+  return Array.from(
+    unique.values()
+  ).slice(
+    0,
+    PAGES_PER_DOMAIN
+  );
 }
 
 // ============================================================
-// WARC DOWNLOAD
+// DOWNLOAD WARC RECORD
 // ============================================================
 
-async function downloadWarcRecord(record) {
+async function downloadWarcRecord(
+  record
+) {
   const start =
     Number(record.offset);
 
   const length =
     Number(record.length);
 
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(length) ||
+    start < 0 ||
+    length <= 0
+  ) {
+    throw new Error(
+      "Invalid WARC range"
+    );
+  }
+
   const end =
     start + length - 1;
 
-  const warcUrl =
+  const url =
     `https://data.commoncrawl.org/${record.filename}`;
 
   const response =
-    await fetchWithRetry(
-      warcUrl,
-      {
-        headers: {
-          Range:
-            `bytes=${start}-${end}`,
-        },
+    await fetchRetry(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Range: `bytes=${start}-${end}`,
       },
-      "WARC download"
-    );
+    });
 
   const buffer =
     Buffer.from(
       await response.arrayBuffer()
     );
 
+  if (!buffer.length) {
+    throw new Error(
+      "Empty WARC response"
+    );
+  }
+
   return buffer;
 }
 
 // ============================================================
-// EXTRACT HTTP BODY FROM WARC
+// GZIP DECOMPRESS
 // ============================================================
 
-function extractHttpBody(buffer) {
-  let data = buffer;
-
-  // Common Crawl WARC records are usually gzip compressed.
+function decompressWarc(buffer) {
   try {
-    if (
-      data.length >= 2 &&
-      data[0] === 0x1f &&
-      data[1] === 0x8b
-    ) {
-      data = zlib.gunzipSync(data);
-    }
+    return zlib.gunzipSync(buffer);
   } catch {
-    // Continue with original buffer.
+    return buffer;
   }
-
-  const text =
-    data.toString("utf8");
-
-  const httpMarker =
-    "HTTP/";
-
-  const httpIndex =
-    text.indexOf(httpMarker);
-
-  if (httpIndex === -1) {
-    return text;
-  }
-
-  const headerEnd1 =
-    text.indexOf(
-      "\r\n\r\n",
-      httpIndex
-    );
-
-  const headerEnd2 =
-    text.indexOf(
-      "\n\n",
-      httpIndex
-    );
-
-  let bodyStart = -1;
-
-  if (
-    headerEnd1 !== -1 &&
-    headerEnd2 !== -1
-  ) {
-    bodyStart =
-      Math.min(
-        headerEnd1,
-        headerEnd2
-      );
-  } else if (
-    headerEnd1 !== -1
-  ) {
-    bodyStart = headerEnd1;
-  } else if (
-    headerEnd2 !== -1
-  ) {
-    bodyStart = headerEnd2;
-  }
-
-  if (bodyStart === -1) {
-    return text;
-  }
-
-  const separator =
-    text.startsWith(
-      "\r\n\r\n",
-      bodyStart
-    )
-      ? 4
-      : 2;
-
-  return text.slice(
-    bodyStart + separator
-  );
 }
 
 // ============================================================
-// HTML PARSING
+// EXTRACT HTTP RESPONSE
+// ============================================================
+
+function extractHttpResponse(buffer) {
+  const text =
+    buffer.toString(
+      "latin1"
+    );
+
+  let httpStart =
+    text.indexOf("HTTP/");
+
+  if (httpStart < 0) {
+    httpStart = 0;
+  }
+
+  const headerEnd =
+    text.indexOf(
+      "\r\n\r\n",
+      httpStart
+    );
+
+  if (headerEnd < 0) {
+    return {
+      headers: "",
+      body: buffer,
+    };
+  }
+
+  const headersText =
+    text.slice(
+      httpStart,
+      headerEnd
+    );
+
+  const bodyStart =
+    headerEnd + 4;
+
+  const body =
+    buffer.subarray(
+      bodyStart
+    );
+
+  return {
+    headers: headersText,
+    body,
+  };
+}
+
+// ============================================================
+// HTTP BODY DECOMPRESSION
+// ============================================================
+
+function decodeHttpBody(
+  body,
+  headersText
+) {
+  const encodingMatch =
+    headersText.match(
+      /content-encoding\s*:\s*([^\r\n]+)/i
+    );
+
+  if (!encodingMatch) {
+    return body;
+  }
+
+  const encoding =
+    encodingMatch[1]
+      .trim()
+      .toLowerCase();
+
+  try {
+    if (
+      encoding.includes("gzip")
+    ) {
+      return zlib.gunzipSync(
+        body
+      );
+    }
+
+    if (
+      encoding.includes("deflate")
+    ) {
+      return zlib.inflateSync(
+        body
+      );
+    }
+  } catch {
+    return body;
+  }
+
+  return body;
+}
+
+// ============================================================
+// HTML TEXT NORMALIZER
+// ============================================================
+
+function safeString(value) {
+  if (
+    typeof value === "string"
+  ) {
+    return value;
+  }
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return "";
+  }
+
+  try {
+    return String(value);
+  } catch {
+    return "";
+  }
+}
+
+// ============================================================
+// LANGUAGE DETECTION
+// ============================================================
+
+function detectLanguage(
+  text
+) {
+  const value =
+    safeString(text)
+      .slice(0, 30000);
+
+  // Assamese-specific characters FIRST.
+  // Assamese and Bengali share Unicode range,
+  // so Assamese must be checked before Bengali.
+  if (
+    /[ৰৱয়ড়ঢ়]/u.test(value)
+  ) {
+    return "as";
+  }
+
+  if (
+    /[\u0900-\u097F]/u.test(value)
+  ) {
+    return "hi";
+  }
+
+  if (
+    /[\u0980-\u09FF]/u.test(value)
+  ) {
+    return "bn";
+  }
+
+  if (
+    /[\u0A00-\u0A7F]/u.test(value)
+  ) {
+    return "pa";
+  }
+
+  if (
+    /[\u0B80-\u0BFF]/u.test(value)
+  ) {
+    return "ta";
+  }
+
+  if (
+    /[\u0C00-\u0C7F]/u.test(value)
+  ) {
+    return "te";
+  }
+
+  if (
+    /[\u0C80-\u0CFF]/u.test(value)
+  ) {
+    return "kn";
+  }
+
+  if (
+    /[\u0D00-\u0D7F]/u.test(value)
+  ) {
+    return "ml";
+  }
+
+  if (
+    /[\u4E00-\u9FFF]/u.test(value)
+  ) {
+    return "zh";
+  }
+
+  if (
+    /[\u3040-\u30FF]/u.test(value)
+  ) {
+    return "ja";
+  }
+
+  if (
+    /[\uAC00-\uD7AF]/u.test(value)
+  ) {
+    return "ko";
+  }
+
+  if (
+    /[\u0600-\u06FF]/u.test(value)
+  ) {
+    return "ar";
+  }
+
+  if (
+    /[\u0400-\u04FF]/u.test(value)
+  ) {
+    return "ru";
+  }
+
+  return "en";
+}
+
+// ============================================================
+// CLEAN URL
+// ============================================================
+
+function normalizeUrl(
+  value
+) {
+  try {
+    const url =
+      new URL(value);
+
+    url.hash = "";
+
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+// ============================================================
+// CONTENT HASH
+// ============================================================
+
+function sha256(
+  value
+) {
+  return crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex");
+}
+
+// ============================================================
+// R2 KEY
+// ============================================================
+
+function makeR2Key(
+  url,
+  contentHash
+) {
+  let hostname =
+    "unknown";
+
+  try {
+    hostname =
+      new URL(url).hostname;
+  } catch {}
+
+  hostname =
+    hostname
+      .replace(/[^a-zA-Z0-9.-]/g, "_")
+      .toLowerCase();
+
+  return `pages/${hostname}/${contentHash}.html`;
+}
+
+// ============================================================
+// PARSE HTML
 // ============================================================
 
 function parseHtml(
@@ -669,42 +749,92 @@ function parseHtml(
 ) {
   const $ =
     cheerio.load(
-      html,
+      safeString(html),
       {
         decodeEntities: true,
       }
     );
 
-  $(
-    "script, style, noscript, svg, canvas, iframe"
-  ).remove();
+  $("script").remove();
+  $("style").remove();
+  $("noscript").remove();
+  $("svg").remove();
 
-  const title =
+  // ----------------------------------------------------------
+  // TITLE
+  // ----------------------------------------------------------
+
+  const titleRaw =
     $("title")
       .first()
-      .text()
+      .text();
+
+  const title =
+    safeString(titleRaw)
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 500);
 
-  const description =
-    $('meta[name="description"]')
-      .attr("content") ||
-    $('meta[property="og:description"]')
-      .attr("content") ||
-    "";
+  // ----------------------------------------------------------
+  // DESCRIPTION
+  // ----------------------------------------------------------
 
-  const text =
-    $("body")
-      .text(" ")
+  const descriptionRaw =
+    $('meta[name="description"]')
+      .first()
+      .attr("content");
+
+  const ogDescriptionRaw =
+    $('meta[property="og:description"]')
+      .first()
+      .attr("content");
+
+  const description =
+    safeString(
+      descriptionRaw ||
+      ogDescriptionRaw ||
+      ""
+    )
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, MAX_CONTENT);
+      .slice(0, 1000);
+
+  // ----------------------------------------------------------
+  // BODY TEXT
+  // ----------------------------------------------------------
+
+  const bodyTextRaw =
+    $("body")
+      .text();
+
+  // IMPORTANT:
+  // Cheerio may return a non-string value in
+  // certain overloaded cases. Never directly call
+  // .replace() on .text().
+  const bodyText =
+    safeString(bodyTextRaw);
+
+  const content =
+    bodyText
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(
+        0,
+        MAX_CONTENT
+      );
+
+  // ----------------------------------------------------------
+  // LANGUAGE
+  // ----------------------------------------------------------
 
   const language =
     detectLanguage(
-      `${title} ${description} ${text}`
+      `${title} ${description} ${content}`
     );
+
+  // ----------------------------------------------------------
+  // LINKS
+  // ----------------------------------------------------------
 
   const links = [];
 
@@ -716,10 +846,15 @@ function parseHtml(
         return;
       }
 
-      const href =
+      const hrefRaw =
         $(element).attr("href");
 
-      if (!href) return;
+      const href =
+        safeString(hrefRaw);
+
+      if (!href) {
+        return;
+      }
 
       try {
         const absolute =
@@ -737,17 +872,9 @@ function parseHtml(
 
         absolute.hash = "";
 
-        const normalized =
-          normalizeUrl(
-            absolute.toString()
-          );
-
-        if (
-          normalized &&
-          !links.includes(normalized)
-        ) {
-          links.push(normalized);
-        }
+        links.push(
+          absolute.toString()
+        );
       } catch {
         // Ignore invalid links.
       }
@@ -756,26 +883,71 @@ function parseHtml(
 
   return {
     title,
-    description:
-      description
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 2000),
-    text,
+    description,
+    content,
     language,
     links,
   };
 }
 
 // ============================================================
-// CHECK PAGE EXISTS
+// R2 UPLOAD
 // ============================================================
 
-async function pageExists(url) {
+async function uploadToR2(
+  key,
+  html
+) {
+  const body =
+    Buffer.from(
+      safeString(html),
+      "utf8"
+    );
+
+  await r2.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+      Body: body,
+      ContentType:
+        "text/html; charset=utf-8",
+      CacheControl:
+        "public, max-age=31536000",
+    })
+  );
+}
+
+// ============================================================
+// R2 CHECK
+// ============================================================
+
+async function checkR2() {
+  await r2.send(
+    new HeadBucketCommand({
+      Bucket: R2_BUCKET_NAME,
+    })
+  );
+
+  log(
+    `R2 bucket check: ${R2_BUCKET_NAME}`
+  );
+}
+
+// ============================================================
+// CHECK EXISTING PAGE
+// ============================================================
+
+async function pageExists(
+  url
+) {
   const result =
     await pool.query(
       `
-      SELECT id, content_hash, r2_key
+      SELECT
+        id,
+        url,
+        content_hash,
+        r2_key
       FROM pages
       WHERE url = $1
       LIMIT 1
@@ -787,66 +959,7 @@ async function pageExists(url) {
 }
 
 // ============================================================
-// CHECK CONTENT HASH
-// ============================================================
-
-async function contentExists(
-  contentHash
-) {
-  const result =
-    await pool.query(
-      `
-      SELECT id, url, r2_key
-      FROM pages
-      WHERE content_hash = $1
-      LIMIT 1
-      `,
-      [contentHash]
-    );
-
-  return result.rows[0] || null;
-}
-
-// ============================================================
-// SAVE HTML TO R2
-// ============================================================
-
-async function saveToR2(
-  url,
-  html,
-  contentHash
-) {
-  const key =
-    getR2Key(
-      url,
-      contentHash
-    );
-
-  await r2.send(
-    new PutObjectCommand({
-      Bucket:
-        R2_BUCKET_NAME,
-
-      Key: key,
-
-      Body:
-        Buffer.from(html, "utf8"),
-
-      ContentType:
-        "text/html; charset=utf-8",
-
-      Metadata: {
-        url: encodeURIComponent(url),
-        contenthash: contentHash,
-      },
-    })
-  );
-
-  return key;
-}
-
-// ============================================================
-// SAVE PAGE TO NEON
+// SAVE PAGE
 // ============================================================
 
 async function savePage({
@@ -854,64 +967,58 @@ async function savePage({
   title,
   description,
   content,
-  contentHash,
   language,
+  contentHash,
   r2Key,
 }) {
-  const wordCount =
-    content
-      .split(/\s+/)
-      .filter(Boolean)
-      .length;
+  const result =
+    await pool.query(
+      `
+      INSERT INTO pages
+      (
+        url,
+        title,
+        description,
+        content,
+        content_hash,
+        language,
+        r2_key,
+        updated_at
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        NOW()
+      )
+      ON CONFLICT (url)
+      DO UPDATE SET
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        content = EXCLUDED.content,
+        content_hash = EXCLUDED.content_hash,
+        language = EXCLUDED.language,
+        r2_key = EXCLUDED.r2_key,
+        updated_at = NOW()
+      RETURNING id
+      `,
+      [
+        url,
+        title,
+        description,
+        content,
+        contentHash,
+        language,
+        r2Key,
+      ]
+    );
 
-  await pool.query(
-    `
-    INSERT INTO pages
-    (
-      url,
-      title,
-      description,
-      content,
-      content_hash,
-      word_count,
-      language,
-      r2_key,
-      updated_at
-    )
-    VALUES
-    (
-      $1,
-      $2,
-      $3,
-      $4,
-      $5,
-      $6,
-      $7,
-      $8,
-      NOW()
-    )
-    ON CONFLICT (url)
-    DO UPDATE SET
-      title = EXCLUDED.title,
-      description = EXCLUDED.description,
-      content = EXCLUDED.content,
-      content_hash = EXCLUDED.content_hash,
-      word_count = EXCLUDED.word_count,
-      language = EXCLUDED.language,
-      r2_key = EXCLUDED.r2_key,
-      updated_at = NOW()
-    `,
-    [
-      url,
-      title,
-      description,
-      content,
-      contentHash,
-      wordCount,
-      language,
-      r2Key,
-    ]
-  );
+  return result.rows[0];
 }
 
 // ============================================================
@@ -922,10 +1029,10 @@ async function queueLinks(
   links
 ) {
   if (!links.length) {
-    return 0;
+    return;
   }
 
-  let added = 0;
+  let inserted = 0;
 
   for (const url of links) {
     try {
@@ -949,16 +1056,17 @@ async function queueLinks(
         [url]
       );
 
-      added++;
+      inserted++;
     } catch (error) {
-      // Queue schema may differ on older database.
-      console.log(
-        `[HEXORA] Queue insert skipped: ${error.message}`
+      // Do not make a successful page import fail
+      // because crawl_queue schema/status differs.
+      log(
+        `Queue insert skipped: ${error.message}`
       );
     }
   }
 
-  return added;
+  return inserted;
 }
 
 // ============================================================
@@ -968,64 +1076,84 @@ async function queueLinks(
 async function importRecord(
   record
 ) {
+  const originalUrl =
+    safeString(record.url);
+
   const url =
-    normalizeUrl(record.url);
+    normalizeUrl(
+      originalUrl
+    );
 
-  if (!url) {
-    stats.skipped++;
-    return;
-  }
-
-  console.log(
-    `[HEXORA] Processing: ${url}`
+  log(
+    `Processing: ${url}`
   );
 
   // ----------------------------------------------------------
-  // URL duplicate
+  // Duplicate URL check
   // ----------------------------------------------------------
 
   const existing =
     await pageExists(url);
 
   if (existing) {
-    console.log(
-      `[HEXORA] Already indexed: ${url}`
+    log(
+      `Already indexed: ${url}`
     );
 
-    stats.skipped++;
-    return;
+    return {
+      status: "duplicate",
+    };
   }
 
   // ----------------------------------------------------------
   // Download WARC
   // ----------------------------------------------------------
 
-  const warc =
+  const compressed =
     await downloadWarcRecord(
       record
     );
 
-  if (!warc || !warc.length) {
-    throw new Error(
-      "Empty WARC record"
+  // ----------------------------------------------------------
+  // Decompress WARC
+  // ----------------------------------------------------------
+
+  const warc =
+    decompressWarc(
+      compressed
     );
-  }
 
   // ----------------------------------------------------------
-  // Extract HTML
+  // Extract HTTP
   // ----------------------------------------------------------
+
+  const httpResponse =
+    extractHttpResponse(
+      warc
+    );
+
+  const decodedBody =
+    decodeHttpBody(
+      httpResponse.body,
+      httpResponse.headers
+    );
 
   const html =
-    extractHttpBody(warc);
+    decodedBody.toString(
+      "utf8"
+    );
 
-  if (!html || html.length < 100) {
+  if (
+    !html ||
+    html.length < 50
+  ) {
     throw new Error(
-      "HTML content is empty or too small"
+      "HTML body is empty or too small"
     );
   }
 
   // ----------------------------------------------------------
-  // Parse
+  // Parse HTML
   // ----------------------------------------------------------
 
   const parsed =
@@ -1035,76 +1163,91 @@ async function importRecord(
     );
 
   if (
-    !parsed.text ||
-    parsed.text.length < 50
+    !parsed.title &&
+    !parsed.content
   ) {
     throw new Error(
-      "Page has insufficient text content"
+      "No useful HTML content found"
     );
   }
 
   // ----------------------------------------------------------
-  // Hash
+  // HASH
   // ----------------------------------------------------------
 
   const contentHash =
-    sha256(
-      parsed.text
-    );
+    sha256(html);
 
   // ----------------------------------------------------------
-  // Content duplicate
+  // Check duplicate content
   // ----------------------------------------------------------
 
-  const duplicate =
-    await contentExists(
-      contentHash
+  const duplicateContent =
+    await pool.query(
+      `
+      SELECT id, url
+      FROM pages
+      WHERE content_hash = $1
+      LIMIT 1
+      `,
+      [contentHash]
     );
 
-  if (duplicate) {
-    console.log(
-      `[HEXORA] Duplicate content skipped: ${url}`
+  if (
+    duplicateContent.rows.length
+  ) {
+    log(
+      `Duplicate content: ${url}`
     );
 
-    stats.skipped++;
-    return;
+    return {
+      status: "duplicate-content",
+    };
   }
 
   // ----------------------------------------------------------
-  // R2
+  // R2 KEY
   // ----------------------------------------------------------
 
   const r2Key =
-    await saveToR2(
+    makeR2Key(
       url,
-      html,
       contentHash
     );
 
-  console.log(
-    `[HEXORA] R2 saved: ${r2Key}`
+  // ----------------------------------------------------------
+  // SAVE HTML TO R2 FIRST
+  // ----------------------------------------------------------
+
+  await uploadToR2(
+    r2Key,
+    html
+  );
+
+  log(
+    `R2 saved: ${r2Key}`
   );
 
   // ----------------------------------------------------------
-  // Neon
+  // SAVE PAGE TO NEON
   // ----------------------------------------------------------
 
   await savePage({
     url,
     title: parsed.title,
     description: parsed.description,
-    content: parsed.text,
-    contentHash,
+    content: parsed.content,
     language: parsed.language,
+    contentHash,
     r2Key,
   });
 
-  console.log(
-    `[HEXORA] Neon saved: ${url}`
+  log(
+    `Neon saved: ${url}`
   );
 
   // ----------------------------------------------------------
-  // Queue discovered links
+  // DISCOVER LINKS
   // ----------------------------------------------------------
 
   const queued =
@@ -1112,95 +1255,16 @@ async function importRecord(
       parsed.links
     );
 
-  stats.linksQueued += queued;
-
-  console.log(
-    `[HEXORA] Language: ${parsed.language}`
+  log(
+    `Links discovered: ${parsed.links.length}, queue attempted: ${queued || 0}`
   );
 
-  console.log(
-    `[HEXORA] Links discovered: ${parsed.links.length}`
-  );
-
-  console.log(
-    `[HEXORA] Links queued: ${queued}`
-  );
-
-  stats.imported++;
-}
-
-// ============================================================
-// PROCESS DOMAIN
-// ============================================================
-
-async function processDomain(
-  indexUrl,
-  domain
-) {
-  console.log("");
-  console.log(
-    "------------------------------------------------------------"
-  );
-  console.log(
-    `[HEXORA] DOMAIN: ${domain}`
-  );
-  console.log(
-    "------------------------------------------------------------"
-  );
-
-  let records = [];
-
-  try {
-    records =
-      await queryIndex(
-        indexUrl,
-        domain
-      );
-  } catch (error) {
-    console.log(
-      `[HEXORA] Domain query failed: ${error.message}`
-    );
-
-    return;
-  }
-
-  stats.records += records.length;
-
-  console.log(
-    `[HEXORA] Found ${records.length} records for ${domain}`
-  );
-
-  for (
-    const record of records
-  ) {
-    if (
-      stats.processed >= MAX_PAGES
-    ) {
-      return;
-    }
-
-    stats.processed++;
-
-    try {
-      await importRecord(
-        record
-      );
-    } catch (error) {
-      stats.failed++;
-
-      console.log(
-        `[HEXORA] Import failed: ${record.url}`
-      );
-
-      console.log(
-        `[HEXORA] Reason: ${error.message}`
-      );
-    }
-
-    await sleep(
-      DELAY_MS
-    );
-  }
+  return {
+    status: "imported",
+    url,
+    language: parsed.language,
+    r2Key,
+  };
 }
 
 // ============================================================
@@ -1208,210 +1272,234 @@ async function processDomain(
 // ============================================================
 
 async function main() {
-  console.log("");
-  console.log(
-    "============================================================"
-  );
-  console.log(
-    "             HEXORA COMMON CRAWL IMPORTER"
-  );
-  console.log(
-    "============================================================"
+  log(
+    "=================================================="
   );
 
-  console.log(
-    `[HEXORA] R2 bucket: ${R2_BUCKET_NAME}`
+  log(
+    "HEXORA COMMON CRAWL IMPORTER"
   );
 
-  console.log(
-    `[HEXORA] Pages/domain: ${PAGES_PER_DOMAIN}`
+  log(
+    "=================================================="
   );
 
-  console.log(
-    `[HEXORA] Maximum pages: ${MAX_PAGES}`
+  log(
+    `R2 bucket: ${R2_BUCKET_NAME}`
   );
 
-  console.log(
-    `[HEXORA] Timeout: ${REQUEST_TIMEOUT}ms`
+  log(
+    `Pages/domain: ${PAGES_PER_DOMAIN}`
   );
 
-  console.log(
-    `[HEXORA] Max retries: ${MAX_RETRIES}`
+  log(
+    `Maximum pages: ${MAX_PAGES}`
   );
 
-  console.log(
-    `[HEXORA] Target domains: ${TARGET_DOMAINS.join(",")}`
+  log(
+    `Timeout: ${TIMEOUT_MS}ms`
   );
 
-  console.log(
-    "============================================================"
+  log(
+    `Max retries: ${MAX_RETRIES}`
+  );
+
+  log(
+    `Target domains: ${TARGET_DOMAINS.join(",")}`
   );
 
   // ----------------------------------------------------------
-  // Test Neon
+  // NEON TEST
   // ----------------------------------------------------------
 
-  try {
+  const dbTest =
     await pool.query(
-      "SELECT 1"
+      "SELECT NOW() AS now"
     );
 
-    console.log(
-      `[HEXORA] Neon connected: ${new Date()}`
-    );
-  } catch (error) {
-    console.error(
-      `[HEXORA] Neon connection failed: ${error.message}`
-    );
-
-    process.exit(1);
-  }
-
-  // ----------------------------------------------------------
-  // Test R2
-  // ----------------------------------------------------------
-
-  try {
-    console.log(
-      `[HEXORA] R2 bucket check: ${R2_BUCKET_NAME}`
-    );
-
-    // A harmless upload test is avoided.
-    // Actual R2 validation happens on first page.
-  } catch (error) {
-    console.error(
-      `[HEXORA] R2 configuration error: ${error.message}`
-    );
-
-    process.exit(1);
-  }
-
-  // ----------------------------------------------------------
-  // Collection
-  // ----------------------------------------------------------
-
-  let collection;
-
-  try {
-    collection =
-      await getCollection();
-
-    console.log(
-      `[HEXORA] Using collection: ${collection}`
-    );
-  } catch (error) {
-    console.error(
-      `[HEXORA] Collection discovery failed: ${error.message}`
-    );
-
-    process.exit(1);
-  }
-
-  const indexUrl =
-    `https://index.commoncrawl.org/${collection}-index`;
-
-  console.log(
-    `[HEXORA] Index URL: ${indexUrl}`
+  log(
+    `Neon connected: ${dbTest.rows[0].now}`
   );
 
   // ----------------------------------------------------------
-  // Domains
+  // R2 TEST
+  // ----------------------------------------------------------
+
+  await checkR2();
+
+  // ----------------------------------------------------------
+  // COLLECTION
+  // ----------------------------------------------------------
+
+  const collection =
+    await discoverCollection();
+
+  log(
+    `Using collection: ${collection}`
+  );
+
+  log(
+    `Index URL: https://index.commoncrawl.org/${collection}-index`
+  );
+
+  // ----------------------------------------------------------
+  // STATS
+  // ----------------------------------------------------------
+
+  let processed = 0;
+  let imported = 0;
+  let duplicates = 0;
+  let duplicateContent = 0;
+  let failed = 0;
+
+  // ----------------------------------------------------------
+  // DOMAIN LOOP
   // ----------------------------------------------------------
 
   for (
     const domain of TARGET_DOMAINS
   ) {
     if (
-      stats.processed >= MAX_PAGES
+      processed >= MAX_PAGES
     ) {
-      console.log(
-        "[HEXORA] Maximum page limit reached."
-      );
-
       break;
     }
 
-    await processDomain(
-      indexUrl,
-      domain
+    log(
+      `DOMAIN: ${domain}`
     );
 
-    // Small pause between domains.
-    await sleep(1500);
+    let records = [];
+
+    try {
+      records =
+        await queryIndex(
+          collection,
+          domain
+        );
+
+      log(
+        `Found ${records.length} records for ${domain}`
+      );
+    } catch (error) {
+      log(
+        `Index ${domain} failed: ${error.message}`
+      );
+
+      continue;
+    }
+
+    // --------------------------------------------------------
+    // RECORD LOOP
+    // --------------------------------------------------------
+
+    for (
+      const record of records
+    ) {
+      if (
+        processed >= MAX_PAGES
+      ) {
+        break;
+      }
+
+      processed++;
+
+      try {
+        const result =
+          await importRecord(
+            record
+          );
+
+        if (
+          result.status ===
+          "imported"
+        ) {
+          imported++;
+        } else if (
+          result.status ===
+          "duplicate"
+        ) {
+          duplicates++;
+        } else if (
+          result.status ===
+          "duplicate-content"
+        ) {
+          duplicateContent++;
+        }
+      } catch (error) {
+        failed++;
+
+        log(
+          `Import failed: ${record.url}`
+        );
+
+        log(
+          `Reason: ${error.message}`
+        );
+      }
+
+      // Small delay so the service does not
+      // hammer Common Crawl/R2/Neon.
+      await sleep(250);
+    }
   }
 
   // ----------------------------------------------------------
-  // Final stats
+  // FINAL STATS
   // ----------------------------------------------------------
 
-  console.log("");
-  console.log(
-    "============================================================"
+  log(
+    "=================================================="
   );
 
-  console.log(
-    "[HEXORA] COMMON CRAWL IMPORT COMPLETE"
+  log(
+    "COMMON CRAWL IMPORT COMPLETE"
   );
 
-  console.log(
-    "============================================================"
+  log(
+    `Processed: ${processed}`
   );
 
-  console.log(
-    `[HEXORA] Records found: ${stats.records}`
+  log(
+    `Imported: ${imported}`
   );
 
-  console.log(
-    `[HEXORA] Processed: ${stats.processed}`
+  log(
+    `Duplicate URLs: ${duplicates}`
   );
 
-  console.log(
-    `[HEXORA] Imported: ${stats.imported}`
+  log(
+    `Duplicate content: ${duplicateContent}`
   );
 
-  console.log(
-    `[HEXORA] Skipped: ${stats.skipped}`
+  log(
+    `Failed: ${failed}`
   );
 
-  console.log(
-    `[HEXORA] Failed: ${stats.failed}`
+  log(
+    `R2 bucket: ${R2_BUCKET_NAME}`
   );
 
-  console.log(
-    `[HEXORA] Retries: ${stats.retries}`
+  log(
+    `Neon: connected`
   );
 
-  console.log(
-    `[HEXORA] Links queued: ${stats.linksQueued}`
-  );
-
-  console.log(
-    `[HEXORA] R2 bucket: ${R2_BUCKET_NAME}`
-  );
-
-  console.log(
-    `[HEXORA] Collection: ${collection}`
-  );
-
-  console.log(
-    "============================================================"
+  log(
+    "=================================================="
   );
 
   await pool.end();
 }
 
 // ============================================================
-// START
+// ERROR HANDLER
 // ============================================================
 
-main().catch(
-  async (error) => {
-    console.error("");
+main()
+  .catch(async (error) => {
     console.error(
-      "[HEXORA] FATAL ERROR:"
-    );
-    console.error(
-      error?.stack || error?.message || error
+      "[HEXORA] Common Crawl importer fatal error:",
+      error
     );
 
     try {
@@ -1419,5 +1507,4 @@ main().catch(
     } catch {}
 
     process.exit(1);
-  }
-);
+  });
