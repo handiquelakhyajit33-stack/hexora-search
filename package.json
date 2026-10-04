@@ -1,14 +1,18 @@
 {
   "name": "hexora-search-engine",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
     "crawler": "node worker/worker.mjs",
+    "migrate:supabase": "node migrate-supabase.mjs",
+    "archive:neon": "node archive-neon-to-r2.mjs",
+    "rank": "node recalculate-authority.mjs",
     "import:commoncrawl": "node commoncrawl-importer.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.922.0",
     "@supabase/supabase-js": "^2.57.0",
     "cheerio": "^1.1.2",
     "maplibre-gl": "^6.11.2",
