@@ -1,1100 +1,1262 @@
+// ============================================================
+// HEXORA SEARCH ENGINE - CRAWLER
+// Neon PostgreSQL + Cloudflare R2
+// ============================================================
+
+import crypto from "crypto";
 import * as cheerio from "cheerio";
-import { createHash } from "node:crypto";
 import pg from "pg";
-import {
-  putHtml,
-  makeR2Key
-} from "./storage.mjs";
+import { putHtml } from "./storage.mjs";
 
-const {
-  Pool
-} = pg;
+const { Pool } = pg;
 
+// ============================================================
+// CONFIG
+// ============================================================
 
-const DATABASE_URL =
-  process.env.DATABASE_URL || "";
+const DATABASE_URL = process.env.DATABASE_URL || "";
 
-
-if (!DATABASE_URL) {
-
-  throw new Error(
-    "DATABASE_URL is missing"
-  );
-
-}
-
-
-const pool =
-  new Pool({
-
-    connectionString:
-      DATABASE_URL,
-
-    max:
-      Number(
-        process.env.CRAWLER_DB_POOL_MAX || 5
-      ),
-
-    connectionTimeoutMillis:
-      10000,
-
-    ssl:
-      DATABASE_URL.includes("neon.") ||
-      DATABASE_URL.includes("neon.tech")
-        ? {
-            rejectUnauthorized:
-              false
-          }
-        : undefined
-
-  });
-
-
-const UA =
+const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
   "HEXORA-Bot/1.0 (+https://hexorasearch.com/crawler)";
 
-
-const TIMEOUT =
-  Number(
-    process.env.CRAWL_TIMEOUT_MS ||
-    15000
-  );
-
+const REQUEST_TIMEOUT =
+  Number(process.env.CRAWL_TIMEOUT_MS || 15000);
 
 const MAX_CONTENT =
-  Number(
-    process.env.CRAWL_MAX_CONTENT ||
-    120000
-  );
-
+  Number(process.env.CRAWL_MAX_CONTENT || 120000);
 
 const MAX_LINKS =
-  Number(
-    process.env.CRAWL_MAX_LINKS ||
-    120
-  );
-
+  Number(process.env.CRAWL_MAX_LINKS || 120);
 
 const DOMAIN_DELAY =
-  Number(
-    process.env.CRAWL_DOMAIN_DELAY_MS ||
-    1000
-  );
+  Number(process.env.CRAWL_DOMAIN_DELAY_MS || 1000);
 
+const MAX_REDIRECTS = 5;
 
-const lastDomain =
-  new Map();
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  ssl: DATABASE_URL
+    ? { rejectUnauthorized: false }
+    : undefined,
+});
 
+// ============================================================
+// HELPERS
+// ============================================================
 
 function sleep(ms) {
-
-  return new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
-  );
-
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sha256(value) {
+  return crypto
+    .createHash("sha256")
+    .update(String(value || ""), "utf8")
+    .digest("hex");
+}
 
-async function allowed(
-  url
-) {
-
-  const u =
-    new URL(url);
-
-
-  const last =
-    lastDomain.get(
-      u.hostname
-    ) || 0;
-
-
-  if (
-    Date.now() -
-    last <
-    DOMAIN_DELAY
-  ) {
-
-    await sleep(
-      DOMAIN_DELAY -
-      (
-        Date.now() -
-        last
-      )
-    );
-  }
-
-
-  lastDomain.set(
-    u.hostname,
-    Date.now()
-  );
-
-
+function normalizeUrl(input, baseUrl = null) {
   try {
+    const url = baseUrl
+      ? new URL(input, baseUrl)
+      : new URL(input);
 
-    const r =
-      await fetch(
-        `${u.origin}/robots.txt`,
-        {
-          headers: {
-            "user-agent": UA
-          },
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return null;
+    }
 
-          signal:
-            AbortSignal.timeout(
-              5000
-            )
-        }
-      );
+    url.hash = "";
 
+    // Remove common tracking parameters.
+    const removeParams = [
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "gclid",
+      "fbclid",
+      "mc_cid",
+      "mc_eid",
+    ];
 
-    if (!r.ok)
-      return true;
+    for (const param of removeParams) {
+      url.searchParams.delete(param);
+    }
 
-
-    const txt =
-      await r.text();
-
-
-    return robotsAllows(
-      txt,
-      u.pathname
-    );
-
+    return url.toString();
   } catch {
-
-    return true;
-
+    return null;
   }
 }
 
+function isValidCrawlUrl(url) {
+  try {
+    const u = new URL(url);
 
-function robotsAllows(
-  txt,
-  path
-) {
+    if (!["http:", "https:"].includes(u.protocol)) {
+      return false;
+    }
 
-  let applies =
-    false;
+    const host = u.hostname.toLowerCase();
 
-  let rules =
-    [];
+    if (!host || host.length < 3) {
+      return false;
+    }
 
+    // Skip obvious non-web resources.
+    const blockedExtensions = [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".webp",
+      ".svg",
+      ".ico",
+      ".mp3",
+      ".wav",
+      ".mp4",
+      ".webm",
+      ".avi",
+      ".mov",
+      ".zip",
+      ".rar",
+      ".7z",
+      ".gz",
+      ".tar",
+      ".pdf",
+      ".doc",
+      ".docx",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx",
+      ".apk",
+      ".exe",
+      ".dmg",
+      ".iso",
+    ];
 
-  for (
-    const raw of
-    txt.split(/\r?\n/)
-  ) {
-
-    const line =
-      raw
-        .split("#")[0]
-        .trim();
-
-
-    if (!line)
-      continue;
-
-
-    const i =
-      line.indexOf(":");
-
-
-    if (i < 0)
-      continue;
-
-
-    const key =
-      line
-        .slice(0, i)
-        .trim()
-        .toLowerCase();
-
-
-    const val =
-      line
-        .slice(i + 1)
-        .trim();
-
+    const pathname = u.pathname.toLowerCase();
 
     if (
-      key === "user-agent"
+      blockedExtensions.some((ext) =>
+        pathname.endsWith(ext)
+      )
     ) {
-
-      applies =
-        val === "*" ||
-        val.toLowerCase() ===
-          "hexora-bot";
-
-
-      if (applies)
-        rules = [];
-
-    } else if (
-      key === "disallow" &&
-      applies &&
-      val
-    ) {
-
-      rules.push(
-        val
-      );
+      return false;
     }
+
+    // Skip login/auth/action URLs.
+    const blockedParts = [
+      "/login",
+      "/signin",
+      "/sign-in",
+      "/signup",
+      "/sign-up",
+      "/register",
+      "/logout",
+      "/wp-login.php",
+    ];
+
+    if (
+      blockedParts.some((part) =>
+        pathname.includes(part)
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getDomain(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function detectLanguage(text) {
+  const value = String(text || "");
+
+  if (!value.trim()) {
+    return "unknown";
   }
 
+  // Assamese / Bengali Unicode range.
+  const assameseBengali =
+    (value.match(/[\u0980-\u09FF]/g) || []).length;
 
-  return !rules.some(
-    r =>
-      path.startsWith(r)
-  );
-}
+  // Devanagari.
+  const devanagari =
+    (value.match(/[\u0900-\u097F]/g) || []).length;
 
+  // Arabic.
+  const arabic =
+    (value.match(/[\u0600-\u06FF]/g) || []).length;
 
-function cleanText(s) {
+  // CJK.
+  const cjk =
+    (value.match(/[\u4E00-\u9FFF]/g) || []).length;
 
-  return String(
-    s || ""
-  )
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim();
+  const latin =
+    (value.match(/[A-Za-z]/g) || []).length;
 
-}
+  const total =
+    assameseBengali +
+    devanagari +
+    arabic +
+    cjk +
+    latin;
 
+  if (!total) {
+    return "unknown";
+  }
 
-function detectLanguage(
-  text
-) {
-
-  const s =
-    String(text || "");
-
-
-  if (
-    /[\u0980-\u09FF]/u.test(s)
-  )
+  if (assameseBengali / total > 0.20) {
     return "as";
+  }
 
-
-  if (
-    /[\u0900-\u097F]/u.test(s)
-  )
+  if (devanagari / total > 0.20) {
     return "hi";
+  }
 
+  if (arabic / total > 0.20) {
+    return "ar";
+  }
 
-  if (
-    /[\u0B80-\u0BFF]/u.test(s)
-  )
-    return "ta";
+  if (cjk / total > 0.20) {
+    return "zh";
+  }
 
-
-  if (
-    /[\u0C00-\u0C7F]/u.test(s)
-  )
-    return "te";
-
-
-  if (
-    /[\u0C80-\u0CFF]/u.test(s)
-  )
-    return "kn";
-
-
-  if (
-    /[\u0D00-\u0D7F]/u.test(s)
-  )
-    return "ml";
-
-
-  if (
-    /[A-Za-z]/.test(s)
-  )
+  if (latin / total > 0.50) {
     return "en";
-
+  }
 
   return "unknown";
 }
 
+function cleanText(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/\u00a0/g, " ")
+    .trim();
+}
 
-function parseHTML(
-  finalUrl,
-  html
-) {
+function getText($) {
+  $("script, style, noscript, template, svg").remove();
 
-  const $ =
-    cheerio.load(
-      html
-    );
+  return cleanText(
+    $("body").text()
+  );
+}
 
+function getDescription($) {
+  const description =
+    $('meta[name="description"]').attr("content") ||
+    $('meta[property="og:description"]').attr("content") ||
+    "";
 
-  $(
-    "script,style,noscript,template,svg"
-  ).remove();
+  return cleanText(description).slice(0, 2000);
+}
 
+function getTitle($) {
+  const title =
+    $("title").first().text() ||
+    $('meta[property="og:title"]').attr("content") ||
+    "";
 
+  return cleanText(title).slice(0, 1000);
+}
+
+function getCanonical($, currentUrl) {
   const canonical =
-    $(
-      'link[rel="canonical"]'
-    ).attr(
-      "href"
-    );
+    $('link[rel="canonical"]').attr("href");
 
+  if (!canonical) {
+    return currentUrl;
+  }
 
-  let canonicalUrl =
-    finalUrl;
+  return (
+    normalizeUrl(canonical, currentUrl) ||
+    currentUrl
+  );
+}
 
+function calculateQuality({
+  title,
+  description,
+  content,
+  wordCount,
+}) {
+  let score = 0;
+
+  if (title) score += 20;
+  if (description) score += 15;
+
+  if (wordCount >= 50) score += 10;
+  if (wordCount >= 200) score += 10;
+  if (wordCount >= 500) score += 10;
+  if (wordCount >= 1000) score += 10;
+
+  if (content.length >= 1000) score += 10;
+  if (content.length >= 5000) score += 5;
+  if (content.length >= 10000) score += 5;
+
+  return Math.min(100, score);
+}
+
+// ============================================================
+// ROBOTS.TXT
+// ============================================================
+
+const robotsCache = new Map();
+
+async function fetchRobots(domain) {
+  const cached = robotsCache.get(domain);
+
+  if (
+    cached &&
+    Date.now() - cached.timestamp < 15 * 60 * 1000
+  ) {
+    return cached;
+  }
+
+  const robotsUrl = `https://${domain}/robots.txt`;
 
   try {
+    const controller = new AbortController();
 
-    if (canonical) {
+    const timer = setTimeout(
+      () => controller.abort(),
+      10000
+    );
 
-      canonicalUrl =
-        new URL(
-          canonical,
-          finalUrl
-        ).href;
+    const response = await fetch(
+      robotsUrl,
+      {
+        method: "GET",
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/plain,*/*",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      }
+    );
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const result = {
+        allowAll: true,
+        rules: [],
+        timestamp: Date.now(),
+      };
+
+      robotsCache.set(domain, result);
+
+      return result;
     }
 
-  } catch {}
+    const text = await response.text();
 
+    const rules = [];
 
-  const title =
-    cleanText(
-      $("title")
-        .first()
-        .text()
-    ).slice(
-      0,
-      500
-    );
+    let active = false;
 
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine
+        .split("#")[0]
+        .trim();
 
-  const description =
-    cleanText(
+      if (!line) continue;
 
-      $(
-        'meta[name="description"]'
-      ).attr(
-        "content"
-      ) ||
+      const index = line.indexOf(":");
 
-      $(
-        'meta[property="og:description"]'
-      ).attr(
-        "content"
-      ) ||
+      if (index === -1) continue;
 
-      ""
+      const key = line
+        .slice(0, index)
+        .trim()
+        .toLowerCase();
 
-    ).slice(
-      0,
-      1200
-    );
+      const value = line
+        .slice(index + 1)
+        .trim();
 
-
-  const text =
-    cleanText(
-      $("body").text()
-    ).slice(
-      0,
-      MAX_CONTENT
-    );
-
-
-  const excerpt =
-    text.slice(
-      0,
-      900
-    );
-
-
-  const links = [];
-
-
-  $("a[href]").each(
-    (_, el) => {
+      if (key === "user-agent") {
+        active =
+          value === "*" ||
+          value.toLowerCase() === "hexora-bot";
+      }
 
       if (
-        links.length >=
-        MAX_LINKS
-      )
-        return;
-
-
-      const href =
-        $(el).attr(
-          "href"
-        );
-
-
-      if (!href)
-        return;
-
-
-      try {
-
-        const x =
-          new URL(
-            href,
-            finalUrl
-          );
-
-
-        if (
-          ![
-            "http:",
-            "https:"
-          ].includes(
-            x.protocol
-          )
-        )
-          return;
-
-
-        x.hash = "";
-
-
-        const target =
-          x.href;
-
-
-        if (
-          target ===
-          canonicalUrl
-        )
-          return;
-
-
-        links.push({
-
-          url: target,
-
-          anchor_text:
-            cleanText(
-              $(el).text()
-            ).slice(
-              0,
-              200
-            )
-
+        active &&
+        key === "disallow" &&
+        value
+      ) {
+        rules.push({
+          type: "disallow",
+          path: value,
         });
+      }
 
-      } catch {}
-
+      if (
+        active &&
+        key === "allow" &&
+        value
+      ) {
+        rules.push({
+          type: "allow",
+          path: value,
+        });
+      }
     }
-  );
 
+    const result = {
+      allowAll: rules.length === 0,
+      rules,
+      timestamp: Date.now(),
+    };
 
-  const unique =
-    [
-      ...new Map(
-        links.map(
-          x => [
-            x.url,
-            x
-          ]
-        )
-      ).values()
-    ];
+    robotsCache.set(domain, result);
 
+    return result;
+  } catch {
+    // If robots.txt cannot be reached, do not
+    // unnecessarily kill the entire crawler.
+    const result = {
+      allowAll: true,
+      rules: [],
+      timestamp: Date.now(),
+    };
 
-  return {
+    robotsCache.set(domain, result);
 
-    canonical:
-      canonicalUrl,
-
-    title,
-
-    description,
-
-    text,
-
-    excerpt,
-
-    language:
-      detectLanguage(
-        `${title} ${description} ${text}`
-      ),
-
-    links:
-      unique
-
-  };
+    return result;
+  }
 }
 
-
-async function sha256(
-  text
-) {
-
-  return createHash(
-    "sha256"
-  )
-    .update(text)
-    .digest("hex");
-
-}
-
-
-export async function crawlOne(
-  job
-) {
-
-  const {
-    id,
-    url
-  } = job;
-
+function isAllowedByRobots(url, robots) {
+  if (!robots || robots.allowAll) {
+    return true;
+  }
 
   try {
+    const pathname =
+      new URL(url).pathname || "/";
 
-    const u =
-      new URL(url);
+    let allowed = true;
+    let bestLength = -1;
 
+    for (const rule of robots.rules) {
+      const rulePath = rule.path || "";
 
-    if (
-      ![
-        "http:",
-        "https:"
-      ].includes(
-        u.protocol
-      )
-    ) {
+      if (!pathname.startsWith(rulePath)) {
+        continue;
+      }
 
-      throw new Error(
-        "Unsupported URL scheme"
-      );
+      if (rulePath.length < bestLength) {
+        continue;
+      }
+
+      bestLength = rulePath.length;
+
+      if (rule.type === "disallow") {
+        allowed = false;
+      }
+
+      if (rule.type === "allow") {
+        allowed = true;
+      }
     }
 
+    return allowed;
+  } catch {
+    return true;
+  }
+}
 
-    if (
-      !(await allowed(url))
-    ) {
+// ============================================================
+// FETCH HTML
+// ============================================================
 
-      await pool.query(
+async function fetchHtml(url) {
+  const controller = new AbortController();
 
-        `
-        UPDATE crawl_queue
+  const timer = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT
+  );
 
-        SET
-          status='blocked',
-          finished_at=NOW(),
-          error=$1
+  try {
+    const response = await fetch(
+      url,
+      {
+        method: "GET",
 
-        WHERE id=$2
-        `,
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept:
+            "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "Accept-Language":
+            "en-US,en;q=0.8,as;q=0.7,hi;q=0.6",
+        },
 
-        [
-          "robots.txt",
-          id
-        ]
-      );
+        redirect: "follow",
 
+        signal: controller.signal,
+      }
+    );
 
+    const finalUrl =
+      normalizeUrl(
+        response.url || url
+      ) || url;
+
+    const status = response.status;
+
+    if (!response.ok) {
       return {
-        status:
-          "blocked",
-
-        url
+        ok: false,
+        status,
+        finalUrl,
+        error: `HTTP ${status}`,
       };
     }
 
-
-    const response =
-      await fetch(
-        url,
-        {
-
-          redirect:
-            "follow",
-
-          headers: {
-
-            "user-agent":
-              UA,
-
-            "accept":
-              "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
-
-          },
-
-          signal:
-            AbortSignal.timeout(
-              TIMEOUT
-            )
-        }
-      );
-
-
     const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
-
+      response.headers.get("content-type") || "";
 
     if (
-      !response.ok
+      !contentType.includes("text/html") &&
+      !contentType.includes("application/xhtml+xml")
     ) {
-
-      throw new Error(
-        `HTTP ${response.status}`
-      );
+      return {
+        ok: false,
+        status,
+        finalUrl,
+        error: `Not HTML: ${contentType}`,
+      };
     }
-
-
-    if (
-      !contentType.includes(
-        "text/html"
-      ) &&
-      !contentType.includes(
-        "application/xhtml+xml"
-      )
-    ) {
-
-      throw new Error(
-        `Not HTML: ${contentType}`
-      );
-    }
-
 
     const html =
       await response.text();
 
-
-    const finalUrl =
-      response.url ||
-      url;
-
-
-    const parsed =
-      parseHTML(
+    if (!html || html.length < 100) {
+      return {
+        ok: false,
+        status,
         finalUrl,
-        html
+        error: "Empty or very small HTML",
+      };
+    }
+
+    return {
+      ok: true,
+      status,
+      finalUrl,
+      html,
+      contentType,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      finalUrl: url,
+      error:
+        error?.name === "AbortError"
+          ? "Request timeout"
+          : error?.message || String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ============================================================
+// PARSE HTML
+// ============================================================
+
+function parseHtml(html, url) {
+  const $ = cheerio.load(html);
+
+  const title = getTitle($);
+
+  const description =
+    getDescription($);
+
+  const canonical =
+    getCanonical($, url);
+
+  const content =
+    getText($).slice(0, MAX_CONTENT);
+
+  const wordCount =
+    content
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
+
+  const language =
+    detectLanguage(
+      `${title} ${description} ${content}`
+    );
+
+  const qualityScore =
+    calculateQuality({
+      title,
+      description,
+      content,
+      wordCount,
+    });
+
+  const links = [];
+
+  $("a[href]").each(
+    (_, element) => {
+      if (links.length >= MAX_LINKS) {
+        return;
+      }
+
+      const href =
+        $(element).attr("href");
+
+      if (!href) return;
+
+      const normalized =
+        normalizeUrl(
+          href,
+          canonical
+        );
+
+      if (!normalized) return;
+
+      if (
+        !isValidCrawlUrl(normalized)
+      ) {
+        return;
+      }
+
+      links.push(normalized);
+    }
+  );
+
+  return {
+    title,
+    description,
+    canonical,
+    content,
+    wordCount,
+    language,
+    qualityScore,
+    links: [...new Set(links)],
+  };
+}
+
+// ============================================================
+// DATABASE HELPERS
+// ============================================================
+
+async function pageExists(url) {
+  const result = await pool.query(
+    `
+    SELECT id
+    FROM pages
+    WHERE url = $1
+    LIMIT 1
+    `,
+    [url]
+  );
+
+  return result.rowCount > 0;
+}
+
+async function savePage({
+  url,
+  finalUrl,
+  title,
+  description,
+  content,
+  contentHash,
+  wordCount,
+  language,
+  qualityScore,
+  r2Key,
+}) {
+  const result = await pool.query(
+    `
+    INSERT INTO pages (
+      url,
+      title,
+      description,
+      content,
+      content_hash,
+      word_count,
+      language,
+      r2_key,
+      quality_score,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9,
+      NOW()
+    )
+
+    ON CONFLICT (url)
+    DO UPDATE SET
+      title = EXCLUDED.title,
+      description = EXCLUDED.description,
+      content = EXCLUDED.content,
+      content_hash = EXCLUDED.content_hash,
+      word_count = EXCLUDED.word_count,
+      language = EXCLUDED.language,
+      r2_key = EXCLUDED.r2_key,
+      quality_score = EXCLUDED.quality_score,
+      updated_at = NOW()
+
+    RETURNING id
+    `,
+    [
+      finalUrl || url,
+      title,
+      description,
+      content,
+      contentHash,
+      wordCount,
+      language,
+      r2Key,
+      qualityScore,
+    ]
+  );
+
+  return result.rows[0]?.id || null;
+}
+
+async function queueDiscoveredLinks(
+  links,
+  sourceUrl
+) {
+  if (!links.length) {
+    return;
+  }
+
+  for (const link of links) {
+    try {
+      await pool.query(
+        `
+        INSERT INTO crawl_queue (
+          url,
+          status,
+          created_at
+        )
+        VALUES (
+          $1,
+          'queued',
+          NOW()
+        )
+        ON CONFLICT (url)
+        DO NOTHING
+        `,
+        [link]
       );
+    } catch (error) {
+      console.warn(
+        "[HEXORA] queue link failed:",
+        link,
+        error?.message || error
+      );
+    }
+  }
 
+  // Store link relationships if table exists.
+  for (const link of links.slice(0, 50)) {
+    try {
+      await pool.query(
+        `
+        INSERT INTO page_links (
+          source_url,
+          target_url
+        )
+        VALUES (
+          $1,
+          $2
+        )
+        ON CONFLICT DO NOTHING
+        `,
+        [sourceUrl, link]
+      );
+    } catch {
+      // page_links is optional for crawler survival.
+    }
+  }
+}
 
-    if (
-      !parsed.title &&
-      !parsed.text
-    ) {
+async function markQueueDone(
+  jobId
+) {
+  if (!jobId) return;
 
-      throw new Error(
-        "Empty page"
+  await pool.query(
+    `
+    UPDATE crawl_queue
+    SET
+      status = 'done',
+      last_crawled_at = NOW(),
+      last_error = NULL
+    WHERE id = $1
+    `,
+    [jobId]
+  );
+}
+
+async function markQueueFailed(
+  jobId,
+  error
+) {
+  if (!jobId) return;
+
+  await pool.query(
+    `
+    UPDATE crawl_queue
+    SET
+      status = 'failed',
+      last_crawled_at = NOW(),
+      last_error = $2
+    WHERE id = $1
+    `,
+    [
+      jobId,
+      String(error || "Unknown error").slice(
+        0,
+        2000
+      ),
+    ]
+  );
+}
+
+// ============================================================
+// SINGLE URL CRAWL
+// ============================================================
+
+export async function crawlUrl(
+  job
+) {
+  const jobId =
+    job?.id ?? null;
+
+  const originalUrl =
+    job?.url || job;
+
+  const url =
+    normalizeUrl(originalUrl);
+
+  if (!url) {
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        "Invalid URL"
       );
     }
 
+    return {
+      ok: false,
+      url: originalUrl,
+      error: "Invalid URL",
+    };
+  }
 
-    const hash =
-      await sha256(
-        html
+  if (!isValidCrawlUrl(url)) {
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        "URL blocked by crawler rules"
       );
+    }
 
+    return {
+      ok: false,
+      url,
+      error: "URL blocked",
+    };
+  }
 
-    const r2Key =
-      makeR2Key(
-        parsed.canonical,
-        hash
+  const domain =
+    getDomain(url);
+
+  // ----------------------------------------------------------
+  // ROBOTS
+  // ----------------------------------------------------------
+
+  const robots =
+    await fetchRobots(domain);
+
+  if (
+    !isAllowedByRobots(
+      url,
+      robots
+    )
+  ) {
+    if (jobId) {
+      await pool.query(
+        `
+        UPDATE crawl_queue
+        SET
+          status = 'blocked',
+          last_crawled_at = NOW(),
+          last_error = $2
+        WHERE id = $1
+        `,
+        [
+          jobId,
+          "Blocked by robots.txt",
+        ]
       );
-
-
-    const r2 =
-      await putHtml(
-        r2Key,
-        html,
-        {
-          "source-url":
-            parsed.canonical,
-
-          "content-hash":
-            hash
-        }
-      );
-
-
-    const domain =
-      new URL(
-        parsed.canonical
-      )
-        .hostname
-        .toLowerCase();
-
-
-    const wordCount =
-      parsed.text
-        ? parsed.text
-            .split(/\s+/)
-            .filter(Boolean)
-            .length
-        : 0;
-
-
-    const client =
-      await pool.connect();
-
-
-    try {
-
-      await client.query(
-        "BEGIN"
-      );
-
-
-      const page =
-        await client.query(
-
-          `
-          INSERT INTO pages(
-
-            url,
-            canonical_url,
-            title,
-            description,
-            excerpt,
-            content,
-            domain,
-            language,
-            content_hash,
-            word_count,
-            status_code,
-            crawl_status,
-            last_crawled_at,
-            updated_at,
-            r2_key,
-            r2_etag,
-            outbound_links
-
-          )
-
-          VALUES(
-
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            $8,
-            $9,
-            $10,
-            $11,
-            'indexed',
-            NOW(),
-            NOW(),
-            $12,
-            $13,
-            $14
-
-          )
-
-          ON CONFLICT(url)
-
-          DO UPDATE SET
-
-            canonical_url =
-              EXCLUDED.canonical_url,
-
-            title =
-              EXCLUDED.title,
-
-            description =
-              EXCLUDED.description,
-
-            excerpt =
-              EXCLUDED.excerpt,
-
-            content =
-              EXCLUDED.content,
-
-            domain =
-              EXCLUDED.domain,
-
-            language =
-              EXCLUDED.language,
-
-            content_hash =
-              EXCLUDED.content_hash,
-
-            word_count =
-              EXCLUDED.word_count,
-
-            status_code =
-              EXCLUDED.status_code,
-
-            crawl_status =
-              'indexed',
-
-            last_crawled_at =
-              NOW(),
-
-            updated_at =
-              NOW(),
-
-            r2_key =
-              EXCLUDED.r2_key,
-
-            r2_etag =
-              EXCLUDED.r2_etag,
-
-            outbound_links =
-              EXCLUDED.outbound_links
-
-          RETURNING id
-          `,
-
-          [
-
-            parsed.canonical,
-
-            parsed.canonical,
-
-            parsed.title,
-
-            parsed.description,
-
-            parsed.excerpt,
-
-            parsed.text,
-
-            domain,
-
-            parsed.language,
-
-            hash,
-
-            wordCount,
-
-            response.status,
-
-            r2.key,
-
-            r2.etag,
-
-            parsed.links.length
-
-          ]
-        );
-
-
-      const pageId =
-        page.rows[0].id;
-
-
-      for (
-        const link of
-        parsed.links
-      ) {
-
-        await client.query(
-
-          `
-          INSERT INTO crawl_queue(
-
-            url,
-            status,
-            priority,
-            discovered_from
-
-          )
-
-          VALUES(
-
-            $1,
-            'pending',
-            50,
-            $2
-
-          )
-
-          ON CONFLICT(url)
-          DO NOTHING
-          `,
-
-          [
-            link.url,
-            parsed.canonical
-          ]
-        );
-
-
-        await client.query(
-
-          `
-          INSERT INTO page_links(
-
-            source_page_id,
-            target_url,
-            anchor_text
-
-          )
-
-          VALUES(
-
-            $1,
-            $2,
-            $3
-
-          )
-
-          ON CONFLICT(
-            source_page_id,
-            target_url
-          )
-
-          DO UPDATE SET
-
-            anchor_text =
-              EXCLUDED.anchor_text
-          `,
-
-          [
-            pageId,
-            link.url,
-            link.anchor_text
-          ]
+    }
+
+    return {
+      ok: false,
+      blocked: true,
+      url,
+      error: "Blocked by robots.txt",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // DUPLICATE CHECK
+  // ----------------------------------------------------------
+
+  try {
+    const exists =
+      await pageExists(url);
+
+    if (exists) {
+      if (jobId) {
+        await markQueueDone(
+          jobId
         );
       }
 
-
-      await client.query(
-
-        `
-        UPDATE crawl_queue
-
-        SET
-          status='done',
-          finished_at=NOW(),
-          error=NULL
-
-        WHERE id=$1
-        `,
-
-        [id]
-      );
-
-
-      await client.query(
-        "COMMIT"
-      );
-
-
-    } catch (e) {
-
-      await client.query(
-        "ROLLBACK"
-      );
-
-      throw e;
-
-    } finally {
-
-      client.release();
-
+      return {
+        ok: true,
+        duplicate: true,
+        url,
+      };
     }
-
-
-    return {
-
-      status:
-        "success",
-
-      url,
-
-      links:
-        parsed.links.length
-
-    };
-
-
-  } catch (e) {
-
-    await pool.query(
-
-      `
-      UPDATE crawl_queue
-
-      SET
-
-        status =
-          CASE
-
-            WHEN attempts >= 3
-              THEN 'failed'
-
-            ELSE
-              'pending'
-
-          END,
-
-        finished_at=NOW(),
-
-        error=$1
-
-      WHERE id=$2
-      `,
-
-      [
-        String(
-          e.message || e
-        ).slice(
-          0,
-          1000
-        ),
-
-        id
-      ]
+  } catch (error) {
+    console.error(
+      "[HEXORA] Neon duplicate check failed:",
+      error?.message || error
     );
 
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        `Database duplicate check failed: ${
+          error?.message || error
+        }`
+      );
+    }
+
+    // IMPORTANT:
+    // If Neon duplicate check fails, do NOT crawl/save.
+    return {
+      ok: false,
+      url,
+      error:
+        "Database duplicate check failed",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // FETCH
+  // ----------------------------------------------------------
+
+  const fetched =
+    await fetchHtml(url);
+
+  if (!fetched.ok) {
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        fetched.error
+      );
+    }
 
     return {
-
-      status:
-        "failed",
-
+      ok: false,
       url,
+      status: fetched.status,
+      error: fetched.error,
+    };
+  }
 
+  const finalUrl =
+    fetched.finalUrl || url;
+
+  // ----------------------------------------------------------
+  // PARSE
+  // ----------------------------------------------------------
+
+  const parsed =
+    parseHtml(
+      fetched.html,
+      finalUrl
+    );
+
+  if (!parsed.content) {
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        "No readable page content"
+      );
+    }
+
+    return {
+      ok: false,
+      url,
       error:
-        String(
-          e.message || e
-        )
+        "No readable page content",
+    };
+  }
 
+  const contentHash =
+    sha256(
+      fetched.html
+    );
+
+  // ----------------------------------------------------------
+  // SAVE FULL HTML TO R2
+  // ----------------------------------------------------------
+
+  let r2;
+
+  try {
+    r2 =
+      await putHtml({
+        url: finalUrl,
+        html: fetched.html,
+        contentHash,
+      });
+  } catch (error) {
+    console.error(
+      "[HEXORA] R2 upload failed:",
+      finalUrl,
+      error?.message || error
+    );
+
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        `R2 upload failed: ${
+          error?.message || error
+        }`
+      );
+    }
+
+    return {
+      ok: false,
+      url: finalUrl,
+      error:
+        "R2 upload failed",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // SAVE METADATA + SEARCH CONTENT TO NEON
+  // ----------------------------------------------------------
+
+  try {
+    const pageId =
+      await savePage({
+        url,
+        finalUrl,
+        title: parsed.title,
+        description:
+          parsed.description,
+        content: parsed.content,
+        contentHash,
+        wordCount:
+          parsed.wordCount,
+        language:
+          parsed.language,
+        qualityScore:
+          parsed.qualityScore,
+        r2Key: r2.key,
+      });
+
+    // --------------------------------------------------------
+    // DISCOVER LINKS
+    // --------------------------------------------------------
+
+    await queueDiscoveredLinks(
+      parsed.links,
+      finalUrl
+    );
+
+    // --------------------------------------------------------
+    // MARK QUEUE JOB DONE
+    // --------------------------------------------------------
+
+    if (jobId) {
+      await markQueueDone(
+        jobId
+      );
+    }
+
+    return {
+      ok: true,
+      pageId,
+      url,
+      finalUrl,
+      title: parsed.title,
+      language: parsed.language,
+      wordCount: parsed.wordCount,
+      links: parsed.links.length,
+      r2Key: r2.key,
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] Neon page save failed:",
+      finalUrl,
+      error?.message || error
+    );
+
+    if (jobId) {
+      await markQueueFailed(
+        jobId,
+        `Neon save failed: ${
+          error?.message || error
+        }`
+      );
+    }
+
+    return {
+      ok: false,
+      url: finalUrl,
+      error:
+        "Neon page save failed",
     };
   }
 }
 
+// ============================================================
+// CRAWL BATCH
+// IMPORTANT: worker/worker.mjs imports this function.
+// ============================================================
 
-export async function claimJobs(
-  limit
+export async function crawlBatch(
+  jobs = []
 ) {
+  if (!Array.isArray(jobs)) {
+    jobs = [];
+  }
 
-  const {
-    rows
-  } =
-    await pool.query(
+  const results = [];
 
-      `
-      SELECT *
-      FROM claim_crawl_jobs($1)
-      `,
+  for (const job of jobs) {
+    try {
+      const result =
+        await crawlUrl(job);
 
-      [limit]
-    );
+      results.push(result);
 
+      // Respect a small delay between domains/requests.
+      await sleep(DOMAIN_DELAY);
+    } catch (error) {
+      console.error(
+        "[HEXORA] Crawl failed:",
+        job?.url || job,
+        error?.message || error
+      );
 
-  return rows;
+      if (job?.id) {
+        try {
+          await markQueueFailed(
+            job.id,
+            error?.message ||
+              String(error)
+          );
+        } catch {}
+      }
+
+      results.push({
+        ok: false,
+        url: job?.url || String(job),
+        error:
+          error?.message ||
+          String(error),
+      });
+    }
+  }
+
+  const successful =
+    results.filter(
+      (r) => r.ok
+    ).length;
+
+  const failed =
+    results.length - successful;
+
+  console.log(
+    `[HEXORA] Batch complete: total=${results.length} successful=${successful} failed=${failed}`
+  );
+
+  return {
+    total: results.length,
+    successful,
+    failed,
+    results,
+  };
 }
 
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 
-export async function closeCrawlerDB() {
+export async function checkCrawlerDatabase() {
+  try {
+    const result =
+      await pool.query(
+        "SELECT NOW() AS now"
+      );
 
+    return {
+      connected: true,
+      now: result.rows[0]?.now || null,
+    };
+  } catch (error) {
+    return {
+      connected: false,
+      error:
+        error?.message ||
+        String(error),
+    };
+  }
+}
+
+// ============================================================
+// SHUTDOWN
+// ============================================================
+
+export async function closeCrawlerDatabase() {
   await pool.end();
-
 }
