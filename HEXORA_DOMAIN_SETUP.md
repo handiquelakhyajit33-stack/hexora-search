@@ -1,18 +1,11 @@
-HEXORA SEARCH FINAL
+# HEXORA Domain Setup
 
-Brand:
-HEXORA
-SEARCH THE WORLD
+Production domain:
 
-Recommended production domain:
-https://hexorasearch.com
+https://www.hexsorasearch.com
 
-After deploying this build, connect hexorasearch.com in Netlify
-and then configure the DNS records Netlify provides in GoDaddy.
+Deploy the HEXORA search service on Railway and attach the custom domain from Railway's service settings.
 
-Supabase environment variables remain server-side:
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-ADMIN_TOKEN
+Configure DNS at the domain registrar exactly as Railway instructs.
 
-Do not put the service-role key in frontend code.
+Keep all secrets server-side. Never put DATABASE_URL, R2 secret keys, or SUPABASE_SERVICE_ROLE_KEY in frontend JavaScript.
