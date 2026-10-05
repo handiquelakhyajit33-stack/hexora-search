@@ -1,32 +1,53 @@
-HEXORA FINAL NETLIFY DEPLOY
+# HEXORA Railway Deployment
 
-1) Supabase খুলক.
-2) SQL Editor -> supabase/schema.sql-ৰ সকলো SQL paste -> Run.
-3) Netlify-ত এই ZIP deploy কৰক.
-4) Netlify -> Site configuration -> Environment variables:
-   SUPABASE_URL = আপোনাৰ Supabase URL
-   SUPABASE_SERVICE_ROLE_KEY = Supabase service role key
-   ADMIN_TOKEN = নিজৰ এটা secret token
-   HEXORA_SEED_URLS = https://en.wikipedia.org/,https://www.india.gov.in/,https://assam.gov.in/,https://www.python.org/
+## Search service
+Railway Start Command:
 
-5) Redeploy.
+```bash
+node server.mjs
+```
 
-Scheduled crawler:
-- প্রতি 2 ঘণ্টাত চলিব.
-- প্রথমে seed URLs queue কৰিব.
-- প্রতি run-ত কেইটামান page fetch কৰি pages table-ত index কৰিব.
-- discovered links queue-ত যোগ হ'ব.
+Required variable:
 
-Manual seed:
-POST /.netlify/functions/seed
-Header: x-admin-token: YOUR_ADMIN_TOKEN
-JSON:
-{"urls":["https://example.com"]}
+```text
+DATABASE_URL
+```
 
-Search:
-Homepage-ত query লিখিলেই /.netlify/functions/search নিজৰ Supabase index search কৰিব.
+Recommended variables:
 
-IMPORTANT:
-HEXORA বাহিৰৰ Google/Bing/Tavily search-result API ব্যৱহাৰ নকৰে. Search coverage index হোৱা pages-ৰ ওপৰত নিৰ্ভৰ কৰিব. Netlify scheduled functions 30-second execution limit-ৰ বাবে crawler-টো small batches-ত design কৰা হৈছে; বৃহৎ web-scale crawlingৰ বাবে Netlify Background Functions/অন্য worker infrastructure ব্যৱহাৰ কৰিব লাগিব.
+```text
+DB_POOL_MAX=8
+```
 
-Mobile fix: responsive header, single HEXORA hero, horizontally scrollable search tabs/trending chips, stacked cards, no duplicated screenshot background.
+## Crawler service
+Create a second Railway service from the same GitHub repository.
+
+Start Command:
+
+```bash
+node worker/worker.mjs
+```
+
+Required variables:
+
+```text
+DATABASE_URL
+R2_ACCOUNT_ID
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
+R2_BUCKET_NAME
+```
+
+Optional crawler variables:
+
+```text
+CRAWL_BATCH_SIZE=8
+CRAWL_INTERVAL_MS=15000
+CRAWL_TIMEOUT_MS=15000
+CRAWL_MAX_HTML_BYTES=3000000
+CRAWL_MAX_CONTENT=120000
+CRAWL_MAX_LINKS=150
+CRAWL_DOMAIN_DELAY_MS=1000
+```
+
+Search and crawler use the same Neon database but run as separate Railway services.
