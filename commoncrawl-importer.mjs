@@ -85,7 +85,7 @@ const MAX_LINKS = Math.max(
 
 const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
-  "HEXORA-SearchBot/1.0 (+https://hexorasearch.com/)";
+  "HEXORA-SearchBot/1.0 (+https://www.hexsorasearch.com/)";
 
 // ============================================================
 // VALIDATION
