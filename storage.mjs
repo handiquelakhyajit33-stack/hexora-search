@@ -1,10 +1,10 @@
 // ============================================================
 // HEXORA STORAGE
 // Cloudflare R2 Storage
-// Bucket: hexora
 // ============================================================
 
 import crypto from "node:crypto";
+
 import {
   S3Client,
   PutObjectCommand,
@@ -25,8 +25,14 @@ const R2_ACCESS_KEY_ID =
 const R2_SECRET_ACCESS_KEY =
   process.env.R2_SECRET_ACCESS_KEY || "";
 
+// IMPORTANT:
+// Cloudflare R2 bucket name must match exactly.
 const BUCKET_NAME =
   process.env.R2_BUCKET_NAME || "hexora";
+
+// ============================================================
+// VALIDATE CONFIG
+// ============================================================
 
 if (!R2_ACCOUNT_ID) {
   console.warn(
@@ -46,14 +52,37 @@ if (!R2_SECRET_ACCESS_KEY) {
   );
 }
 
+if (!BUCKET_NAME) {
+  console.warn(
+    "[HEXORA] R2_BUCKET_NAME is missing"
+  );
+}
+
 // ============================================================
-// R2 CLIENT
+// R2 ENDPOINT
 // ============================================================
 
 const ENDPOINT =
   R2_ACCOUNT_ID
     ? `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`
     : "";
+
+// ============================================================
+// SAFE DIAGNOSTIC
+// Does NOT print secrets.
+// ============================================================
+
+console.log("[HEXORA] R2 CONFIG:", {
+  bucket: BUCKET_NAME,
+  endpoint: ENDPOINT,
+  accountIdConfigured: Boolean(R2_ACCOUNT_ID),
+  accessKeyConfigured: Boolean(R2_ACCESS_KEY_ID),
+  secretConfigured: Boolean(R2_SECRET_ACCESS_KEY),
+});
+
+// ============================================================
+// R2 CLIENT
+// ============================================================
 
 export const r2 = new S3Client({
   region: "auto",
@@ -66,6 +95,7 @@ export const r2 = new S3Client({
       ? {
           accessKeyId:
             R2_ACCESS_KEY_ID,
+
           secretAccessKey:
             R2_SECRET_ACCESS_KEY,
         }
@@ -113,17 +143,6 @@ export function makeR2Key(
 
 // ============================================================
 // PUT HTML
-//
-// Supports:
-//   putHtml({
-//     url,
-//     html,
-//     contentHash,
-//     metadata
-//   })
-//
-// Also supports legacy:
-//   putHtml(url, html, metadata)
 // ============================================================
 
 export async function putHtml(
@@ -137,7 +156,7 @@ export async function putHtml(
   let metadata = {};
 
   // ----------------------------------------------------------
-  // Object style
+  // OBJECT STYLE
   // ----------------------------------------------------------
 
   if (
@@ -161,7 +180,7 @@ export async function putHtml(
   }
 
   // ----------------------------------------------------------
-  // Legacy positional style
+  // LEGACY STYLE
   // ----------------------------------------------------------
 
   else {
@@ -188,7 +207,7 @@ export async function putHtml(
   }
 
   // ----------------------------------------------------------
-  // Generate hash
+  // HASH
   // ----------------------------------------------------------
 
   if (!contentHash) {
@@ -200,7 +219,7 @@ export async function putHtml(
   }
 
   // ----------------------------------------------------------
-  // R2 key
+  // R2 KEY
   // ----------------------------------------------------------
 
   const key =
@@ -210,7 +229,7 @@ export async function putHtml(
     );
 
   // ----------------------------------------------------------
-  // Metadata
+  // METADATA
   // ----------------------------------------------------------
 
   const cleanMetadata = {};
@@ -237,48 +256,79 @@ export async function putHtml(
   }
 
   // ----------------------------------------------------------
-  // Upload
+  // UPLOAD
   // ----------------------------------------------------------
 
-  await r2.send(
-    new PutObjectCommand({
-      Bucket:
+  try {
+    await r2.send(
+      new PutObjectCommand({
+        Bucket:
+          BUCKET_NAME,
+
+        Key:
+          key,
+
+        Body:
+          Buffer.from(
+            html,
+            "utf8"
+          ),
+
+        ContentType:
+          "text/html; charset=utf-8",
+
+        Metadata:
+          cleanMetadata,
+      })
+    );
+
+    console.log(
+      `[HEXORA] R2 saved: ${key}`
+    );
+
+    return {
+      bucket:
         BUCKET_NAME,
 
-      Key:
-        key,
+      key,
 
-      Body:
-        Buffer.from(
-          html,
-          "utf8"
-        ),
+      contentHash,
 
-      ContentType:
-        "text/html; charset=utf-8",
+      etag:
+        null,
 
-      Metadata:
-        cleanMetadata,
-    })
-  );
+      url,
+    };
+  } catch (error) {
+    console.error(
+      "[HEXORA] R2 upload error:",
+      {
+        message:
+          error?.message ||
+          String(error),
 
-  console.log(
-    `[HEXORA] R2 saved: ${key}`
-  );
+        name:
+          error?.name || null,
 
-  return {
-    bucket:
-      BUCKET_NAME,
+        code:
+          error?.Code ||
+          error?.code ||
+          null,
 
-    key,
+        status:
+          error?.$metadata?.httpStatusCode ||
+          null,
 
-    contentHash,
+        bucket:
+          BUCKET_NAME,
 
-    etag:
-      null,
+        endpoint:
+          ENDPOINT,
+      }
+    );
 
-    url,
-  };
+    throw error;
+  }
 }
 
 // ============================================================
@@ -311,10 +361,8 @@ export async function headObject(
 
     if (
       status === 404 ||
-      error?.name ===
-        "NotFound" ||
-      error?.name ===
-        "NoSuchKey"
+      error?.name === "NotFound" ||
+      error?.name === "NoSuchKey"
     ) {
       return null;
     }
@@ -373,8 +421,6 @@ export async function checkR2() {
   }
 
   try {
-    // A deliberately impossible/non-existing key.
-    // This verifies authentication without creating data.
     await r2.send(
       new HeadObjectCommand({
         Bucket:
@@ -395,14 +441,10 @@ export async function checkR2() {
     const status =
       error?.$metadata?.httpStatusCode;
 
-    // 404 means authentication worked;
-    // only the test object does not exist.
     if (
       status === 404 ||
-      error?.name ===
-        "NotFound" ||
-      error?.name ===
-        "NoSuchKey"
+      error?.name === "NotFound" ||
+      error?.name === "NoSuchKey"
     ) {
       return {
         ok: true,
@@ -426,7 +468,7 @@ export async function checkR2() {
 }
 
 // ============================================================
-// R2 CONFIG
+// GET R2 CONFIG
 // ============================================================
 
 export function getR2Config() {
