@@ -4,985 +4,429 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
-const {
-  Pool
-} = pg;
+const { Pool } = pg;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+const PORT = Number(process.env.PORT || 8080);
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
+const DB_POOL_MAX = Math.max(2, Number(process.env.DB_POOL_MAX || 8));
+const MAX_QUERY_LENGTH = 300;
+const MAX_PAGE = 10000;
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 50;
+const SEARCH_CANDIDATE_LIMIT = 2500;
 
-const __filename =
-  fileURLToPath(import.meta.url);
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      max: DB_POOL_MAX,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      ssl: /neon\.tech|neon\.com|neon\.io|neon\./i.test(DATABASE_URL)
+        ? { rejectUnauthorized: false }
+        : undefined,
+    })
+  : null;
 
-const __dirname =
-  path.dirname(__filename);
-
-
-const PORT =
-  Number(
-    process.env.PORT || 8080
-  );
-
-
-const DATABASE_URL =
-  process.env.DATABASE_URL || "";
-
-
-const pool =
-  DATABASE_URL
-    ? new Pool({
-
-        connectionString:
-          DATABASE_URL,
-
-        max:
-          Number(
-            process.env.DB_POOL_MAX || 5
-          ),
-
-        connectionTimeoutMillis:
-          10000,
-
-        idleTimeoutMillis:
-          30000,
-
-        ssl:
-          DATABASE_URL.includes("neon.tech") ||
-          DATABASE_URL.includes("neon.")
-            ? {
-                rejectUnauthorized: false
-              }
-            : undefined
-
-      })
-    : null;
-
-
-function sendJson(
-  res,
-  status,
-  data
-) {
-
-  res.writeHead(
-    status,
-    {
-      "Content-Type":
-        "application/json; charset=utf-8",
-
-      "Access-Control-Allow-Origin":
-        "*",
-
-      "Access-Control-Allow-Methods":
-        "GET,OPTIONS",
-
-      "Access-Control-Allow-Headers":
-        "Content-Type",
-
-      "Cache-Control":
-        "no-store"
-    }
-  );
-
-  res.end(
-    JSON.stringify(data)
-  );
+function sendJson(res, status, data, cache = "no-store") {
+  if (res.headersSent) return;
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": cache,
+  });
+  res.end(JSON.stringify(data));
 }
 
-
-function wordsOf(q) {
-
-  return String(q || "")
+function normalizeQuery(value) {
+  return String(value || "")
     .normalize("NFKC")
-    .toLowerCase()
-
-    .replace(
-      /[^\p{L}\p{N}\s.-]/gu,
-      " "
-    )
-
-    .split(/\s+/)
-
-    .filter(Boolean)
-
-    .slice(0, 12);
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_QUERY_LENGTH);
 }
 
+function wordsOf(query) {
+  return normalizeQuery(query)
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}\s._-]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 16);
+}
 
-function snippet(
-  text,
-  words,
-  max = 320
-) {
+function safeInt(value, fallback, min, max) {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
 
-  const s =
-    String(text || "")
-      .replace(/\s+/g, " ")
-      .trim();
+function freshnessScore(date) {
+  if (!date) return 0;
+  const t = new Date(date).getTime();
+  if (!Number.isFinite(t)) return 0;
+  const ageDays = Math.max(0, (Date.now() - t) / 86400000);
+  return Math.max(0, 30 - Math.log1p(ageDays) * 7);
+}
 
-  if (!s)
-    return "";
-
-  if (!words.length)
-    return s.slice(0, max);
-
-  const low =
-    s.toLocaleLowerCase();
-
-  let pos = -1;
-
-  for (
-    const word of words
-  ) {
-
-    const p =
-      low.indexOf(word);
-
+function makeSnippet(text, words, max = 320) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (!value) return "";
+  if (!words.length) return value.slice(0, max);
+  const lower = value.toLocaleLowerCase();
+  let position = -1;
+  for (const word of words) {
+    const p = lower.indexOf(word);
     if (p >= 0) {
-
-      pos = p;
-
+      position = p;
       break;
     }
   }
-
-  if (pos < 0)
-    return s.slice(0, max);
-
-  const start =
-    Math.max(
-      0,
-      pos - 110
-    );
-
-  const end =
-    Math.min(
-      s.length,
-      pos + max - 110
-    );
-
-  return (
-    (start ? "… " : "") +
-    s.slice(start, end) +
-    (end < s.length ? " …" : "")
-  );
+  if (position < 0) return value.slice(0, max);
+  const start = Math.max(0, position - 110);
+  const end = Math.min(value.length, start + max);
+  return `${start ? "… " : ""}${value.slice(start, end)}${end < value.length ? " …" : ""}`;
 }
 
-
-function freshnessScore(
-  date
-) {
-
-  if (!date)
-    return 0;
-
-  const age =
-    Math.max(
-      0,
-      (
-        Date.now() -
-        new Date(date).getTime()
-      ) / 86400000
-    );
-
-  return Math.max(
-    0,
-    30 -
-      Math.log1p(age) * 7
-  );
+function detectIntent(query) {
+  const q = query.toLocaleLowerCase();
+  if (/\b(news|latest|today|breaking|update)\b/.test(q)) return "news";
+  if (/\b(near me|nearby|map|maps|location|directions|restaurants?|hotels?)\b/.test(q)) return "local";
+  if (/\b(how|what|why|when|where|who|guide|tutorial|meaning)\b/.test(q) || /[?]$/.test(q)) return "informational";
+  if (/\b(buy|price|download|login|sign in|official|website)\b/.test(q)) return "transactional";
+  return "navigational";
 }
 
-
-function safeLimit(
-  value
-) {
-
-  return Math.min(
-    Math.max(
-      Number(value) || 20,
-      1
-    ),
-    50
-  );
+function modeCondition(mode) {
+  if (mode === "images") return "jsonb_array_length(COALESCE(image_items, '[]'::jsonb)) > 0";
+  if (mode === "videos") return "jsonb_array_length(COALESCE(video_items, '[]'::jsonb)) > 0";
+  if (mode === "news") return "published_at IS NOT NULL OR COALESCE(crawl_status, '') = 'news'";
+  return "TRUE";
 }
 
+function resultFromRow(row, mode, words) {
+  const images = Array.isArray(row.image_items) ? row.image_items : [];
+  const videos = Array.isArray(row.video_items) ? row.video_items : [];
+  const image = images[0]?.url || images[0]?.src || "";
+  const video = videos[0]?.url || videos[0]?.src || "";
+  const content = row.content || row.excerpt || row.description || "";
+  const title = String(row.title || row.url || "Untitled");
+  const result = {
+    id: row.id,
+    title,
+    url: row.url,
+    canonical_url: row.canonical_url || row.url,
+    domain: row.domain || "",
+    source: row.domain || "",
+    description: row.description || row.excerpt || "",
+    snippet: makeSnippet(content, words),
+    language: row.language || "unknown",
+    date: row.published_at || row.updated_at || row.last_crawled_at || null,
+    published_at: row.published_at || null,
+    score: Number(Number(row.score || 0).toFixed(5)),
+  };
+  if (image) result.image = image;
+  if (video) result.video_url = video;
+  if (mode === "images") result.image_url = image;
+  return result;
+}
 
-async function searchDatabase(
-  query,
-  limit = 20
-) {
-
-  if (!pool)
-    throw new Error(
-      "DATABASE_URL is missing"
+async function suggestQuery(query) {
+  if (!pool || !query || query.length < 3) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT title FROM pages
+       WHERE title % $1
+       ORDER BY similarity(title, $1) DESC
+       LIMIT 1`,
+      [query]
     );
+    const suggestion = rows[0]?.title?.trim();
+    if (!suggestion || suggestion.toLocaleLowerCase() === query.toLocaleLowerCase()) return null;
+    return suggestion.slice(0, 160);
+  } catch {
+    return null;
+  }
+}
 
-  const words =
-    wordsOf(query);
+async function searchDatabase(query, { mode = "web", page = 1, limit = DEFAULT_LIMIT, language = "" } = {}) {
+  if (!pool) throw new Error("DATABASE_URL is missing");
+  const q = normalizeQuery(query);
+  const words = wordsOf(q);
+  if (!words.length) return { results: [], total: 0, suggestion: null };
 
-  if (!words.length)
-    return [];
-
-  const q =
-    String(query).trim();
-
-  const tsQuery =
-    words.join(" & ");
-
+  const tsQuery = words.join(" & ");
+  const offset = (page - 1) * limit;
+  const intent = detectIntent(q);
+  const languageFilter = language && /^[a-zA-Z-]{2,12}$/.test(language) ? language : "";
+  const condition = modeCondition(mode);
 
   const sql = `
-
-    WITH candidates AS (
-
+    WITH candidate AS (
       SELECT
-
-        id,
-        url,
-        canonical_url,
-        title,
-        description,
-        excerpt,
-        content,
-        domain,
-        language,
-
-        updated_at,
-        published_at,
-        last_crawled_at,
-
-        authority_score,
-        freshness_score,
-        quality_score,
-        popularity_score,
-
-        inbound_links,
-        outbound_links,
-
-        ts_rank_cd(
-          search_vector,
-          websearch_to_tsquery(
-            'simple',
-            $1
+        p.id, p.url, p.canonical_url, p.title, p.description, p.excerpt,
+        p.content, p.domain, p.language, p.updated_at, p.published_at,
+        p.last_crawled_at, p.authority_score, p.quality_score,
+        p.popularity_score, p.inbound_links, p.search_vector,
+        p.image_items, p.video_items,
+        ts_rank_cd(p.search_vector, websearch_to_tsquery('simple', $1), 32) AS fts_rank,
+        similarity(COALESCE(p.title, ''), $2) AS title_sim,
+        similarity(COALESCE(p.url, ''), $2) AS url_sim,
+        similarity(COALESCE(p.domain, ''), $2) AS domain_sim
+      FROM pages p
+      WHERE (${condition})
+        AND ($5 = '' OR COALESCE(p.language, '') = $5)
+        AND (
+          p.search_vector @@ websearch_to_tsquery('simple', $1)
+          OR p.title % $2
+          OR p.url % $2
+          OR p.domain % $2
+          OR EXISTS (
+            SELECT 1 FROM unnest($3::text[]) w
+            WHERE p.title ILIKE '%' || w || '%'
+               OR p.description ILIKE '%' || w || '%'
+               OR p.excerpt ILIKE '%' || w || '%'
+               OR p.content ILIKE '%' || w || '%'
           )
-        ) AS fts_rank,
-
-        similarity(
-          COALESCE(title, ''),
-          $2
-        ) AS title_sim,
-
-        similarity(
-          COALESCE(url, ''),
-          $2
-        ) AS url_sim,
-
-        similarity(
-          COALESCE(domain, ''),
-          $2
-        ) AS domain_sim
-
-      FROM pages
-
-      WHERE
-
-        search_vector @@
-          websearch_to_tsquery(
-            'simple',
-            $1
-          )
-
-        OR title % $2
-
-        OR url % $2
-
-        OR domain % $2
-
-        OR EXISTS (
-
-          SELECT 1
-
-          FROM unnest(
-            $3::text[]
-          ) w
-
-          WHERE
-
-            title ILIKE
-              '%' || w || '%'
-
-            OR description ILIKE
-              '%' || w || '%'
-
-            OR excerpt ILIKE
-              '%' || w || '%'
-
-            OR content ILIKE
-              '%' || w || '%'
         )
-
-      LIMIT 1000
+      ORDER BY fts_rank DESC, title_sim DESC, authority_score DESC
+      LIMIT ${SEARCH_CANDIDATE_LIMIT}
     )
-
-    SELECT *
-
-    FROM candidates
-
+    SELECT *,
+      (
+        (fts_rank * 100.0) +
+        (title_sim * 90.0) +
+        (url_sim * 25.0) +
+        (domain_sim * 20.0) +
+        CASE
+          WHEN lower(title) = lower($2) THEN 260
+          WHEN lower(title) LIKE '%' || lower($2) || '%' THEN 125
+          ELSE 0
+        END +
+        CASE
+          WHEN lower(url) LIKE '%' || lower($2) || '%' THEN 45
+          ELSE 0
+        END +
+        LEAST(100, COALESCE(authority_score, 0)) +
+        LEAST(45, COALESCE(quality_score, 0) * 0.45) +
+        LEAST(25, COALESCE(popularity_score, 0)) +
+        LEAST(30, COALESCE(inbound_links, 0)::double precision * 0.7) +
+        LEAST(20, ${intent === "news" ? "COALESCE(EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, updated_at))) / 86400.0, 9999)" : "0"})
+      ) AS score
+    FROM candidate
+    ORDER BY score DESC, authority_score DESC NULLS LAST, quality_score DESC NULLS LAST
+    LIMIT $4 OFFSET ${offset};
   `;
 
+  const countSql = `
+    SELECT COUNT(*)::bigint AS total
+    FROM pages p
+    WHERE (${condition})
+      AND ($4 = '' OR COALESCE(p.language, '') = $4)
+      AND (
+        p.search_vector @@ websearch_to_tsquery('simple', $1)
+        OR p.title % $2
+        OR p.url % $2
+        OR p.domain % $2
+        OR EXISTS (
+          SELECT 1 FROM unnest($3::text[]) w
+          WHERE p.title ILIKE '%' || w || '%'
+             OR p.description ILIKE '%' || w || '%'
+             OR p.excerpt ILIKE '%' || w || '%'
+             OR p.content ILIKE '%' || w || '%'
+        )
+      );
+  `;
 
-  const {
-    rows
-  } =
-    await pool.query(
-      sql,
-      [
-        tsQuery,
-        q,
-        words
-      ]
-    );
+  const [result, count, suggestion] = await Promise.all([
+    pool.query(sql, [tsQuery, q, words, limit, languageFilter]),
+    pool.query(countSql, [tsQuery, q, words, languageFilter]),
+    page === 1 ? suggestQuery(q) : Promise.resolve(null),
+  ]);
 
+  let rows = result.rows.map((row) => resultFromRow(row, mode, words));
+  const seenDomains = new Set();
+  const diversified = [];
+  const deferred = [];
+  for (const item of rows) {
+    const domain = item.domain || item.url;
+    if (!seenDomains.has(domain) || seenDomains.size >= 5) {
+      diversified.push(item);
+      seenDomains.add(domain);
+    } else {
+      deferred.push(item);
+    }
+  }
+  rows = [...diversified, ...deferred].slice(0, limit);
 
-  return rows
-
-    .map(
-      row => {
-
-        const title =
-          String(
-            row.title ||
-            row.url ||
-            "Untitled"
-          );
-
-        const desc =
-          String(
-            row.description ||
-            row.excerpt ||
-            row.content ||
-            ""
-          );
-
-        const full =
-          q.toLocaleLowerCase();
-
-        const tl =
-          title.toLocaleLowerCase();
-
-        const dl =
-          desc.toLocaleLowerCase();
-
-        const ul =
-          String(
-            row.url || ""
-          ).toLocaleLowerCase();
-
-
-        let score =
-          Number(
-            row.fts_rank || 0
-          ) * 100;
-
-
-        score +=
-          Number(
-            row.title_sim || 0
-          ) * 90;
-
-
-        score +=
-          Number(
-            row.url_sim || 0
-          ) * 30;
-
-
-        score +=
-          Number(
-            row.domain_sim || 0
-          ) * 20;
-
-
-        if (tl === full) {
-
-          score += 220;
-
-        } else if (
-          tl.includes(full)
-        ) {
-
-          score += 120;
-
-        }
-
-
-        if (
-          dl.includes(full)
-        ) {
-
-          score += 45;
-
-        }
-
-
-        if (
-          ul.includes(full)
-        ) {
-
-          score += 40;
-
-        }
-
-
-        score +=
-          Math.min(
-            80,
-            Number(
-              row.authority_score || 0
-            )
-          );
-
-
-        score +=
-          Math.min(
-            40,
-            Number(
-              row.quality_score || 0
-            )
-          );
-
-
-        score +=
-          Math.min(
-            25,
-            Number(
-              row.popularity_score || 0
-            )
-          );
-
-
-        score +=
-          Math.min(
-            20,
-            freshnessScore(
-              row.updated_at ||
-              row.published_at
-            )
-          );
-
-
-        score +=
-          Math.min(
-            30,
-            Math.log1p(
-              Number(
-                row.inbound_links || 0
-              )
-            ) * 8
-          );
-
-
-        return {
-
-          ...row,
-
-          title,
-
-          description:
-            desc ||
-            snippet(
-              row.content,
-              words
-            ),
-
-          snippet:
-            snippet(
-              row.content ||
-              row.excerpt ||
-              desc,
-              words
-            ),
-
-          score:
-            Number(
-              score.toFixed(4)
-            )
-        };
-
-      }
-    )
-
-    .sort(
-      (a, b) =>
-        b.score - a.score
-    )
-
-    .slice(
-      0,
-      safeLimit(limit)
-    );
+  return {
+    results: rows,
+    total: Number(count.rows[0]?.total || 0),
+    suggestion,
+  };
 }
 
-
-const types = {
-
-  ".html":
-    "text/html; charset=utf-8",
-
-  ".htm":
-    "text/html; charset=utf-8",
-
-  ".css":
-    "text/css; charset=utf-8",
-
-  ".js":
-    "application/javascript; charset=utf-8",
-
-  ".json":
-    "application/json; charset=utf-8",
-
-  ".svg":
-    "image/svg+xml",
-
-  ".png":
-    "image/png",
-
-  ".jpg":
-    "image/jpeg",
-
-  ".jpeg":
-    "image/jpeg",
-
-  ".webp":
-    "image/webp"
+const contentTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
 };
 
-
-function serveFile(
-  res,
-  pathname
-) {
-
+function serveFile(res, pathname) {
   let decoded;
-
   try {
-
-    decoded =
-      decodeURIComponent(
-        pathname
-      );
-
+    decoded = decodeURIComponent(pathname || "/");
   } catch {
+    return sendJson(res, 400, { success: false, error: "Invalid path" });
+  }
+  if (decoded.includes("\0")) return sendJson(res, 400, { success: false, error: "Invalid path" });
+  if (decoded === "/") decoded = "/index.html";
 
-    return sendJson(
-      res,
-      400,
-      {
-        success: false,
-        error: "Invalid path"
-      }
-    );
+  const root = path.resolve(__dirname);
+  const filePath = path.resolve(root, `.${decoded}`);
+  if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) {
+    return sendJson(res, 403, { success: false, error: "Forbidden" });
   }
 
-
-  if (
-    decoded.includes("\0")
-  ) {
-
-    return sendJson(
-      res,
-      400,
-      {
-        success: false,
-        error: "Invalid path"
-      }
-    );
+  let target = filePath;
+  if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+    target = path.join(root, "index.html");
+    if (!fs.existsSync(target)) return sendJson(res, 404, { success: false, error: "HEXORA page not found" });
   }
 
-
-  if (
-    decoded === "/"
-  ) {
-
-    decoded =
-      "/index.html";
-  }
-
-
-  const root =
-    path.resolve(
-      __dirname
-    );
-
-
-  const fp =
-    path.resolve(
-      root,
-      "." + decoded
-    );
-
-
-  if (
-    fp !== root &&
-    !fp.startsWith(
-      root + path.sep
-    )
-  ) {
-
-    return sendJson(
-      res,
-      403,
-      {
-        success: false,
-        error: "Forbidden"
-      }
-    );
-  }
-
-
-  if (
-    !fs.existsSync(fp) ||
-    !fs.statSync(fp).isFile()
-  ) {
-
-    const fallback =
-      path.join(
-        root,
-        "index.html"
-      );
-
-
-    if (
-      fs.existsSync(fallback)
-    ) {
-
-      res.writeHead(
-        200,
-        {
-          "Content-Type":
-            "text/html; charset=utf-8",
-
-          "Cache-Control":
-            "no-cache"
-        }
-      );
-
-      return fs
-        .createReadStream(
-          fallback
-        )
-        .pipe(res);
-    }
-
-
-    return sendJson(
-      res,
-      404,
-      {
-        success: false,
-        error:
-          "HEXORA page not found"
-      }
-    );
-  }
-
-
-  res.writeHead(
-    200,
-    {
-      "Content-Type":
-        types[
-          path
-            .extname(fp)
-            .toLowerCase()
-        ] ||
-        "application/octet-stream",
-
-      "Cache-Control":
-        "no-cache"
-    }
-  );
-
-
-  fs
-    .createReadStream(fp)
-    .pipe(res);
+  res.writeHead(200, {
+    "Content-Type": contentTypes[path.extname(target).toLowerCase()] || "application/octet-stream",
+    "Cache-Control": path.basename(target) === "index.html" ? "no-cache" : "public, max-age=300",
+  });
+  fs.createReadStream(target).pipe(res);
 }
 
+async function handle(req, res) {
+  const u = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
-async function handle(
-  req,
-  res
-) {
-
-  const u =
-    new URL(
-      req.url || "/",
-      `http://${req.headers.host || "localhost"}`
-    );
-
-
-  if (
-    req.method === "OPTIONS"
-  ) {
-
-    res.writeHead(
-      204,
-      {
-        "Access-Control-Allow-Origin":
-          "*",
-
-        "Access-Control-Allow-Methods":
-          "GET,OPTIONS",
-
-        "Access-Control-Allow-Headers":
-          "Content-Type"
-      }
-    );
-
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
     return res.end();
   }
 
+  if (req.method !== "GET") return sendJson(res, 405, { success: false, error: "Method not allowed" });
 
-  if (
-    u.pathname === "/health" ||
-    u.pathname === "/api/health"
-  ) {
-
-    let db =
-      "missing";
-
-
+  if (u.pathname === "/health" || u.pathname === "/api/health") {
+    let databaseStatus = "missing";
     if (pool) {
-
       try {
-
-        await pool.query(
-          "SELECT 1"
-        );
-
-        db =
-          "connected";
-
-      } catch (e) {
-
-        db =
-          "error: " +
-          e.message;
+        await pool.query("SELECT 1");
+        databaseStatus = "connected";
+      } catch (error) {
+        databaseStatus = `error: ${error.message}`;
       }
     }
-
-
-    return sendJson(
-      res,
-      200,
-      {
-        success: true,
-
-        status:
-          db === "connected"
-            ? "ok"
-            : "degraded",
-
-        engine:
-          "HEXORA Independent Search Engine",
-
-        database:
-          "Neon PostgreSQL",
-
-        database_status:
-          db,
-
-        index_source:
-          "Neon",
-
-        storage:
-          "Cloudflare R2",
-
-        supabase_v2:
-          "legacy/migration only"
-      }
-    );
+    return sendJson(res, 200, {
+      success: true,
+      status: databaseStatus === "connected" ? "ok" : "degraded",
+      engine: "HEXORA Independent Search Engine",
+      database: "Neon PostgreSQL",
+      database_status: databaseStatus,
+      index_source: "HEXORA indexed data in Neon",
+      raw_storage: "Cloudflare R2",
+    });
   }
 
+  const searchRoutes = new Set([
+    "/search", "/api/search", "/news", "/api/news",
+    "/images", "/api/images", "/videos", "/api/videos",
+  ]);
 
-  const routes = [
+  if (searchRoutes.has(u.pathname)) {
+    const query = normalizeQuery(u.searchParams.get("q") || u.searchParams.get("query") || "");
+    const routeMode = u.pathname.includes("news") ? "news" : u.pathname.includes("images") ? "images" : u.pathname.includes("videos") ? "videos" : (u.searchParams.get("mode") || "web");
+    const mode = ["web", "news", "images", "videos"].includes(routeMode) ? routeMode : "web";
+    const page = safeInt(u.searchParams.get("page"), 1, 1, MAX_PAGE);
+    const limit = safeInt(u.searchParams.get("limit"), DEFAULT_LIMIT, 1, MAX_LIMIT);
+    const language = String(u.searchParams.get("language") || "").trim();
 
-    "/search",
-    "/api/search",
-
-    "/news",
-    "/api/news",
-
-    "/images",
-    "/api/images",
-
-    "/videos",
-    "/api/videos",
-
-    "/maps",
-    "/api/maps"
-
-  ];
-
-
-  if (
-    routes.includes(
-      u.pathname
-    )
-  ) {
-
-    const query =
-      u.searchParams.get("q") ||
-      u.searchParams.get("query") ||
-      "";
-
-
-    if (!query.trim()) {
-
-      return sendJson(
-        res,
-        200,
-        {
-          success: true,
-          query: "",
-          total: 0,
-          results: []
-        }
-      );
-    }
-
+    if (!query) return sendJson(res, 200, { success: true, engine: "HEXORA", query: "", mode, page, total: 0, results: [] });
 
     try {
-
-      const results =
-        await searchDatabase(
-          query,
-          u.searchParams.get(
-            "limit"
-          )
-        );
-
-
-      return sendJson(
-        res,
-        200,
-        {
-          success: true,
-
-          engine:
-            "HEXORA",
-
-          query,
-
-          total:
-            results.length,
-
-          results
-        }
-      );
-
-    } catch (e) {
-
-      console.error(
-        "[HEXORA] Search error:",
-        e
-      );
-
-
-      return sendJson(
-        res,
-        500,
-        {
-          success: false,
-
-          query,
-
-          total: 0,
-
-          results: [],
-
-          error:
-            e.message
-        }
-      );
+      const data = await searchDatabase(query, { mode, page, limit, language });
+      return sendJson(res, 200, {
+        success: true,
+        engine: "HEXORA",
+        query,
+        mode,
+        page,
+        limit,
+        total: data.total,
+        suggestion: data.suggestion,
+        results: data.results,
+      }, "public, max-age=15, stale-while-revalidate=30");
+    } catch (error) {
+      console.error("[HEXORA] Search error:", error);
+      return sendJson(res, 503, {
+        success: false,
+        engine: "HEXORA",
+        query,
+        mode,
+        page,
+        total: 0,
+        results: [],
+        error: DATABASE_URL ? "Search database temporarily unavailable" : "DATABASE_URL is not configured",
+      });
     }
   }
 
+  if (u.pathname === "/api/maps" || u.pathname === "/maps") {
+    return sendJson(res, 200, {
+      success: true,
+      mode: "maps",
+      message: "Maps is handled by the HEXORA map interface. No fabricated map search results are returned.",
+      results: [],
+    });
+  }
 
-  return serveFile(
-    res,
-    u.pathname
-  );
+  return serveFile(res, u.pathname);
 }
 
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((error) => {
+    console.error("[HEXORA] Request error:", error);
+    if (!res.headersSent) sendJson(res, 500, { success: false, error: "Internal server error" });
+    else res.end();
+  });
+});
 
-const server =
-  http.createServer(
-    (req, res) =>
+async function shutdown(signal) {
+  console.log(`[HEXORA] ${signal} received`);
+  server.close(() => {
+    if (pool) pool.end().catch(() => {}).finally(() => process.exit(0));
+    else process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 8000).unref();
+}
 
-      handle(
-        req,
-        res
-      ).catch(
-        e => {
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("unhandledRejection", (error) => console.error("[HEXORA] Unhandled rejection:", error));
+process.on("uncaughtException", (error) => console.error("[HEXORA] Uncaught exception:", error));
 
-          console.error(
-            "[HEXORA] Request error:",
-            e
-          );
-
-
-          if (
-            !res.headersSent
-          ) {
-
-            sendJson(
-              res,
-              500,
-              {
-                success: false,
-                error:
-                  "Internal server error"
-              }
-            );
-
-          } else {
-
-            res.end();
-
-          }
-
-        }
-      )
-  );
-
-
-process.on(
-  "unhandledRejection",
-  e =>
-    console.error(
-      "[HEXORA] Unhandled rejection:",
-      e
-    )
-);
-
-
-process.on(
-  "uncaughtException",
-  e =>
-    console.error(
-      "[HEXORA] Uncaught exception:",
-      e
-    )
-);
-
-
-server.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-
-    console.log(
-      `[HEXORA] Search server running on http://0.0.0.0:${PORT}`
-    );
-
-  }
-);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`[HEXORA] Search server listening on 0.0.0.0:${PORT}`);
+  console.log(`[HEXORA] DATABASE_URL: ${DATABASE_URL ? "configured" : "missing"}`);
+});
