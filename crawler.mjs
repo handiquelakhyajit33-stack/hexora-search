@@ -498,3 +498,53 @@ export async function checkCrawlerDatabase() {
 }
 
 export async function closeCrawlerDatabase() { await pool.end(); }
+async function main() {
+  console.log("[HEXORA] Crawler starting...");
+
+  const db = await checkCrawlerDatabase();
+
+  if (!db.connected) {
+    throw new Error(`[HEXORA] Database connection failed: ${db.error}`);
+  }
+
+  console.log("[HEXORA] Database connected:", db.now);
+  console.log("[HEXORA] Crawler is ready and waiting for crawl jobs...");
+
+  while (true) {
+    try {
+      const result = await pool.query(`
+        SELECT id, url
+        FROM crawl_queue
+        WHERE status = 'pending'
+        ORDER BY priority DESC, id ASC
+        LIMIT 5
+      `);
+
+      if (result.rows.length === 0) {
+        console.log("[HEXORA] No pending jobs. Waiting 10 seconds...");
+        await sleep(10000);
+        continue;
+      }
+
+      for (const job of result.rows) {
+        await pool.query(
+          `UPDATE crawl_queue SET status='processing', started_at=NOW()
+           WHERE id=$1`,
+          [job.id]
+        );
+
+        console.log(`[HEXORA] Crawling: ${job.url}`);
+
+        await crawlUrl(job);
+      }
+    } catch (error) {
+      console.error("[HEXORA] Worker error:", error?.message || error);
+      await sleep(5000);
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error("[HEXORA] Fatal crawler error:", error);
+  process.exit(1);
+});
