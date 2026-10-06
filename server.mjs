@@ -44,7 +44,12 @@ function sendJson(res, status, data) {
   res.end(body);
 }
 
-function sendText(res, status, text, type = "text/plain; charset=utf-8") {
+function sendText(
+  res,
+  status,
+  text,
+  type = "text/plain; charset=utf-8"
+) {
   res.writeHead(status, {
     "Content-Type": type,
     "Cache-Control": "no-store",
@@ -111,13 +116,16 @@ function detectIntent(query) {
   return "web";
 }
 
+/*
+ * Current Neon schema does not have is_news/content_type.
+ *
+ * For now news mode uses published_at / recent crawl data
+ * instead of requiring a news-specific column.
+ */
 function modeCondition(mode) {
   if (mode === "news") {
     return `
-      AND (
-        COALESCE(is_news, false) = true
-        OR COALESCE(content_type, '') = 'news'
-      )
+      AND p.published_at IS NOT NULL
     `;
   }
 
@@ -164,7 +172,10 @@ function makeSnippet(row, query) {
   for (const word of qWords) {
     const pos = source.toLowerCase().indexOf(word);
 
-    if (pos >= 0 && (bestPosition === -1 || pos < bestPosition)) {
+    if (
+      pos >= 0 &&
+      (bestPosition === -1 || pos < bestPosition)
+    ) {
       bestPosition = pos;
     }
   }
@@ -175,7 +186,9 @@ function makeSnippet(row, query) {
     start = Math.max(0, bestPosition - 140);
   }
 
-  let snippet = source.slice(start, start + 320).trim();
+  let snippet = source
+    .slice(start, start + 320)
+    .trim();
 
   if (start > 0) {
     snippet = "… " + snippet;
@@ -193,16 +206,43 @@ function resultFromRow(row, query) {
     id: String(row.id),
     title: row.title || "",
     url: row.url || "",
-    canonical_url: row.canonical_url || row.url || "",
+    canonical_url:
+      row.canonical_url ||
+      row.url ||
+      "",
     domain: row.domain || "",
-    source: row.source || row.domain || "",
-    description: row.description || "",
-    snippet: makeSnippet(row, query),
-    language: row.language || "unknown",
-    date: row.updated_at || row.crawled_at || row.created_at || null,
-    published_at: row.published_at || null,
-    score: Number(Number(row.final_score || 0).toFixed(5)),
-    image: row.image || null
+    source:
+      row.domain ||
+      "",
+    description:
+      row.description ||
+      "",
+    snippet:
+      makeSnippet(row, query),
+    language:
+      row.language ||
+      "unknown",
+    date:
+      row.updated_at ||
+      row.last_crawled_at ||
+      row.created_at ||
+      null,
+    published_at:
+      row.published_at ||
+      null,
+    score:
+      Number(
+        Number(row.final_score || 0).toFixed(5)
+      ),
+    image:
+      row.image_url ||
+      null,
+    image_items:
+      row.image_items ||
+      null,
+    video_items:
+      row.video_items ||
+      null
   };
 }
 
@@ -220,9 +260,10 @@ function suggestQuery(rows, query) {
       return false;
     }
 
-    const similarity = Number(row.title_sim || 0);
+    const similarity = Number(
+      row.title_sim || 0
+    );
 
-    // Avoid unrelated multilingual / weak suggestions.
     if (similarity < 0.55) {
       return false;
     }
@@ -238,13 +279,26 @@ function suggestQuery(rows, query) {
       titleWords.includes(word)
     ).length;
 
-    return matched >= Math.max(1, Math.ceil(queryWords.length / 2));
+    return (
+      matched >=
+      Math.max(
+        1,
+        Math.ceil(queryWords.length / 2)
+      )
+    );
   });
 
-  return candidate ? candidate.title : null;
+  return candidate
+    ? candidate.title
+    : null;
 }
 
-async function searchDatabase(query, mode, page, limit) {
+async function searchDatabase(
+  query,
+  mode,
+  page,
+  limit
+) {
   const offset = (page - 1) * limit;
 
   const queryWords = wordsOf(query);
@@ -259,11 +313,21 @@ async function searchDatabase(query, mode, page, limit) {
 
   const intent = detectIntent(query);
 
+  /*
+   * Main ranking query.
+   *
+   * IMPORTANT:
+   * Only columns that actually exist in the
+   * current Neon pages table are used.
+   */
   const sql = `
     WITH params AS (
       SELECT
         lower(trim($1::text)) AS q,
-        websearch_to_tsquery('simple', $1::text) AS tsq
+        websearch_to_tsquery(
+          'simple',
+          $1::text
+        ) AS tsq
     ),
 
     base AS (
@@ -271,7 +335,10 @@ async function searchDatabase(query, mode, page, limit) {
         p.*,
 
         ts_rank_cd(
-          COALESCE(p.search_vector, ''::tsvector),
+          COALESCE(
+            p.search_vector,
+            ''::tsvector
+          ),
           params.tsq
         ) AS fts_rank,
 
@@ -291,20 +358,25 @@ async function searchDatabase(query, mode, page, limit) {
         ) AS url_sim,
 
         CASE
-          WHEN lower(trim(COALESCE(p.title, ''))) = lower(params.q)
+          WHEN lower(
+            trim(COALESCE(p.title, ''))
+          ) = lower(params.q)
           THEN 1
           ELSE 0
         END AS exact_title,
 
         CASE
-          WHEN lower(trim(COALESCE(p.domain, ''))) = lower(params.q)
+          WHEN lower(
+            trim(COALESCE(p.domain, ''))
+          ) = lower(params.q)
           THEN 1
           ELSE 0
         END AS exact_domain,
 
         CASE
-          WHEN lower(COALESCE(p.title, ''))
-               LIKE lower(params.q) || '%'
+          WHEN lower(
+            COALESCE(p.title, '')
+          ) LIKE lower(params.q) || '%'
           THEN 1
           ELSE 0
         END AS title_starts,
@@ -324,15 +396,19 @@ async function searchDatabase(query, mode, page, limit) {
         ) AS title_position,
 
         CASE
-          WHEN lower(COALESCE(p.description, ''))
-               LIKE '%' || lower(params.q) || '%'
+          WHEN lower(
+            COALESCE(p.description, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
           THEN 1
           ELSE 0
         END AS description_phrase,
 
         CASE
-          WHEN lower(COALESCE(p.url, ''))
-               LIKE '%' || lower(params.q) || '%'
+          WHEN lower(
+            COALESCE(p.url, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
           THEN 1
           ELSE 0
         END AS url_contains,
@@ -340,78 +416,105 @@ async function searchDatabase(query, mode, page, limit) {
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS qw(word)
-          WHERE lower(COALESCE(p.title, ''))
-                ~ ('(^|[^[:alnum:]])' ||
-                   regexp_replace(lower(qw.word), '[^[:alnum:]]', '', 'g') ||
-                   '([^[:alnum:]]|$)')
+          WHERE
+            lower(
+              COALESCE(p.title, '')
+            ) ~ (
+              '(^|[^[:alnum:]])' ||
+              regexp_replace(
+                lower(qw.word),
+                '[^[:alnum:]]',
+                '',
+                'g'
+              ) ||
+              '([^[:alnum:]]|$)'
+            )
         ) AS title_word_matches,
 
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS qw(word)
-          WHERE lower(COALESCE(p.description, ''))
-                LIKE '%' || lower(qw.word) || '%'
+          WHERE
+            lower(
+              COALESCE(p.description, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
         ) AS description_word_matches,
 
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS qw(word)
-          WHERE lower(COALESCE(p.excerpt, ''))
-                LIKE '%' || lower(qw.word) || '%'
+          WHERE
+            lower(
+              COALESCE(p.excerpt, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
         ) AS excerpt_word_matches,
 
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS qw(word)
-          WHERE lower(COALESCE(p.content, ''))
-                LIKE '%' || lower(qw.word) || '%'
-        ) AS content_word_matches,
-
-        (
-          SELECT count(*)
-          FROM unnest($3::text[]) AS qw(word)
           WHERE
-            lower(COALESCE(p.title, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.description, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.excerpt, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.content, ''))
-              LIKE '%' || lower(qw.word) || '%'
-        ) AS total_word_matches
+            lower(
+              COALESCE(p.content, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+        ) AS content_word_matches
 
       FROM pages p
+
       CROSS JOIN params
 
       WHERE
         (
-          COALESCE(p.search_vector, ''::tsvector) @@ params.tsq
+          COALESCE(
+            p.search_vector,
+            ''::tsvector
+          ) @@ params.tsq
 
-          OR lower(COALESCE(p.title, ''))
-             LIKE '%' || lower(params.q) || '%'
+          OR lower(
+            COALESCE(p.title, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
 
-          OR lower(COALESCE(p.description, ''))
-             LIKE '%' || lower(params.q) || '%'
+          OR lower(
+            COALESCE(p.description, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
 
-          OR lower(COALESCE(p.excerpt, ''))
-             LIKE '%' || lower(params.q) || '%'
+          OR lower(
+            COALESCE(p.excerpt, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
 
-          OR lower(COALESCE(p.url, ''))
-             LIKE '%' || lower(params.q) || '%'
+          OR lower(
+            COALESCE(p.url, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
 
           OR EXISTS (
             SELECT 1
             FROM unnest($3::text[]) AS qw(word)
             WHERE
-              lower(COALESCE(p.title, ''))
-                LIKE '%' || lower(qw.word) || '%'
-              OR lower(COALESCE(p.description, ''))
-                LIKE '%' || lower(qw.word) || '%'
-              OR lower(COALESCE(p.excerpt, ''))
-                LIKE '%' || lower(qw.word) || '%'
-              OR lower(COALESCE(p.content, ''))
-                LIKE '%' || lower(qw.word) || '%'
+              lower(
+                COALESCE(p.title, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.description, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.excerpt, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.content, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
           )
         )
 
@@ -426,80 +529,113 @@ async function searchDatabase(query, mode, page, limit) {
           0.0,
           LEAST(
             1.0,
+
             CASE
-              WHEN title_position > 0 THEN
+              WHEN title_position > 0
+              THEN
                 1.0 -
                 (
-                  (title_position - 1)::double precision /
+                  (
+                    title_position - 1
+                  )::double precision
+                  /
                   GREATEST(
-                    length(COALESCE(title, '')),
+                    length(
+                      COALESCE(
+                        title,
+                        ''
+                      )
+                    ),
                     1
                   )::double precision
                 )
+
               ELSE 0.0
             END
           )
         ) AS title_focus,
 
         CASE
+
           /*
-           * TIER 4:
+           * TIER 4
            * Exact title.
            */
-          WHEN exact_title = 1 THEN 4
+          WHEN exact_title = 1
+          THEN 4
 
           /*
-           * TIER 3:
-           * Title begins with the complete query,
-           * or most/all query words are strong title matches.
+           * TIER 3
+           * Query begins the title.
            */
-          WHEN title_starts = 1 THEN 3
-
-          WHEN title_word_matches >=
-               GREATEST(
-                 1,
-                 CEIL(array_length($3::text[], 1) * 0.75)
-               )
+          WHEN title_starts = 1
           THEN 3
 
           /*
-           * TIER 2:
-           * Query is genuinely present in the title.
+           * TIER 3
+           * Most query words are in title.
+           */
+          WHEN title_word_matches >=
+            GREATEST(
+              1,
+              CEIL(
+                array_length(
+                  $3::text[],
+                  1
+                ) * 0.75
+              )
+            )
+          THEN 3
+
+          /*
+           * TIER 2
            *
-           * Parenthetical secondary mentions such as
-           * "Punjabi (India) translation..." are deliberately
-           * downgraded.
+           * Normal title match.
+           *
+           * Secondary parenthetical matches
+           * are not treated as strong matches.
            */
           WHEN title_contains = 1
-               AND NOT (
-                 lower(COALESCE(title, '')) ~
-                 ('[[(|:-][[:space:]]*' ||
-                  regexp_replace(lower(params.q), '[^[:alnum:]]', '', 'g') ||
-                  '[[:space:]]*[)\\]|:]')
-               )
+            AND NOT (
+              lower(
+                COALESCE(title, '')
+              ) ~ (
+                '[[(|:-][[:space:]]*' ||
+                regexp_replace(
+                  lower(params.q),
+                  '[^[:alnum:]]',
+                  '',
+                  'g'
+                ) ||
+                '[[:space:]]*[)\\]|:]'
+              )
+            )
           THEN 2
 
           WHEN title_word_matches > 0
           THEN 2
 
           /*
-           * TIER 1:
-           * Description/excerpt/FTS relevance.
+           * TIER 1
+           * Description / excerpt / FTS.
            */
-          WHEN description_phrase = 1
-               OR description_word_matches > 0
-               OR excerpt_word_matches > 0
-               OR fts_rank > 0
+          WHEN
+            description_phrase = 1
+            OR description_word_matches > 0
+            OR excerpt_word_matches > 0
+            OR fts_rank > 0
           THEN 1
 
           /*
-           * TIER 0:
-           * Mostly body/reference/URL/domain matches.
+           * TIER 0
+           * Weak/body/reference matches.
            */
           ELSE 0
+
         END AS relevance_tier
 
       FROM base
+
       CROSS JOIN params
     ),
 
@@ -507,173 +643,183 @@ async function searchDatabase(query, mode, page, limit) {
       SELECT
         scored.*,
 
-        CASE
+        (
+          CASE
+            WHEN relevance_tier = 4
+            THEN 5000
+
+            WHEN relevance_tier = 3
+            THEN 3000
+
+            WHEN relevance_tier = 2
+            THEN 1800
+
+            WHEN relevance_tier = 1
+            THEN 600
+
+            ELSE 50
+          END
+
+          +
+
+          CASE
+            WHEN exact_title = 1
+            THEN 2500
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN title_starts = 1
+            THEN 1200
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN relevance_tier >= 2
+            THEN title_word_matches * 500
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN relevance_tier >= 2
+            THEN LEAST(
+              title_focus * 700,
+              700
+            )
+            ELSE 0
+          END
+
+          +
+
+          LEAST(
+            fts_rank * 300,
+            300
+          )
+
+          +
+
+          LEAST(
+            title_sim * 250,
+            250
+          )
+
+          +
+
+          CASE
+            WHEN exact_domain = 1
+            THEN 400
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN url_contains = 1
+            THEN 100
+            ELSE 0
+          END
+
+          +
+
+          LEAST(
+            COALESCE(
+              authority_score,
+              0
+            ) * 2,
+            100
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              quality_score,
+              0
+            ) * 2,
+            80
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              popularity_score,
+              0
+            ) * 2,
+            60
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              inbound_links,
+              0
+            ) * 1.5,
+            50
+          )
+
           /*
-           * Exact title.
+           * Body/reference-only penalty.
            */
-          WHEN relevance_tier = 4 THEN 5000
+          +
+
+          CASE
+            WHEN relevance_tier = 0
+              AND title_word_matches = 0
+              AND description_word_matches = 0
+              AND excerpt_word_matches = 0
+            THEN -1000
+            ELSE 0
+          END
 
           /*
-           * Strong title.
-           */
-          WHEN relevance_tier = 3 THEN 3000
-
-          /*
-           * Normal title match.
-           */
-          WHEN relevance_tier = 2 THEN 1800
-
-          /*
-           * Description / FTS.
-           */
-          WHEN relevance_tier = 1 THEN 600
-
-          /*
-           * Body/reference only.
-           */
-          ELSE 50
-        END
-
-        +
-
-        CASE
-          WHEN exact_title = 1 THEN 2500
-          ELSE 0
-        END
-
-        +
-
-        CASE
-          WHEN title_starts = 1 THEN 1200
-          ELSE 0
-        END
-
-        +
-
-        CASE
-          WHEN relevance_tier >= 2 THEN
-            title_word_matches * 500
-          ELSE 0
-        END
-
-        +
-
-        CASE
-          WHEN relevance_tier >= 2 THEN
-            LEAST(title_focus * 700, 700)
-          ELSE 0
-        END
-
-        +
-
-        LEAST(fts_rank * 300, 300)
-
-        +
-
-        LEAST(title_sim * 250, 250)
-
-        +
-
-        CASE
-          WHEN exact_domain = 1 THEN 400
-          ELSE 0
-        END
-
-        +
-
-        CASE
-          WHEN url_contains = 1 THEN 100
-          ELSE 0
-        END
-
-        +
-
-        LEAST(
-          COALESCE(authority_score, 0) * 2,
-          100
-        )
-
-        +
-
-        LEAST(
-          COALESCE(quality_score, 0) * 2,
-          80
-        )
-
-        +
-
-        LEAST(
-          COALESCE(popularity_score, 0) * 2,
-          60
-        )
-
-        +
-
-        LEAST(
-          COALESCE(inbound_links, 0) * 1.5,
-          50
-        )
-
-        +
-
-        CASE
-          WHEN relevance_tier = 0
-               AND title_word_matches = 0
-               AND description_word_matches = 0
-               AND excerpt_word_matches = 0
-          THEN -1000
-          ELSE 0
-        END
-
-        +
-
-        CASE
-          /*
-           * Strong penalty for secondary title mentions.
+           * Secondary title match penalty.
+           *
            * Example:
-           * Punjabi (India) translation...
+           * "Punjabi (India) translation..."
            */
-          WHEN title_contains = 1
-               AND title_starts = 0
-               AND exact_title = 0
-               AND title_word_matches > 0
-               AND title_focus < 0.65
-          THEN -900
-          ELSE 0
-        END
+          +
 
-        +
+          CASE
+            WHEN title_contains = 1
+              AND title_starts = 0
+              AND exact_title = 0
+              AND title_word_matches > 0
+              AND title_focus < 0.65
+            THEN -900
+            ELSE 0
+          END
 
-        CASE
           /*
-           * One-word query appearing only in a long title
-           * is weaker than a focused title.
+           * Long title / weak focus penalty.
            */
-          WHEN array_length($3::text[], 1) = 1
-               AND title_word_matches > 0
-               AND title_focus < 0.45
-          THEN -700
-          ELSE 0
-        END
+          +
 
-        +
+          CASE
+            WHEN
+              array_length(
+                $3::text[],
+                1
+              ) = 1
 
-        CASE
-          WHEN intent = 'news'
-               AND (
-                 COALESCE(is_news, false) = true
-                 OR COALESCE(content_type, '') = 'news'
-               )
-          THEN 100
-          ELSE 0
-        END
+              AND title_word_matches > 0
 
-        AS final_score
+              AND title_focus < 0.45
+
+            THEN -700
+            ELSE 0
+          END
+
+        ) AS final_score
 
       FROM scored
-      CROSS JOIN (
-        SELECT $4::text AS intent
-      ) i
     )
 
     SELECT *
@@ -681,21 +827,31 @@ async function searchDatabase(query, mode, page, limit) {
 
     ORDER BY
       relevance_tier DESC,
+
       final_score DESC,
 
       exact_title DESC,
+
       title_starts DESC,
+
       title_word_matches DESC,
+
       title_focus DESC,
 
       description_word_matches DESC,
+
       fts_rank DESC,
+
       title_sim DESC,
 
       exact_domain DESC,
+
       authority_score DESC,
+
       quality_score DESC,
+
       popularity_score DESC,
+
       inbound_links DESC,
 
       id DESC
@@ -705,48 +861,77 @@ async function searchDatabase(query, mode, page, limit) {
   `;
 
   /*
-   * IMPORTANT:
-   * Candidate count is separately calculated so pagination
-   * still reports the complete matching count.
+   * Count query.
    */
   const countSql = `
     WITH params AS (
       SELECT
         lower(trim($1::text)) AS q,
-        websearch_to_tsquery('simple', $1::text) AS tsq
+
+        websearch_to_tsquery(
+          'simple',
+          $1::text
+        ) AS tsq
     )
+
     SELECT COUNT(*)::int AS total
+
     FROM pages p
+
     CROSS JOIN params
 
     WHERE
       (
-        COALESCE(p.search_vector, ''::tsvector) @@ params.tsq
+        COALESCE(
+          p.search_vector,
+          ''::tsvector
+        ) @@ params.tsq
 
-        OR lower(COALESCE(p.title, ''))
-           LIKE '%' || lower(params.q) || '%'
+        OR lower(
+          COALESCE(p.title, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
 
-        OR lower(COALESCE(p.description, ''))
-           LIKE '%' || lower(params.q) || '%'
+        OR lower(
+          COALESCE(p.description, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
 
-        OR lower(COALESCE(p.excerpt, ''))
-           LIKE '%' || lower(params.q) || '%'
+        OR lower(
+          COALESCE(p.excerpt, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
 
-        OR lower(COALESCE(p.url, ''))
-           LIKE '%' || lower(params.q) || '%'
+        OR lower(
+          COALESCE(p.url, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
 
         OR EXISTS (
           SELECT 1
+
           FROM unnest($2::text[]) AS qw(word)
+
           WHERE
-            lower(COALESCE(p.title, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.description, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.excerpt, ''))
-              LIKE '%' || lower(qw.word) || '%'
-            OR lower(COALESCE(p.content, ''))
-              LIKE '%' || lower(qw.word) || '%'
+            lower(
+              COALESCE(p.title, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.description, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.excerpt, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.content, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
         )
       )
 
@@ -758,13 +943,18 @@ async function searchDatabase(query, mode, page, limit) {
   try {
     const countResult = await client.query(
       countSql,
-      [query, queryWords]
+      [
+        query,
+        queryWords
+      ]
     );
 
-    const total = Number(countResult.rows[0]?.total || 0);
+    const total = Number(
+      countResult.rows[0]?.total || 0
+    );
 
     /*
-     * Fetch a larger candidate set for suggestion generation.
+     * Suggestion candidates.
      */
     const candidateSql = `
       SELECT
@@ -779,8 +969,10 @@ async function searchDatabase(query, mode, page, limit) {
       FROM pages p
 
       WHERE
-        lower(COALESCE(p.title, ''))
-          LIKE '%' || lower($1) || '%'
+        lower(
+          COALESCE(p.title, '')
+        ) LIKE
+          '%' || lower($1) || '%'
 
       ORDER BY
         similarity(
@@ -791,58 +983,78 @@ async function searchDatabase(query, mode, page, limit) {
       LIMIT 50
     `;
 
-    const candidateResult = await client.query(
-      candidateSql,
-      [query]
-    );
+    const candidateResult =
+      await client.query(
+        candidateSql,
+        [query]
+      );
 
-    const suggestion = suggestQuery(
-      candidateResult.rows,
-      query
-    );
+    const suggestion =
+      suggestQuery(
+        candidateResult.rows,
+        query
+      );
 
-    const dataResult = await client.query(
-      sql,
-      [
-        query,
-        mode,
-        queryWords,
-        intent,
-        Math.min(
-          SEARCH_CANDIDATE_LIMIT,
-          limit
-        ),
-        offset
-      ]
-    );
+    const dataResult =
+      await client.query(
+        sql,
+        [
+          query,
+          mode,
+          queryWords,
+          intent,
+          Math.min(
+            SEARCH_CANDIDATE_LIMIT,
+            limit
+          ),
+          offset
+        ]
+      );
 
     /*
      * Domain diversification.
      *
-     * Maximum 3 results from the same domain.
-     * This prevents one website from filling the
-     * complete first page.
+     * Maximum 3 results per domain.
      */
     const diversified = [];
     const domainCounts = new Map();
 
-    for (const row of dataResult.rows) {
-      const domain = String(
-        row.domain ||
-        new URL(row.url || "https://unknown.local").hostname ||
-        "unknown"
-      ).toLowerCase();
+    for (
+      const row of dataResult.rows
+    ) {
+      let domain =
+        String(
+          row.domain || ""
+        ).toLowerCase();
 
-      const count = domainCounts.get(domain) || 0;
+      if (!domain) {
+        try {
+          domain =
+            new URL(
+              row.url || ""
+            ).hostname.toLowerCase();
+        } catch {
+          domain = "unknown";
+        }
+      }
+
+      const count =
+        domainCounts.get(domain) || 0;
 
       if (count >= 3) {
         continue;
       }
 
-      domainCounts.set(domain, count + 1);
+      domainCounts.set(
+        domain,
+        count + 1
+      );
+
       diversified.push(row);
 
-      if (diversified.length >= limit) {
+      if (
+        diversified.length >= limit
+      ) {
         break;
       }
     }
@@ -859,27 +1071,54 @@ async function searchDatabase(query, mode, page, limit) {
 }
 
 async function getNews(limit = 20) {
+  /*
+   * No is_news/content_type column exists.
+   *
+   * Use pages having published_at as the current
+   * news candidate source.
+   */
   const sql = `
     SELECT *
     FROM pages
+
     WHERE
-      COALESCE(is_news, false) = true
-      OR COALESCE(content_type, '') = 'news'
+      published_at IS NOT NULL
+
     ORDER BY
-      COALESCE(published_at, updated_at, crawled_at, created_at) DESC NULLS LAST,
-      COALESCE(quality_score, 0) DESC
+      published_at DESC NULLS LAST,
+
+      updated_at DESC NULLS LAST,
+
+      COALESCE(
+        quality_score,
+        0
+      ) DESC
+
     LIMIT $1
   `;
 
-  const result = await pool.query(sql, [limit]);
+  const result =
+    await pool.query(
+      sql,
+      [limit]
+    );
 
-  return result.rows.map(row =>
-    resultFromRow(row, "")
+  return result.rows.map(
+    row =>
+      resultFromRow(
+        row,
+        ""
+      )
   );
 }
 
-async function getMedia(type, query, limit) {
-  const q = normalizeQuery(query);
+async function getMedia(
+  type,
+  query,
+  limit
+) {
+  const q =
+    normalizeQuery(query);
 
   if (!q) {
     return [];
@@ -890,121 +1129,199 @@ async function getMedia(type, query, limit) {
   if (type === "images") {
     condition = `
       AND (
-        COALESCE(image, '') <> ''
-        OR COALESCE(image_url, '') <> ''
+        COALESCE(
+          image_url,
+          ''
+        ) <> ''
+
+        OR image_items IS NOT NULL
       )
     `;
   }
 
   if (type === "videos") {
     condition = `
-      AND (
-        COALESCE(video_url, '') <> ''
-        OR COALESCE(content_type, '') = 'video'
-      )
+      AND video_items IS NOT NULL
     `;
   }
 
   const sql = `
     SELECT *
     FROM pages
+
     WHERE
       (
-        lower(COALESCE(title, ''))
-          LIKE '%' || lower($1) || '%'
+        lower(
+          COALESCE(title, '')
+        ) LIKE
+          '%' || lower($1) || '%'
 
-        OR lower(COALESCE(description, ''))
-          LIKE '%' || lower($1) || '%'
+        OR lower(
+          COALESCE(description, '')
+        ) LIKE
+          '%' || lower($1) || '%'
 
-        OR lower(COALESCE(content, ''))
-          LIKE '%' || lower($1) || '%'
+        OR lower(
+          COALESCE(content, '')
+        ) LIKE
+          '%' || lower($1) || '%'
       )
 
       ${condition}
 
     ORDER BY
+
       CASE
-        WHEN lower(COALESCE(title, '')) = lower($1)
+        WHEN lower(
+          COALESCE(title, '')
+        ) = lower($1)
         THEN 1
         ELSE 0
       END DESC,
 
-      COALESCE(quality_score, 0) DESC,
-      COALESCE(popularity_score, 0) DESC
+      COALESCE(
+        quality_score,
+        0
+      ) DESC,
+
+      COALESCE(
+        popularity_score,
+        0
+      ) DESC,
+
+      COALESCE(
+        authority_score,
+        0
+      ) DESC
 
     LIMIT $2
   `;
 
-  const result = await pool.query(
-    sql,
-    [q, limit]
-  );
+  const result =
+    await pool.query(
+      sql,
+      [
+        q,
+        limit
+      ]
+    );
 
-  return result.rows.map(row => ({
-    id: String(row.id),
-    title: row.title || "",
-    url: row.url || "",
-    domain: row.domain || "",
-    description: row.description || "",
-    image:
-      row.image ||
-      row.image_url ||
-      null,
-    video:
-      row.video_url ||
-      null,
-    date:
-      row.updated_at ||
-      row.crawled_at ||
-      row.created_at ||
-      null
-  }));
+  return result.rows.map(
+    row => ({
+      id: String(row.id),
+
+      title:
+        row.title || "",
+
+      url:
+        row.url || "",
+
+      canonical_url:
+        row.canonical_url ||
+        row.url ||
+        "",
+
+      domain:
+        row.domain || "",
+
+      description:
+        row.description || "",
+
+      image:
+        row.image_url ||
+        null,
+
+      image_items:
+        row.image_items ||
+        null,
+
+      video_items:
+        row.video_items ||
+        null,
+
+      date:
+        row.updated_at ||
+        row.last_crawled_at ||
+        row.created_at ||
+        null
+    })
+  );
 }
 
 async function healthCheck() {
   try {
-    await pool.query("SELECT 1");
+    await pool.query(
+      "SELECT 1"
+    );
 
     return {
       success: true,
       status: "ok",
-      engine: "HEXORA Independent Search Engine",
-      database: "Neon PostgreSQL",
-      database_status: "connected",
-      index_source: "HEXORA indexed data in Neon",
-      raw_storage: "Cloudflare R2"
+      engine:
+        "HEXORA Independent Search Engine",
+      database:
+        "Neon PostgreSQL",
+      database_status:
+        "connected",
+      index_source:
+        "HEXORA indexed data in Neon",
+      raw_storage:
+        "Cloudflare R2"
     };
 
   } catch (error) {
     return {
       success: false,
       status: "error",
-      engine: "HEXORA Independent Search Engine",
-      database: "Neon PostgreSQL",
-      database_status: "disconnected",
-      error: error.message
+      engine:
+        "HEXORA Independent Search Engine",
+      database:
+        "Neon PostgreSQL",
+      database_status:
+        "disconnected",
+      error:
+        error.message
     };
   }
 }
 
-function safeFilePath(urlPath) {
-  let pathname = decodeURIComponent(urlPath);
+function safeFilePath(
+  urlPath
+) {
+  let pathname =
+    decodeURIComponent(
+      urlPath
+    );
 
   if (pathname === "/") {
-    pathname = "/index.html";
+    pathname =
+      "/index.html";
   }
 
-  pathname = pathname.replace(/\0/g, "");
+  pathname =
+    pathname.replace(
+      /\0/g,
+      ""
+    );
 
-  const filePath = path.normalize(
-    path.join(__dirname, pathname)
-  );
+  const filePath =
+    path.normalize(
+      path.join(
+        __dirname,
+        pathname
+      )
+    );
 
-  const root = path.normalize(__dirname);
+  const root =
+    path.normalize(
+      __dirname
+    );
 
   if (
     filePath !== root &&
-    !filePath.startsWith(root + path.sep)
+    !filePath.startsWith(
+      root + path.sep
+    )
   ) {
     return null;
   }
@@ -1012,440 +1329,697 @@ function safeFilePath(urlPath) {
   return filePath;
 }
 
-function contentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
+function contentType(
+  filePath
+) {
+  const ext =
+    path.extname(
+      filePath
+    ).toLowerCase();
 
   const types = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".mjs": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-    ".ico": "image/x-icon",
-    ".txt": "text/plain; charset=utf-8"
+    ".html":
+      "text/html; charset=utf-8",
+
+    ".js":
+      "text/javascript; charset=utf-8",
+
+    ".mjs":
+      "text/javascript; charset=utf-8",
+
+    ".css":
+      "text/css; charset=utf-8",
+
+    ".json":
+      "application/json; charset=utf-8",
+
+    ".svg":
+      "image/svg+xml",
+
+    ".png":
+      "image/png",
+
+    ".jpg":
+      "image/jpeg",
+
+    ".jpeg":
+      "image/jpeg",
+
+    ".webp":
+      "image/webp",
+
+    ".gif":
+      "image/gif",
+
+    ".ico":
+      "image/x-icon",
+
+    ".txt":
+      "text/plain; charset=utf-8"
   };
 
-  return types[ext] || "application/octet-stream";
+  return (
+    types[ext] ||
+    "application/octet-stream"
+  );
 }
 
-async function serveStatic(req, res, pathname) {
-  const filePath = safeFilePath(pathname);
+async function serveStatic(
+  req,
+  res,
+  pathname
+) {
+  const filePath =
+    safeFilePath(
+      pathname
+    );
 
   if (!filePath) {
-    return sendText(res, 403, "Forbidden");
+    return sendText(
+      res,
+      403,
+      "Forbidden"
+    );
   }
 
   try {
-    const stat = await fs.promises.stat(filePath);
+    const stat =
+      await fs.promises.stat(
+        filePath
+      );
 
     if (!stat.isFile()) {
-      return sendText(res, 404, "Not Found");
+      return sendText(
+        res,
+        404,
+        "Not Found"
+      );
     }
 
-    res.writeHead(200, {
-      "Content-Type": contentType(filePath),
-      "Cache-Control": "public, max-age=300",
-      "Access-Control-Allow-Origin": "*"
-    });
+    res.writeHead(
+      200,
+      {
+        "Content-Type":
+          contentType(filePath),
 
-    fs.createReadStream(filePath).pipe(res);
+        "Cache-Control":
+          "public, max-age=300",
+
+        "Access-Control-Allow-Origin":
+          "*"
+      }
+    );
+
+    fs.createReadStream(
+      filePath
+    ).pipe(res);
 
   } catch {
-    /*
-     * SPA fallback.
-     */
-    const indexPath = path.join(__dirname, "index.html");
+    const indexPath =
+      path.join(
+        __dirname,
+        "index.html"
+      );
 
     try {
-      const data = await fs.promises.readFile(indexPath);
+      const data =
+        await fs.promises.readFile(
+          indexPath
+        );
 
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-cache",
-        "Access-Control-Allow-Origin": "*"
-      });
+      res.writeHead(
+        200,
+        {
+          "Content-Type":
+            "text/html; charset=utf-8",
+
+          "Cache-Control":
+            "no-cache",
+
+          "Access-Control-Allow-Origin":
+            "*"
+        }
+      );
 
       res.end(data);
 
     } catch {
-      sendText(res, 404, "HEXORA page not found");
+      sendText(
+        res,
+        404,
+        "HEXORA page not found"
+      );
     }
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "GET, OPTIONS"
-      });
+const server =
+  http.createServer(
+    async (req, res) => {
+      try {
+        if (
+          req.method ===
+          "OPTIONS"
+        ) {
+          res.writeHead(
+            204,
+            {
+              "Access-Control-Allow-Origin":
+                "*",
 
-      return res.end();
-    }
+              "Access-Control-Allow-Headers":
+                "Content-Type",
 
-    const requestUrl = new URL(
-      req.url || "/",
-      `http://${req.headers.host || "localhost"}`
-    );
+              "Access-Control-Allow-Methods":
+                "GET, OPTIONS"
+            }
+          );
 
-    const pathname = requestUrl.pathname;
+          return res.end();
+        }
 
-    /*
-     * HEALTH
-     */
-    if (
-      pathname === "/health" ||
-      pathname === "/api/health"
-    ) {
-      const health = await healthCheck();
+        const requestUrl =
+          new URL(
+            req.url || "/",
+            `http://${req.headers.host || "localhost"}`
+          );
 
-      return sendJson(
-        res,
-        health.success ? 200 : 503,
-        health
-      );
-    }
+        const pathname =
+          requestUrl.pathname;
 
-    /*
-     * SEARCH
-     */
-    if (
-      pathname === "/search" ||
-      pathname === "/api/search"
-    ) {
-      const query = normalizeQuery(
-        requestUrl.searchParams.get("q") ||
-        requestUrl.searchParams.get("query") ||
-        ""
-      );
+        /*
+         * HEALTH
+         */
+        if (
+          pathname === "/health" ||
+          pathname === "/api/health"
+        ) {
+          const health =
+            await healthCheck();
 
-      const mode = String(
-        requestUrl.searchParams.get("mode") ||
-        "web"
-      ).toLowerCase();
+          return sendJson(
+            res,
+            health.success
+              ? 200
+              : 503,
+            health
+          );
+        }
 
-      const page = safeInt(
-        requestUrl.searchParams.get("page"),
-        1,
-        1,
-        MAX_PAGE
-      );
+        /*
+         * SEARCH
+         */
+        if (
+          pathname === "/search" ||
+          pathname === "/api/search"
+        ) {
+          const query =
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              ) ||
+              requestUrl.searchParams.get(
+                "query"
+              ) ||
+              ""
+            );
 
-      const limit = safeInt(
-        requestUrl.searchParams.get("limit"),
-        DEFAULT_LIMIT,
-        1,
-        MAX_LIMIT
-      );
+          const mode =
+            String(
+              requestUrl.searchParams.get(
+                "mode"
+              ) ||
+              "web"
+            ).toLowerCase();
 
-      if (!query) {
-        return sendJson(res, 400, {
-          success: false,
-          error: "Search query is required"
-        });
-      }
+          const page =
+            safeInt(
+              requestUrl.searchParams.get(
+                "page"
+              ),
+              1,
+              1,
+              MAX_PAGE
+            );
 
-      if (query.length > MAX_QUERY_LENGTH) {
-        return sendJson(res, 400, {
-          success: false,
-          error: "Search query is too long"
-        });
-      }
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
 
-      const safeMode = [
-        "web",
-        "news",
-        "images",
-        "videos",
-        "maps"
-      ].includes(mode)
-        ? mode
-        : "web";
+          if (!query) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "Search query is required"
+              }
+            );
+          }
 
-      if (safeMode === "images") {
-        const results = await getMedia(
-          "images",
-          query,
-          limit
+          const safeMode =
+            [
+              "web",
+              "news",
+              "images",
+              "videos",
+              "maps"
+            ].includes(mode)
+              ? mode
+              : "web";
+
+          if (
+            safeMode ===
+            "images"
+          ) {
+            const results =
+              await getMedia(
+                "images",
+                query,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "images",
+                page,
+                limit,
+                total:
+                  results.length,
+                results
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "videos"
+          ) {
+            const results =
+              await getMedia(
+                "videos",
+                query,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "videos",
+                page,
+                limit,
+                total:
+                  results.length,
+                results
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "news"
+          ) {
+            const results =
+              await searchDatabase(
+                query,
+                "news",
+                page,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "news",
+                page,
+                limit,
+                total:
+                  results.total,
+                suggestion:
+                  results.suggestion,
+                results:
+                  results.rows.map(
+                    row =>
+                      resultFromRow(
+                        row,
+                        query
+                      )
+                  )
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "maps"
+          ) {
+            const results =
+              await searchDatabase(
+                query,
+                "web",
+                page,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "maps",
+                page,
+                limit,
+                total:
+                  results.total,
+                suggestion:
+                  results.suggestion,
+                results:
+                  results.rows.map(
+                    row =>
+                      resultFromRow(
+                        row,
+                        query
+                      )
+                  )
+              }
+            );
+          }
+
+          const results =
+            await searchDatabase(
+              query,
+              "web",
+              page,
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              query,
+              mode: "web",
+              page,
+              limit,
+              total:
+                results.total,
+              suggestion:
+                results.suggestion,
+              results:
+                results.rows.map(
+                  row =>
+                    resultFromRow(
+                      row,
+                      query
+                    )
+                )
+            }
+          );
+        }
+
+        /*
+         * NEWS
+         */
+        if (
+          pathname === "/news" ||
+          pathname === "/api/news"
+        ) {
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getNews(
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "news",
+              total:
+                results.length,
+              results
+            }
+          );
+        }
+
+        /*
+         * IMAGES
+         */
+        if (
+          pathname === "/images" ||
+          pathname === "/api/images"
+        ) {
+          const query =
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              ) || ""
+            );
+
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getMedia(
+              "images",
+              query,
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "images",
+              query,
+              total:
+                results.length,
+              results
+            }
+          );
+        }
+
+        /*
+         * VIDEOS
+         */
+        if (
+          pathname === "/videos" ||
+          pathname === "/api/videos"
+        ) {
+          const query =
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              ) || ""
+            );
+
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getMedia(
+              "videos",
+              query,
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "videos",
+              query,
+              total:
+                results.length,
+              results
+            }
+          );
+        }
+
+        /*
+         * MAPS
+         */
+        if (
+          pathname === "/maps" ||
+          pathname === "/api/maps"
+        ) {
+          const query =
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              ) || ""
+            );
+
+          if (!query) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "Search query is required"
+              }
+            );
+          }
+
+          const results =
+            await searchDatabase(
+              query,
+              "web",
+              1,
+              20
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "maps",
+              query,
+              total:
+                results.total,
+              results:
+                results.rows.map(
+                  row =>
+                    resultFromRow(
+                      row,
+                      query
+                    )
+                )
+            }
+          );
+        }
+
+        /*
+         * STATIC FRONTEND
+         */
+        return await serveStatic(
+          req,
+          res,
+          pathname
         );
 
-        return sendJson(res, 200, {
-          success: true,
-          engine: "HEXORA",
-          query,
-          mode: "images",
-          page,
-          limit,
-          total: results.length,
-          results
-        });
-      }
-
-      if (safeMode === "videos") {
-        const results = await getMedia(
-          "videos",
-          query,
-          limit
+      } catch (error) {
+        console.error(
+          "HEXORA SERVER ERROR:",
+          error
         );
 
-        return sendJson(res, 200, {
-          success: true,
-          engine: "HEXORA",
-          query,
-          mode: "videos",
-          page,
-          limit,
-          total: results.length,
-          results
-        });
-      }
-
-      if (safeMode === "news") {
-        const results = await searchDatabase(
-          query,
-          "news",
-          page,
-          limit
+        return sendJson(
+          res,
+          500,
+          {
+            success: false,
+            engine: "HEXORA",
+            error:
+              "Internal server error",
+            message:
+              error.message
+          }
         );
-
-        return sendJson(res, 200, {
-          success: true,
-          engine: "HEXORA",
-          query,
-          mode: "news",
-          page,
-          limit,
-          total: results.total,
-          suggestion: results.suggestion,
-          results: results.rows.map(row =>
-            resultFromRow(row, query)
-          )
-        });
       }
-
-      if (safeMode === "maps") {
-        const results = await searchDatabase(
-          query,
-          "web",
-          page,
-          limit
-        );
-
-        return sendJson(res, 200, {
-          success: true,
-          engine: "HEXORA",
-          query,
-          mode: "maps",
-          page,
-          limit,
-          total: results.total,
-          suggestion: results.suggestion,
-          results: results.rows.map(row =>
-            resultFromRow(row, query)
-          )
-        });
-      }
-
-      const results = await searchDatabase(
-        query,
-        "web",
-        page,
-        limit
-      );
-
-      return sendJson(res, 200, {
-        success: true,
-        engine: "HEXORA",
-        query,
-        mode: "web",
-        page,
-        limit,
-        total: results.total,
-        suggestion: results.suggestion,
-        results: results.rows.map(row =>
-          resultFromRow(row, query)
-        )
-      });
     }
-
-    /*
-     * NEWS
-     */
-    if (
-      pathname === "/news" ||
-      pathname === "/api/news"
-    ) {
-      const limit = safeInt(
-        requestUrl.searchParams.get("limit"),
-        DEFAULT_LIMIT,
-        1,
-        MAX_LIMIT
-      );
-
-      const results = await getNews(limit);
-
-      return sendJson(res, 200, {
-        success: true,
-        engine: "HEXORA",
-        mode: "news",
-        total: results.length,
-        results
-      });
-    }
-
-    /*
-     * IMAGES
-     */
-    if (
-      pathname === "/images" ||
-      pathname === "/api/images"
-    ) {
-      const query = normalizeQuery(
-        requestUrl.searchParams.get("q") || ""
-      );
-
-      const limit = safeInt(
-        requestUrl.searchParams.get("limit"),
-        DEFAULT_LIMIT,
-        1,
-        MAX_LIMIT
-      );
-
-      const results = await getMedia(
-        "images",
-        query,
-        limit
-      );
-
-      return sendJson(res, 200, {
-        success: true,
-        engine: "HEXORA",
-        mode: "images",
-        query,
-        total: results.length,
-        results
-      });
-    }
-
-    /*
-     * VIDEOS
-     */
-    if (
-      pathname === "/videos" ||
-      pathname === "/api/videos"
-    ) {
-      const query = normalizeQuery(
-        requestUrl.searchParams.get("q") || ""
-      );
-
-      const limit = safeInt(
-        requestUrl.searchParams.get("limit"),
-        DEFAULT_LIMIT,
-        1,
-        MAX_LIMIT
-      );
-
-      const results = await getMedia(
-        "videos",
-        query,
-        limit
-      );
-
-      return sendJson(res, 200, {
-        success: true,
-        engine: "HEXORA",
-        mode: "videos",
-        query,
-        total: results.length,
-        results
-      });
-    }
-
-    /*
-     * MAPS
-     */
-    if (
-      pathname === "/maps" ||
-      pathname === "/api/maps"
-    ) {
-      const query = normalizeQuery(
-        requestUrl.searchParams.get("q") || ""
-      );
-
-      const results = await searchDatabase(
-        query,
-        "web",
-        1,
-        20
-      );
-
-      return sendJson(res, 200, {
-        success: true,
-        engine: "HEXORA",
-        mode: "maps",
-        query,
-        total: results.total,
-        results: results.rows.map(row =>
-          resultFromRow(row, query)
-        )
-      });
-    }
-
-    /*
-     * STATIC FRONTEND
-     */
-    return await serveStatic(
-      req,
-      res,
-      pathname
-    );
-
-  } catch (error) {
-    console.error("HEXORA SERVER ERROR:", error);
-
-    return sendJson(res, 500, {
-      success: false,
-      engine: "HEXORA",
-      error: "Internal server error",
-      message: error.message
-    });
-  }
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `HEXORA server running on port ${PORT}`
   );
-});
 
-process.on("SIGTERM", async () => {
-  console.log("SIGTERM received");
+server.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      `HEXORA server running on port ${PORT}`
+    );
+  }
+);
 
-  try {
-    await pool.end();
-  } catch {}
+process.on(
+  "SIGTERM",
+  async () => {
+    console.log(
+      "SIGTERM received"
+    );
 
-  server.close(() => {
-    process.exit(0);
-  });
-});
+    try {
+      await pool.end();
+    } catch {}
 
-process.on("SIGINT", async () => {
-  console.log("SIGINT received");
+    server.close(
+      () => {
+        process.exit(0);
+      }
+    );
+  }
+);
 
-  try {
-    await pool.end();
-  } catch {}
+process.on(
+  "SIGINT",
+  async () => {
+    console.log(
+      "SIGINT received"
+    );
 
-  server.close(() => {
-    process.exit(0);
-  });
-});
+    try {
+      await pool.end();
+    } catch {}
+
+    server.close(
+      () => {
+        process.exit(0);
+      }
+    );
+  }
+);
