@@ -13,10 +13,12 @@ const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 
 const DB_POOL_MAX = Math.max(2, Number(process.env.DB_POOL_MAX || 8));
+
 const MAX_QUERY_LENGTH = 300;
 const MAX_PAGE = 10000;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
+
 const SEARCH_CANDIDATE_LIMIT = 2500;
 
 const pool = DATABASE_URL
@@ -337,10 +339,6 @@ async function searchDatabase(
         p.image_items,
         p.video_items,
 
-        /* =========================================
-           FULL TEXT RELEVANCE
-           ========================================= */
-
         ts_rank_cd(
           p.search_vector,
           websearch_to_tsquery(
@@ -349,10 +347,6 @@ async function searchDatabase(
           ),
           32
         ) AS fts_rank,
-
-        /* =========================================
-           TRIGRAM SIMILARITY
-           ========================================= */
 
         similarity(
           COALESCE(p.title, ''),
@@ -369,20 +363,12 @@ async function searchDatabase(
           $2
         ) AS domain_sim,
 
-        /* =========================================
-           EXACT TITLE
-           ========================================= */
-
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) =
                lower(trim($2))
           THEN 1
           ELSE 0
         END AS exact_title,
-
-        /* =========================================
-           TITLE STARTS WITH QUERY
-           ========================================= */
 
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) LIKE
@@ -391,20 +377,12 @@ async function searchDatabase(
           ELSE 0
         END AS title_starts,
 
-        /* =========================================
-           TITLE CONTAINS COMPLETE QUERY
-           ========================================= */
-
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) LIKE
                '%' || lower(trim($2)) || '%'
           THEN 1
           ELSE 0
         END AS title_contains,
-
-        /* =========================================
-           EXACT DOMAIN
-           ========================================= */
 
         CASE
           WHEN lower(trim(COALESCE(p.domain, ''))) =
@@ -413,20 +391,12 @@ async function searchDatabase(
           ELSE 0
         END AS exact_domain,
 
-        /* =========================================
-           DOMAIN CONTAINS QUERY
-           ========================================= */
-
         CASE
           WHEN lower(COALESCE(p.domain, '')) LIKE
                '%' || lower(trim($2)) || '%'
           THEN 1
           ELSE 0
         END AS domain_contains,
-
-        /* =========================================
-           URL CONTAINS QUERY
-           ========================================= */
 
         CASE
           WHEN lower(COALESCE(p.url, '')) LIKE
@@ -435,10 +405,6 @@ async function searchDatabase(
           ELSE 0
         END AS url_contains,
 
-        /* =========================================
-           QUERY PHRASE IN TITLE
-           ========================================= */
-
         CASE
           WHEN lower(COALESCE(p.title, '')) LIKE
                '%' || lower(trim($2)) || '%'
@@ -446,49 +412,29 @@ async function searchDatabase(
           ELSE 0
         END AS title_exact_phrase,
 
-        /* =========================================
-           TITLE WORD MATCHES
-           ========================================= */
-
         (
           SELECT COUNT(*)::double precision
           FROM unnest($3::text[]) AS w
-          WHERE
-            lower(COALESCE(p.title, ''))
-            ILIKE '%' || w || '%'
+          WHERE lower(COALESCE(p.title, ''))
+                ILIKE '%' || w || '%'
         ) AS title_word_matches,
 
-        /* =========================================
-           DESCRIPTION WORD MATCHES
-           ========================================= */
-
         (
           SELECT COUNT(*)::double precision
           FROM unnest($3::text[]) AS w
-          WHERE
-            lower(
-              COALESCE(p.description, '') || ' ' ||
-              COALESCE(p.excerpt, '')
-            )
-            ILIKE '%' || w || '%'
+          WHERE lower(
+            COALESCE(p.description, '') || ' ' ||
+            COALESCE(p.excerpt, '')
+          ) ILIKE '%' || w || '%'
         ) AS description_word_matches,
 
-        /* =========================================
-           CONTENT WORD MATCHES
-           ========================================= */
-
         (
           SELECT COUNT(*)::double precision
           FROM unnest($3::text[]) AS w
-          WHERE
-            lower(COALESCE(p.content, ''))
-            ILIKE '%' || w || '%'
+          WHERE lower(COALESCE(p.content, ''))
+                ILIKE '%' || w || '%'
         ) AS content_word_matches,
 
-        /* =========================================
-           OVERALL QUERY WORD COVERAGE
-           ========================================= */
-
         (
           SELECT
             CASE
@@ -500,23 +446,12 @@ async function searchDatabase(
             END
           FROM unnest($3::text[]) AS w
           WHERE
-            lower(COALESCE(p.title, ''))
-              ILIKE '%' || w || '%'
-
-            OR lower(COALESCE(p.description, ''))
-              ILIKE '%' || w || '%'
-
-            OR lower(COALESCE(p.excerpt, ''))
-              ILIKE '%' || w || '%'
-
-            OR lower(COALESCE(p.content, ''))
-              ILIKE '%' || w || '%'
+            lower(COALESCE(p.title, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.description, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.excerpt, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.content, '')) ILIKE '%' || w || '%'
         ) AS word_coverage,
 
-        /* =========================================
-           TITLE-ONLY COVERAGE
-           ========================================= */
-
         (
           SELECT
             CASE
@@ -528,13 +463,8 @@ async function searchDatabase(
             END
           FROM unnest($3::text[]) AS w
           WHERE
-            lower(COALESCE(p.title, ''))
-            ILIKE '%' || w || '%'
+            lower(COALESCE(p.title, '')) ILIKE '%' || w || '%'
         ) AS title_coverage,
-
-        /* =========================================
-           NEWS FRESHNESS
-           ========================================= */
 
         CASE
           WHEN $6 = 'news'
@@ -569,9 +499,7 @@ async function searchDatabase(
           )
 
           OR p.title % $2
-
           OR p.url % $2
-
           OR p.domain % $2
 
           OR EXISTS (
@@ -579,21 +507,18 @@ async function searchDatabase(
             FROM unnest($3::text[]) w
             WHERE
               p.title ILIKE '%' || w || '%'
-
               OR p.description ILIKE '%' || w || '%'
-
               OR p.excerpt ILIKE '%' || w || '%'
-
               OR p.content ILIKE '%' || w || '%'
           )
         )
 
       ORDER BY
         exact_title DESC,
+        title_coverage DESC,
         title_starts DESC,
         title_contains DESC,
         title_word_matches DESC,
-        title_coverage DESC,
         word_coverage DESC,
         fts_rank DESC,
         title_sim DESC,
@@ -608,23 +533,19 @@ async function searchDatabase(
       *,
 
       (
-        /* =========================================
-           TITLE RELEVANCE
-           ========================================= */
+        /* Exact title is the strongest signal */
+        (exact_title * 1500.0)
 
-        /* Exact title */
-        (exact_title * 1000.0)
+        /* Query starts the title */
+        + (title_starts * 650.0)
 
-        /* Title starts with query */
-        + (title_starts * 500.0)
+        /* Full phrase appears in title */
+        + (title_exact_phrase * 500.0)
 
-        /* Complete phrase in title */
-        + (title_exact_phrase * 350.0)
+        /* Query appears somewhere in title */
+        + (title_contains * 350.0)
 
-        /* Title contains query */
-        + (title_contains * 250.0)
-
-        /* Individual query words in title */
+        /* Every query word found in title */
         + (
             CASE
               WHEN cardinality($3::text[]) > 0
@@ -632,24 +553,24 @@ async function searchDatabase(
                 (
                   title_word_matches /
                   cardinality($3::text[])::double precision
-                ) * 700.0
+                ) * 1000.0
               ELSE 0
             END
           )
 
-        /* =========================================
-           TEXT RELEVANCE
-           ========================================= */
+        /* Title coverage */
+        + (title_coverage * 500.0)
 
+        /* PostgreSQL full-text relevance */
         + LEAST(
             220.0,
             fts_rank * 120.0
           )
 
-        /* Overall coverage */
-        + (word_coverage * 120.0)
+        /* Overall query coverage */
+        + (word_coverage * 100.0)
 
-        /* Description coverage */
+        /* Description relevance */
         + (
             CASE
               WHEN cardinality($3::text[]) > 0
@@ -657,12 +578,12 @@ async function searchDatabase(
                 (
                   description_word_matches /
                   cardinality($3::text[])::double precision
-                ) * 45.0
+                ) * 80.0
               ELSE 0
             END
           )
 
-        /* Content coverage */
+        /* Content relevance is intentionally weak */
         + (
             CASE
               WHEN cardinality($3::text[]) > 0
@@ -670,34 +591,26 @@ async function searchDatabase(
                 (
                   content_word_matches /
                   cardinality($3::text[])::double precision
-                ) * 20.0
+                ) * 15.0
               ELSE 0
             END
           )
 
-        /* Title trigram */
-        + (title_sim * 220.0)
+        /* Fuzzy title similarity */
+        + (title_sim * 180.0)
 
-        /* =========================================
-           DOMAIN / URL
-           ========================================= */
+        /* Domain signals */
+        + (exact_domain * 400.0)
+        + (domain_contains * 120.0)
+        + (domain_sim * 70.0)
 
-        + (exact_domain * 500.0)
+        /* URL signals */
+        + (url_contains * 70.0)
+        + (url_sim * 40.0)
 
-        + (domain_contains * 180.0)
-
-        + (domain_sim * 100.0)
-
-        + (url_contains * 100.0)
-
-        + (url_sim * 55.0)
-
-        /* =========================================
-           AUTHORITY / QUALITY
-           ========================================= */
-
+        /* Authority is now deliberately limited */
         + LEAST(
-            80.0,
+            45.0,
             GREATEST(
               0.0,
               COALESCE(
@@ -708,18 +621,18 @@ async function searchDatabase(
           )
 
         + LEAST(
-            50.0,
+            30.0,
             GREATEST(
               0.0,
               COALESCE(
                 quality_score,
                 0
-              ) * 0.5
+              ) * 0.4
             )
           )
 
         + LEAST(
-            30.0,
+            20.0,
             GREATEST(
               0.0,
               COALESCE(
@@ -730,20 +643,17 @@ async function searchDatabase(
           )
 
         + LEAST(
-            25.0,
+            15.0,
             GREATEST(
               0.0,
               COALESCE(
                 inbound_links,
                 0
-              )::double precision * 0.6
+              )::double precision * 0.4
             )
           )
 
-        /* =========================================
-           FRESHNESS
-           ========================================= */
-
+        /* News freshness */
         + CASE
             WHEN $6 = 'news'
             THEN LEAST(
@@ -756,10 +666,7 @@ async function searchDatabase(
             ELSE 0
           END
 
-        /* =========================================
-           INTENT
-           ========================================= */
-
+        /* Navigational */
         + CASE
             WHEN $6 = 'navigational'
              AND (
@@ -771,6 +678,7 @@ async function searchDatabase(
             ELSE 0
           END
 
+        /* Transactional */
         + CASE
             WHEN $6 = 'transactional'
              AND (
@@ -782,6 +690,7 @@ async function searchDatabase(
             ELSE 0
           END
 
+        /* Informational */
         + CASE
             WHEN $6 = 'informational'
              AND (
@@ -792,41 +701,22 @@ async function searchDatabase(
             ELSE 0
           END
 
-        /* =========================================
-           BODY-ONLY PENALTY
-           =========================================
-
-           Very important for searches like:
-
-           weather
-
-           A page such as:
-
-           "Kimberley"
-
-           should not beat a page whose title
-           actually contains "weather".
-
-           If the query is found only in body/content,
-           apply a strong penalty.
-        */
-
+        /* Strong penalty:
+           word appears only in body/content */
         - CASE
             WHEN title_word_matches = 0
              AND description_word_matches = 0
              AND content_word_matches > 0
-            THEN 180.0
+            THEN 350.0
             ELSE 0
           END
 
-        /* =========================================
-           NO TITLE + NO DESCRIPTION PENALTY
-           ========================================= */
-
+        /* Additional penalty when title and description
+           contain none of the query words */
         - CASE
             WHEN title_word_matches = 0
              AND description_word_matches = 0
-            THEN 80.0
+            THEN 180.0
             ELSE 0
           END
 
@@ -837,16 +727,15 @@ async function searchDatabase(
     ORDER BY
       score DESC,
 
-      /* Strong tie breakers */
       exact_title DESC,
-
-      title_word_matches DESC,
 
       title_coverage DESC,
 
-      title_contains DESC,
+      title_word_matches DESC,
 
       title_starts DESC,
+
+      title_contains DESC,
 
       exact_domain DESC,
 
@@ -886,9 +775,7 @@ async function searchDatabase(
         )
 
         OR p.title % $2
-
         OR p.url % $2
-
         OR p.domain % $2
 
         OR EXISTS (
@@ -896,11 +783,8 @@ async function searchDatabase(
           FROM unnest($3::text[]) w
           WHERE
             p.title ILIKE '%' || w || '%'
-
             OR p.description ILIKE '%' || w || '%'
-
             OR p.excerpt ILIKE '%' || w || '%'
-
             OR p.content ILIKE '%' || w || '%'
         )
       );
@@ -938,10 +822,7 @@ async function searchDatabase(
       )
   );
 
-  /* =========================================
-     DOMAIN DIVERSIFICATION
-     ========================================= */
-
+  /* Domain diversification */
   const seenDomains = new Map();
   const diversified = [];
   const deferred = [];
@@ -1122,10 +1003,6 @@ async function handle(req, res) {
     });
   }
 
-  /* =========================================
-     HEALTH
-     ========================================= */
-
   if (
     u.pathname === "/health" ||
     u.pathname === "/api/health"
@@ -1171,10 +1048,6 @@ async function handle(req, res) {
         "Cloudflare R2",
     });
   }
-
-  /* =========================================
-     SEARCH ROUTES
-     ========================================= */
 
   const searchRoutes =
     new Set([
@@ -1319,10 +1192,6 @@ async function handle(req, res) {
     }
   }
 
-  /* =========================================
-     MAPS
-     ========================================= */
-
   if (
     u.pathname ===
       "/api/maps" ||
@@ -1337,19 +1206,11 @@ async function handle(req, res) {
     });
   }
 
-  /* =========================================
-     FRONTEND FILES
-     ========================================= */
-
   return serveFile(
     res,
     u.pathname
   );
 }
-
-/* =========================================
-   HTTP SERVER
-   ========================================= */
 
 const server =
   http.createServer(
@@ -1380,10 +1241,6 @@ const server =
       );
     }
   );
-
-/* =========================================
-   GRACEFUL SHUTDOWN
-   ========================================= */
 
 async function shutdown(
   signal
@@ -1438,10 +1295,6 @@ process.on(
       error
     )
 );
-
-/* =========================================
-   START SERVER
-   ========================================= */
 
 server.listen(
   PORT,
