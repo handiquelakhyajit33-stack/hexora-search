@@ -1,1634 +1,998 @@
+// crawler.mjs
+import "dotenv/config";
+import { Pool } from "pg";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import robotsParser from "robots-parser";
 import crypto from "crypto";
-import dns from "dns/promises";
-import * as cheerio from "cheerio";
-import pg from "pg";
-import { putHtml } from "./storage.mjs";
 
-const { Pool } = pg;
-
-/* =========================================================
-   HEXORA WORLDWIDE CRAWLER
-   ========================================================= */
+const PORT = Number(process.env.PORT || 8080);
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+const R2_ACCOUNT_ID =
+  process.env.R2_ACCOUNT_ID ||
+  process.env.CLOUDFLARE_ACCOUNT_ID ||
+  "";
+
+const R2_BUCKET =
+  process.env.R2_BUCKET ||
+  process.env.R2_BUCKET_NAME ||
+  "hexora";
+
+const R2_ACCESS_KEY_ID =
+  process.env.R2_ACCESS_KEY_ID ||
+  process.env.R2_ACCESS_KEY ||
+  "";
+
+const R2_SECRET_ACCESS_KEY =
+  process.env.R2_SECRET_ACCESS_KEY ||
+  process.env.R2_SECRET_KEY ||
+  "";
+
+const R2_ENDPOINT =
+  process.env.R2_ENDPOINT ||
+  (R2_ACCOUNT_ID
+    ? `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`
+    : "");
+
+const CLOUDFLARE_API_TOKEN =
+  process.env.CLOUDFLARE_API_TOKEN ||
+  process.env.CF_API_TOKEN ||
+  "";
+
+// --------------------------------------------------
+// STORAGE LIMITS
+// --------------------------------------------------
+
+const NEON_SLOW_MB = Number(process.env.NEON_SLOW_MB || 750);
+const NEON_VERY_SLOW_MB = Number(process.env.NEON_VERY_SLOW_MB || 850);
+const NEON_PAUSE_MB = Number(process.env.NEON_PAUSE_MB || 900);
+
+const R2_SLOW_GB = Number(process.env.R2_SLOW_GB || 8);
+const R2_PAUSE_GB = Number(process.env.R2_PAUSE_GB || 9);
+
+const STORAGE_CHECK_INTERVAL_MS =
+  Number(process.env.STORAGE_CHECK_INTERVAL_MS || 5 * 60 * 1000);
+
+const STORAGE_PAUSE_DELAY_MS =
+  Number(process.env.STORAGE_PAUSE_DELAY_MS || 60 * 1000);
+
+// --------------------------------------------------
+// DATABASE
+// --------------------------------------------------
+
 if (!DATABASE_URL) {
-  throw new Error("[HEXORA] DATABASE_URL is missing");
+  throw new Error("[HEXORA] DATABASE_URL missing");
 }
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: Number(process.env.DB_POOL_MAX || 5),
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000,
-  ssl:
-    process.env.DATABASE_SSL === "false"
-      ? false
-      : { rejectUnauthorized: false },
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-/* =========================================================
-   CONFIG
-   ========================================================= */
+pool.on("error", (err) => {
+  console.error("[HEXORA] PostgreSQL pool error:", err.message);
+});
 
-const USER_AGENT =
-  process.env.CRAWLER_USER_AGENT ||
-  "HEXORA-Bot/1.0 (+https://hexora-search.com/bot)";
+// --------------------------------------------------
+// R2
+// --------------------------------------------------
 
-const REQUEST_TIMEOUT =
-  Number(process.env.CRAWL_TIMEOUT_MS || 15000);
+let r2 = null;
 
-const MAX_HTML =
-  Number(process.env.MAX_HTML_BYTES || 5000000);
-
-const MAX_CONTENT =
-  Number(process.env.MAX_CONTENT_CHARS || 100000);
-
-const MAX_LINKS =
-  Number(process.env.MAX_LINKS_PER_PAGE || 200);
-
-const MAX_IMAGES =
-  Number(process.env.MAX_IMAGES_PER_PAGE || 50);
-
-const MAX_VIDEOS =
-  Number(process.env.MAX_VIDEOS_PER_PAGE || 30);
-
-const BATCH_SIZE =
-  Number(process.env.CRAWL_BATCH_SIZE || 5);
-
-const LOOP_DELAY =
-  Number(process.env.CRAWL_LOOP_DELAY_MS || 5000);
-
-const RECRAWL_HOURS =
-  Number(process.env.RECRAWL_HOURS || 24);
-
-const RETRY_DELAY =
-  Number(process.env.RETRY_DELAY_MS || 60000);
-
-const MAX_RETRIES =
-  Number(process.env.MAX_RETRIES || 5);
-
-const JOB_TIMEOUT =
-  Number(process.env.CRAWL_JOB_TIMEOUT_MS || 20 * 60 * 1000);
-
-/* =========================================================
-   STATE
-   ========================================================= */
-
-let shuttingDown = false;
-
-const robotsCache = new Map();
-const hostLastRequest = new Map();
-
-/* =========================================================
-   LOGGING
-   ========================================================= */
-
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
+if (
+  R2_ENDPOINT &&
+  R2_ACCESS_KEY_ID &&
+  R2_SECRET_ACCESS_KEY
+) {
+  r2 = new S3Client({
+    region: "auto",
+    endpoint: R2_ENDPOINT,
+    credentials: {
+      accessKeyId: R2_ACCESS_KEY_ID,
+      secretAccessKey: R2_SECRET_ACCESS_KEY
+    }
+  });
 }
 
-function warn(...args) {
-  console.warn(new Date().toISOString(), ...args);
-}
-
-function errorLog(...args) {
-  console.error(new Date().toISOString(), ...args);
-}
-
-/* =========================================================
-   SLEEP
-   ========================================================= */
+// --------------------------------------------------
+// BASIC HELPERS
+// --------------------------------------------------
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/* =========================================================
-   HASH
-   ========================================================= */
-
-function sha256(value) {
-  return crypto
-    .createHash("sha256")
-    .update(String(value || ""))
-    .digest("hex");
+function mb(bytes) {
+  return bytes / 1024 / 1024;
 }
 
-/* =========================================================
-   URL NORMALIZATION
-   ========================================================= */
+function gb(bytes) {
+  return bytes / 1024 / 1024 / 1024;
+}
 
-function normalizeUrl(rawUrl, baseUrl = null) {
+function normalizeUrl(value) {
   try {
-    const url = baseUrl
-      ? new URL(rawUrl, baseUrl)
-      : new URL(rawUrl);
+    const u = new URL(value);
 
-    if (!["http:", "https:"].includes(url.protocol)) {
+    u.hash = "";
+
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
       return null;
     }
 
-    url.hash = "";
-
-    url.hostname = url.hostname.toLowerCase();
-
-    if (
-      (url.protocol === "http:" && url.port === "80") ||
-      (url.protocol === "https:" && url.port === "443")
-    ) {
-      url.port = "";
-    }
-
-    return url.toString();
+    return u.toString();
   } catch {
     return null;
   }
 }
 
-/* =========================================================
-   PUBLIC HOST SAFETY
-   ========================================================= */
-
-function isPrivateIPv4(ip) {
-  const parts = ip.split(".").map(Number);
-
-  if (parts.length !== 4 || parts.some(Number.isNaN)) {
-    return false;
-  }
-
-  const [a, b] = parts;
-
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-
-  return false;
-}
-
-function isPrivateIPv6(ip) {
-  const value = ip.toLowerCase();
-
+function makeStorageKey(url) {
   return (
-    value === "::1" ||
-    value.startsWith("fc") ||
-    value.startsWith("fd") ||
-    value.startsWith("fe80:")
+    crypto
+      .createHash("sha256")
+      .update(url)
+      .digest("hex") +
+    ".html"
   );
 }
 
-async function safePublicHost(hostname) {
-  const host = String(hostname || "")
-    .toLowerCase()
-    .replace(/\.$/, "");
+// --------------------------------------------------
+// NEON STORAGE
+// --------------------------------------------------
 
-  if (!host) return false;
-
-  if (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local")
-  ) {
-    return false;
-  }
-
+async function getNeonStorageBytes() {
   try {
-    const records = await dns.lookup(host, {
-      all: true,
-      verbatim: true,
-    });
+    const result = await pool.query(`
+      SELECT pg_database_size(current_database()) AS bytes
+    `);
 
-    if (!records.length) return false;
+    const value = result.rows?.[0]?.bytes;
 
-    for (const record of records) {
-      if (record.family === 4 && isPrivateIPv4(record.address)) {
-        return false;
-      }
-
-      if (record.family === 6 && isPrivateIPv6(record.address)) {
-        return false;
-      }
+    if (typeof value === "number") {
+      return value;
     }
 
-    return true;
-  } catch {
-    return false;
+    return Number(value || 0);
+  } catch (error) {
+    console.error(
+      "[HEXORA] Neon storage check failed:",
+      error.message
+    );
+
+    return null;
   }
 }
 
-/* =========================================================
-   DOMAIN RATE LIMIT
-   ========================================================= */
+// --------------------------------------------------
+// CLOUDFLARE R2 STORAGE
+// --------------------------------------------------
 
-async function domainDelay(hostname) {
-  const host = String(hostname || "").toLowerCase();
-
-  const last = hostLastRequest.get(host) || 0;
-
-  const delay = 500;
-
-  const wait = delay - (Date.now() - last);
-
-  if (wait > 0) {
-    await sleep(wait);
+async function getR2StorageBytes() {
+  if (!CLOUDFLARE_API_TOKEN || !R2_ACCOUNT_ID) {
+    return null;
   }
 
-  hostLastRequest.set(host, Date.now());
-}
-
-/* =========================================================
-   FETCH
-   ========================================================= */
-
-async function fetchText(url) {
-  const controller = new AbortController();
-
-  const timer = setTimeout(
-    () => controller.abort(),
-    REQUEST_TIMEOUT
-  );
+  const query = `
+    query R2StorageUsage(
+      $accountTag: String!
+      $bucketName: String!
+    ) {
+      viewer {
+        accounts(filter: {
+          accountTag: $accountTag
+        }) {
+          r2StorageAdaptiveGroups(
+            filter: {
+              bucketName: $bucketName
+            }
+            limit: 1
+            orderBy: [date_DESC]
+          ) {
+            dimensions {
+              date
+              bucketName
+            }
+            max {
+              payloadSize
+              metadataSize
+              objectCount
+            }
+          }
+        }
+      }
+    }
+  `;
 
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language":
-          "en-US,en;q=0.9,as;q=0.8,hi;q=0.7",
-      },
-    });
+    const response = await fetch(
+      "https://api.cloudflare.com/client/v4/graphql",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`
+        },
+        body: JSON.stringify({
+          query,
+          variables: {
+            accountTag: R2_ACCOUNT_ID,
+            bucketName: R2_BUCKET
+          }
+        })
+      }
+    );
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      console.error(
+        "[HEXORA] R2 usage HTTP error:",
+        response.status
+      );
+
+      return null;
     }
+
+    const data = await response.json();
+
+    const rows =
+      data?.data?.viewer?.accounts?.[0]
+        ?.r2StorageAdaptiveGroups || [];
+
+    if (!rows.length) {
+      return null;
+    }
+
+    const row = rows[0]?.max || {};
+
+    const payloadSize = Number(row.payloadSize || 0);
+    const metadataSize = Number(row.metadataSize || 0);
+
+    return payloadSize + metadataSize;
+  } catch (error) {
+    console.error(
+      "[HEXORA] R2 storage check failed:",
+      error.message
+    );
+
+    return null;
+  }
+}
+
+// --------------------------------------------------
+// STORAGE STATUS
+// --------------------------------------------------
+
+let storageCache = {
+  checkedAt: 0,
+  neonBytes: null,
+  r2Bytes: null,
+  pause: false,
+  slow: false
+};
+
+async function getStorageStatus(force = false) {
+  const now = Date.now();
+
+  if (
+    !force &&
+    now - storageCache.checkedAt <
+      STORAGE_CHECK_INTERVAL_MS
+  ) {
+    return storageCache;
+  }
+
+  const neonBytes = await getNeonStorageBytes();
+  const r2Bytes = await getR2StorageBytes();
+
+  const neonMB =
+    neonBytes === null
+      ? null
+      : mb(neonBytes);
+
+  const r2GB =
+    r2Bytes === null
+      ? null
+      : gb(r2Bytes);
+
+  const neonPause =
+    neonMB !== null &&
+    neonMB >= NEON_PAUSE_MB;
+
+  const r2Pause =
+    r2GB !== null &&
+    r2GB >= R2_PAUSE_GB;
+
+  const neonSlow =
+    neonMB !== null &&
+    neonMB >= NEON_SLOW_MB;
+
+  const r2Slow =
+    r2GB !== null &&
+    r2GB >= R2_SLOW_GB;
+
+  storageCache = {
+    checkedAt: now,
+    neonBytes,
+    r2Bytes,
+    pause: neonPause || r2Pause,
+    slow: neonSlow || r2Slow
+  };
+
+  console.log(
+    `[HEXORA] Storage check: ` +
+      `Neon=${
+        neonMB === null
+          ? "unknown"
+          : neonMB.toFixed(2) + "MB"
+      } ` +
+      `R2=${
+        r2GB === null
+          ? "unknown"
+          : r2GB.toFixed(2) + "GB"
+      } ` +
+      `pause=${storageCache.pause}`
+  );
+
+  if (neonMB !== null) {
+    if (neonMB >= NEON_PAUSE_MB) {
+      console.warn(
+        `[HEXORA] NEON STORAGE LIMIT REACHED: ` +
+          `${neonMB.toFixed(2)}MB >= ${NEON_PAUSE_MB}MB`
+      );
+    } else if (neonMB >= NEON_VERY_SLOW_MB) {
+      console.warn(
+        `[HEXORA] NEON STORAGE VERY HIGH: ` +
+          `${neonMB.toFixed(2)}MB`
+      );
+    } else if (neonMB >= NEON_SLOW_MB) {
+      console.warn(
+        `[HEXORA] NEON STORAGE HIGH: ` +
+          `${neonMB.toFixed(2)}MB`
+      );
+    }
+  }
+
+  if (r2GB !== null) {
+    if (r2GB >= R2_PAUSE_GB) {
+      console.warn(
+        `[HEXORA] R2 STORAGE LIMIT REACHED: ` +
+          `${r2GB.toFixed(2)}GB >= ${R2_PAUSE_GB}GB`
+      );
+    } else if (r2GB >= R2_SLOW_GB) {
+      console.warn(
+        `[HEXORA] R2 STORAGE HIGH: ` +
+          `${r2GB.toFixed(2)}GB`
+      );
+    }
+  }
+
+  return storageCache;
+}
+
+// --------------------------------------------------
+// SAFE BATCH SIZE
+// --------------------------------------------------
+
+function getSafeBatchSize(storageStatus) {
+  if (storageStatus.pause) {
+    return 0;
+  }
+
+  if (storageStatus.slow) {
+    return 1;
+  }
+
+  return 5;
+}
+
+// --------------------------------------------------
+// R2 SAVE
+// --------------------------------------------------
+
+async function saveToR2(url, html) {
+  if (!r2) {
+    console.warn(
+      "[HEXORA] R2 not configured; skipping R2 save"
+    );
+
+    return null;
+  }
+
+  const key = makeStorageKey(url);
+
+  try {
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Body: html,
+        ContentType: "text/html; charset=utf-8"
+      })
+    );
+
+    console.log(
+      `[HEXORA] R2 saved: ${key}`
+    );
+
+    return key;
+  } catch (error) {
+    console.error(
+      "[HEXORA] R2 save failed:",
+      error.message
+    );
+
+    return null;
+  }
+}
+
+// --------------------------------------------------
+// ROBOTS
+// --------------------------------------------------
+
+const robotsCache = new Map();
+
+async function canCrawl(url) {
+  try {
+    const parsed = new URL(url);
+    const origin = parsed.origin;
+
+    let robots = robotsCache.get(origin);
+
+    if (!robots) {
+      const robotsUrl = `${origin}/robots.txt`;
+
+      const response = await fetch(
+        robotsUrl,
+        {
+          headers: {
+            "User-Agent":
+              "HEXORABot/1.0 (+https://www.hexorasearch.com/)"
+          }
+        }
+      );
+
+      const text = await response.text();
+
+      robots = robotsParser(
+        robotsUrl,
+        text
+      );
+
+      robotsCache.set(origin, robots);
+    }
+
+    return robots.isAllowed(
+      url,
+      "HEXORABot"
+    );
+  } catch {
+    return true;
+  }
+}
+
+// --------------------------------------------------
+// FETCH PAGE
+// --------------------------------------------------
+
+async function fetchPage(url) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    15000
+  );
+
+  try {
+    const response = await fetch(
+      url,
+      {
+        signal: controller.signal,
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "HEXORABot/1.0 (+https://www.hexorasearch.com/)",
+          Accept:
+            "text/html,application/xhtml+xml"
+        }
+      }
+    );
 
     const contentType =
       response.headers.get("content-type") || "";
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status
+      };
+    }
 
     if (
       !contentType.includes("text/html") &&
       !contentType.includes("application/xhtml+xml")
     ) {
-      throw new Error(`Not HTML: ${contentType}`);
+      return {
+        ok: false,
+        status: response.status
+      };
     }
 
-    const contentLength =
-      Number(response.headers.get("content-length") || 0);
-
-    if (contentLength > MAX_HTML) {
-      throw new Error("HTML too large");
-    }
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-
-    if (buffer.length > MAX_HTML) {
-      throw new Error("HTML exceeded size limit");
-    }
+    const html = await response.text();
 
     return {
-      html: buffer.toString("utf8"),
-      finalUrl: response.url || url,
-      contentType,
+      ok: true,
       status: response.status,
+      html,
+      finalUrl: response.url,
+      contentType
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message
     };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timeout);
   }
 }
 
-/* =========================================================
-   RETRY
-   ========================================================= */
+// --------------------------------------------------
+// SIMPLE METADATA
+// --------------------------------------------------
 
-async function fetchWithRetry(url, attempts = 3) {
-  let lastError;
+function extractTitle(html) {
+  const match = html.match(
+    /<title[^>]*>([\s\S]*?)<\/title>/i
+  );
 
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      return await fetchText(url);
-    } catch (err) {
-      lastError = err;
-
-      if (i < attempts) {
-        await sleep(
-          Math.min(RETRY_DELAY * i, 10000)
-        );
-      }
-    }
-  }
-
-  throw lastError;
+  return match
+    ? match[1]
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 500)
+    : "";
 }
 
-/* =========================================================
-   ROBOTS
-   ========================================================= */
-
-function robotsAllowedFromText(text, targetUrl) {
-  const lines = String(text || "")
-    .split(/\r?\n/)
-    .map((x) => x.trim());
-
-  let applies = false;
-  let rules = [];
-
-  for (const line of lines) {
-    if (!line || line.startsWith("#")) continue;
-
-    const index = line.indexOf(":");
-
-    if (index === -1) continue;
-
-    const key = line
-      .slice(0, index)
-      .trim()
-      .toLowerCase();
-
-    const value = line
-      .slice(index + 1)
-      .trim();
-
-    if (key === "user-agent") {
-      applies =
-        value === "*" ||
-        value.toLowerCase() === USER_AGENT.toLowerCase();
-
-      continue;
-    }
-
-    if (applies && key === "disallow") {
-      rules.push({
-        type: "disallow",
-        value,
-      });
-    }
-
-    if (applies && key === "allow") {
-      rules.push({
-        type: "allow",
-        value,
-      });
-    }
-  }
-
-  const pathname = new URL(targetUrl).pathname || "/";
-
-  let best = null;
-
-  for (const rule of rules) {
-    if (!rule.value) continue;
-
-    if (pathname.startsWith(rule.value)) {
-      if (!best || rule.value.length > best.value.length) {
-        best = rule;
-      }
-    }
-  }
-
-  if (!best) return true;
-
-  return best.type === "allow";
-}
-
-async function robotsAllowed(url) {
-  let parsed;
-
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-
-  const origin = parsed.origin;
-
-  const cached = robotsCache.get(origin);
-
-  if (cached && cached.expires > Date.now()) {
-    return cached.allowed(url);
-  }
-
-  const robotsUrl = `${origin}/robots.txt`;
-
-  try {
-    await domainDelay(parsed.hostname);
-
-    const result = await fetchText(robotsUrl);
-
-    const text = result.html;
-
-    const allowed = (target) =>
-      robotsAllowedFromText(text, target);
-
-    robotsCache.set(origin, {
-      expires: Date.now() + 6 * 60 * 60 * 1000,
-      allowed,
-    });
-
-    return allowed(url);
-  } catch {
-    /*
-      If robots.txt cannot be downloaded, don't permanently
-      block the entire website.
-    */
-
-    const allowed = () => true;
-
-    robotsCache.set(origin, {
-      expires: Date.now() + 30 * 60 * 1000,
-      allowed,
-    });
-
-    return true;
-  }
-}
-
-/* =========================================================
-   LANGUAGE
-   ========================================================= */
-
-function detectLanguage(text) {
-  const value = String(text || "").slice(0, 20000);
-
-  if (/[\u0980-\u09FF]/.test(value)) {
-    return "bn";
-  }
-
-  if (/[\u0B80-\u0BFF]/.test(value)) {
-    return "ta";
-  }
-
-  if (/[\u0C00-\u0C7F]/.test(value)) {
-    return "te";
-  }
-
-  if (/[\u0C80-\u0CFF]/.test(value)) {
-    return "kn";
-  }
-
-  if (/[\u0D00-\u0D7F]/.test(value)) {
-    return "ml";
-  }
-
-  if (/[\u0900-\u097F]/.test(value)) {
-    return "hi";
-  }
-
-  if (/[\u0A00-\u0A7F]/.test(value)) {
-    return "pa";
-  }
-
-  if (/[A-Za-z]/.test(value)) {
-    return "en";
-  }
-
-  return "unknown";
-}
-
-/* =========================================================
-   TEXT CLEANING
-   ========================================================= */
-
-function cleanText(value) {
-  return String(value || "")
+function stripHtml(html) {
+  return html
+    .replace(
+      /<script[\s\S]*?<\/script>/gi,
+      " "
+    )
+    .replace(
+      /<style[\s\S]*?<\/style>/gi,
+      " "
+    )
+    .replace(
+      /<[^>]+>/g,
+      " "
+    )
     .replace(/\s+/g, " ")
-    .replace(/\u00a0/g, " ")
     .trim();
 }
 
-/* =========================================================
-   PAGE EXTRACTION
-   ========================================================= */
+// --------------------------------------------------
+// SAVE PAGE TO NEON
+// --------------------------------------------------
 
-function extractPage(html, pageUrl) {
-  const $ = cheerio.load(html);
-
-  $(
-    "script, style, noscript, template, svg, canvas, iframe"
-  ).remove();
-
-  const canonical =
-    $('link[rel="canonical"]').attr("href") || null;
-
-  const title =
-    cleanText($("title").first().text()) ||
-    cleanText($("h1").first().text());
-
-  const description =
-    cleanText(
-      $('meta[name="description"]').attr("content") ||
-        $('meta[property="og:description"]').attr("content") ||
-        ""
-    );
-
-  const ogTitle =
-    cleanText(
-      $('meta[property="og:title"]').attr("content") || ""
-    );
-
-  const finalTitle = title || ogTitle;
-
-  const bodyText = cleanText(
-    $("body").text()
-  ).slice(0, MAX_CONTENT);
-
-  const excerpt =
-    description ||
-    bodyText.slice(0, 500);
-
-  const language =
-    $('html').attr("lang") ||
-    detectLanguage(bodyText);
-
-  const publishedAt =
-    $('meta[property="article:published_time"]').attr(
-      "content"
-    ) ||
-    $('meta[name="date"]').attr("content") ||
-    $('time[datetime]').first().attr("datetime") ||
-    null;
-
-  /* ---------------- LINKS ---------------- */
-
-  const links = [];
-  const seenLinks = new Set();
-
-  $("a[href]").each((_, el) => {
-    if (links.length >= MAX_LINKS) return;
-
-    const href = $(el).attr("href");
-
-    const normalized = normalizeUrl(
-      href,
-      pageUrl
-    );
-
-    if (!normalized) return;
-
-    if (seenLinks.has(normalized)) return;
-
-    seenLinks.add(normalized);
-
-    links.push(normalized);
-  });
-
-  /* ---------------- IMAGES ---------------- */
-
-  const images = [];
-  const seenImages = new Set();
-
-  $("img").each((_, el) => {
-    if (images.length >= MAX_IMAGES) return;
-
-    const src =
-      $(el).attr("src") ||
-      $(el).attr("data-src") ||
-      $(el).attr("data-lazy-src");
-
-    if (!src) return;
-
-    const normalized = normalizeUrl(
-      src,
-      pageUrl
-    );
-
-    if (!normalized) return;
-
-    if (seenImages.has(normalized)) return;
-
-    seenImages.add(normalized);
-
-    images.push({
-      url: normalized,
-      alt: cleanText($(el).attr("alt") || ""),
-      title: cleanText($(el).attr("title") || ""),
-    });
-  });
-
-  /* ---------------- OPEN GRAPH IMAGE ---------------- */
-
-  const ogImage =
-    $('meta[property="og:image"]').attr("content");
-
-  if (
-    ogImage &&
-    images.length < MAX_IMAGES
-  ) {
-    const normalized = normalizeUrl(
-      ogImage,
-      pageUrl
-    );
-
-    if (
-      normalized &&
-      !seenImages.has(normalized)
-    ) {
-      images.unshift({
-        url: normalized,
-        alt: finalTitle || "",
-        title: finalTitle || "",
-      });
-    }
-  }
-
-  /* ---------------- VIDEOS ---------------- */
-
-  const videos = [];
-  const seenVideos = new Set();
-
-  $("video, source").each((_, el) => {
-    if (videos.length >= MAX_VIDEOS) return;
-
-    const src =
-      $(el).attr("src") ||
-      $(el).attr("data-src");
-
-    if (!src) return;
-
-    const normalized = normalizeUrl(
-      src,
-      pageUrl
-    );
-
-    if (!normalized) return;
-
-    if (seenVideos.has(normalized)) return;
-
-    seenVideos.add(normalized);
-
-    videos.push({
-      url: normalized,
-      type: $(el).attr("type") || null,
-    });
-  });
-
-  /* ---------------- IFRAME VIDEOS ---------------- */
-
-  $("iframe").each((_, el) => {
-    if (videos.length >= MAX_VIDEOS) return;
-
-    const src = $(el).attr("src");
-
-    if (!src) return;
-
-    const normalized = normalizeUrl(
-      src,
-      pageUrl
-    );
-
-    if (!normalized) return;
-
-    if (seenVideos.has(normalized)) return;
-
-    const lower = normalized.toLowerCase();
-
-    if (
-      lower.includes("youtube.com") ||
-      lower.includes("youtu.be") ||
-      lower.includes("vimeo.com") ||
-      lower.includes("dailymotion.com")
-    ) {
-      seenVideos.add(normalized);
-
-      videos.push({
-        url: normalized,
-        type: "embed",
-      });
-    }
-  });
-
-  const domain =
-    (() => {
-      try {
-        return new URL(pageUrl).hostname;
-      } catch {
-        return null;
-      }
-    })();
-
-  const wordCount =
-    bodyText
-      .split(/\s+/)
-      .filter(Boolean)
-      .length;
-
-  return {
-    url: pageUrl,
-    canonicalUrl:
-      normalizeUrl(canonical, pageUrl) ||
-      pageUrl,
-    title: finalTitle,
-    description,
-    excerpt,
-    content: bodyText,
-    language,
-    publishedAt,
-    domain,
-    wordCount,
-    links,
-    images,
-    videos,
-  };
-}
-
-/* =========================================================
-   QUEUE URL
-   ========================================================= */
-
-async function queueUrl(
+async function savePage({
   url,
-  discoveredFrom = null,
-  priority = 0
-) {
-  const normalized = normalizeUrl(url);
+  finalUrl,
+  html
+}) {
+  const title = extractTitle(html);
+  const text = stripHtml(html);
 
-  if (!normalized) return false;
-
-  try {
-    const host = new URL(normalized).hostname;
-
-    if (!(await safePublicHost(host))) {
-      return false;
-    }
-  } catch {
-    return false;
-  }
-
-  try {
-    await pool.query(
-      `
-      INSERT INTO crawl_queue
-        (
-          url,
-          status,
-          priority,
-          discovered_from,
-          canonical_url,
-          attempts,
-          next_crawl_at
-        )
-      VALUES
-        ($1, 'pending', $2, $3, $1, 0, NOW())
-      ON CONFLICT (url)
-      DO UPDATE SET
-        priority = GREATEST(
-          COALESCE(crawl_queue.priority, 0),
-          EXCLUDED.priority
-        ),
-        next_crawl_at =
-          CASE
-            WHEN crawl_queue.status IN ('failed', 'error')
-            THEN COALESCE(
-              crawl_queue.next_crawl_at,
-              NOW()
-            )
-            ELSE crawl_queue.next_crawl_at
-          END
-      `,
-      [
-        normalized,
-        priority,
-        discoveredFrom,
-      ]
-    );
-
-    return true;
-  } catch (err) {
-    /*
-      Fallback for older queue schemas.
-    */
-
-    try {
-      await pool.query(
-        `
-        INSERT INTO crawl_queue
-          (url, status)
-        VALUES
-          ($1, 'pending')
-        ON CONFLICT (url)
-        DO NOTHING
-        `,
-        [normalized]
-      );
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
-/* =========================================================
-   SEEDS
-   ========================================================= */
-
-function getSeeds() {
-  const raw =
-    process.env.CRAWL_SEEDS ||
-    process.env.SEED_URLS ||
-    "";
-
-  if (!raw.trim()) {
-    return [
-      "https://www.wikipedia.org/",
-      "https://www.bbc.com/",
-      "https://www.reuters.com/",
-      "https://www.nasa.gov/",
-      "https://www.mozilla.org/",
-      "https://www.w3.org/",
-    ];
-  }
-
-  return raw
-    .split(/[\n,]+/)
-    .map((x) => normalizeUrl(x.trim()))
-    .filter(Boolean);
-}
-
-async function ensureSeeds() {
-  const seeds = getSeeds();
-
-  for (const seed of seeds) {
-    await queueUrl(
-      seed,
-      "seed",
-      100
-    );
-  }
-
-  log(
-    `[HEXORA] Seeds checked: ${seeds.length}`
+  const r2Key = await saveToR2(
+    finalUrl || url,
+    html
   );
+
+  await pool.query(
+    `
+    INSERT INTO pages
+      (
+        url,
+        title,
+        content,
+        crawl_status,
+        last_crawled_at
+      )
+    VALUES
+      (
+        $1,
+        $2,
+        $3,
+        'indexed',
+        NOW()
+      )
+    ON CONFLICT (url)
+    DO UPDATE SET
+      title = EXCLUDED.title,
+      content = EXCLUDED.content,
+      crawl_status = 'indexed',
+      last_crawled_at = NOW()
+    `,
+    [
+      finalUrl || url,
+      title,
+      text
+    ]
+  );
+
+  return r2Key;
 }
 
-/* =========================================================
-   RECOVER STALE JOBS
-   ========================================================= */
-
-async function recoverJobs() {
-  try {
-    const result = await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'pending',
-        locked_at = NULL,
-        next_crawl_at = NOW()
-      WHERE status = 'processing'
-        AND (
-          locked_at IS NULL
-          OR locked_at < NOW() - INTERVAL '20 minutes'
-        )
-      RETURNING id
-      `
-    );
-
-    if (result.rowCount) {
-      log(
-        `[HEXORA] Recovered stale jobs: ${result.rowCount}`
-      );
-    }
-  } catch (err) {
-    /*
-      Compatible fallback for base schema.
-    */
-
-    try {
-      const result = await pool.query(
-        `
-        UPDATE crawl_queue
-        SET status = 'pending'
-        WHERE status = 'processing'
-        `
-      );
-
-      if (result.rowCount) {
-        log(
-          `[HEXORA] Recovered jobs: ${result.rowCount}`
-        );
-      }
-    } catch (fallbackError) {
-      warn(
-        "[HEXORA] Job recovery warning:",
-        fallbackError.message
-      );
-    }
-  }
-}
-
-/* =========================================================
-   CLAIM JOBS
-   ========================================================= */
+// --------------------------------------------------
+// CLAIM JOBS
+// --------------------------------------------------
 
 async function claimJobs(limit) {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    /*
-      IMPORTANT:
-      Existing database contains a very large number
-      of PENDING jobs. Therefore pending MUST be included.
-    */
-
-    const result = await client.query(
-      `
-      SELECT
-        id,
-        url,
-        status,
-        attempts
+  const result = await pool.query(
+    `
+    WITH picked AS (
+      SELECT id
       FROM crawl_queue
-      WHERE status IN ('pending', 'queued', 'failed')
+      WHERE
+        status IN ('pending', 'failed', 'error')
         AND (
           next_crawl_at IS NULL
           OR next_crawl_at <= NOW()
         )
-        AND COALESCE(attempts, 0) < $1
       ORDER BY
-        COALESCE(priority, 0) DESC,
-        COALESCE(created_at, NOW()) ASC
-      LIMIT $2
+        priority DESC NULLS LAST,
+        id
+      LIMIT $1
       FOR UPDATE SKIP LOCKED
-      `,
-      [
-        MAX_RETRIES + 1,
-        limit,
-      ]
-    );
-
-    if (!result.rows.length) {
-      await client.query("COMMIT");
-      return [];
-    }
-
-    const ids =
-      result.rows.map((row) => row.id);
-
-    await client.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'processing',
-        locked_at = NOW(),
-        attempts = COALESCE(attempts, 0) + 1
-      WHERE id = ANY($1::bigint[])
-      `,
-      [ids]
-    );
-
-    await client.query("COMMIT");
-
-    return result.rows.map((row) => ({
-      ...row,
-      attempts:
-        Number(row.attempts || 0) + 1,
-    }));
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-/* =========================================================
-   SAVE PAGE
-   ========================================================= */
-
-async function savePage(page, html) {
-  const contentHash =
-    sha256(page.content);
-
-  let r2Key = null;
-
-  try {
-    r2Key = await putHtml(
-      page.url,
-      html
-    );
-  } catch (err) {
-    warn(
-      `[HEXORA] R2 save failed: ${page.url}`,
-      err.message
-    );
-  }
-
-  const imageJson =
-    JSON.stringify(page.images || []);
-
-  const videoJson =
-    JSON.stringify(page.videos || []);
-
-  try {
-    await pool.query(
-      `
-      INSERT INTO pages
-      (
-        url,
-        title,
-        description,
-        content,
-        content_hash,
-        word_count,
-        language,
-        canonical_url,
-        excerpt,
-        domain,
-        published_at,
-        last_crawled_at,
-        crawl_status,
-        quality_score,
-        authority_score,
-        popularity_score,
-        inbound_links,
-        image_items,
-        video_items,
-        r2_key,
-        updated_at
-      )
-      VALUES
-      (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-        $11,NOW(),'success',
-        $12,$13,$14,0,$15,$16,$17,NOW()
-      )
-      ON CONFLICT (url)
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        description = EXCLUDED.description,
-        content = EXCLUDED.content,
-        content_hash = EXCLUDED.content_hash,
-        word_count = EXCLUDED.word_count,
-        language = EXCLUDED.language,
-        canonical_url = EXCLUDED.canonical_url,
-        excerpt = EXCLUDED.excerpt,
-        domain = EXCLUDED.domain,
-        published_at = EXCLUDED.published_at,
-        last_crawled_at = NOW(),
-        crawl_status = 'success',
-        image_items = EXCLUDED.image_items,
-        video_items = EXCLUDED.video_items,
-        r2_key = EXCLUDED.r2_key,
-        updated_at = NOW()
-      `,
-      [
-        page.url,
-        page.title,
-        page.description,
-        page.content,
-        contentHash,
-        page.wordCount,
-        page.language,
-        page.canonicalUrl,
-        page.excerpt,
-        page.domain,
-        page.publishedAt,
-        0.5,
-        0.1,
-        0.1,
-        imageJson,
-        videoJson,
-        r2Key,
-      ]
-    );
-  } catch (err) {
-    /*
-      Fallback for installations where some optional
-      columns are not available.
-    */
-
-    await pool.query(
-      `
-      INSERT INTO pages
-      (
-        url,
-        title,
-        description,
-        content,
-        content_hash,
-        word_count,
-        language,
-        updated_at
-      )
-      VALUES
-      ($1,$2,$3,$4,$5,$6,$7,NOW())
-      ON CONFLICT (url)
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        description = EXCLUDED.description,
-        content = EXCLUDED.content,
-        content_hash = EXCLUDED.content_hash,
-        word_count = EXCLUDED.word_count,
-        language = EXCLUDED.language,
-        updated_at = NOW()
-      `,
-      [
-        page.url,
-        page.title,
-        page.description,
-        page.content,
-        contentHash,
-        page.wordCount,
-        page.language,
-      ]
-    );
-  }
-
-  return {
-    contentHash,
-    r2Key,
-  };
-}
-
-/* =========================================================
-   MARK SUCCESS
-   ========================================================= */
-
-async function markSuccess(
-  jobId,
-  url
-) {
-  try {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'done',
-        last_crawled_at = NOW(),
-        last_error = NULL,
-        locked_at = NULL,
-        failure_type = NULL,
-        next_crawl_at =
-          NOW() +
-          ($2 * INTERVAL '1 hour')
-      WHERE id = $1
-      `,
-      [
-        jobId,
-        RECRAWL_HOURS,
-      ]
-    );
-  } catch {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'done',
-        last_crawled_at = NOW(),
-        last_error = NULL
-      WHERE id = $1
-      `,
-      [jobId]
-    );
-  }
-
-  log(
-    `[HEXORA] indexed: ${url}`
+    )
+    UPDATE crawl_queue q
+    SET
+      status = 'processing',
+      updated_at = NOW()
+    FROM picked
+    WHERE q.id = picked.id
+    RETURNING q.*
+    `,
+    [limit]
   );
+
+  return result.rows;
 }
 
-/* =========================================================
-   MARK FAILURE
-   ========================================================= */
+// --------------------------------------------------
+// PROCESS JOB
+// --------------------------------------------------
 
-async function markFailure(
-  job,
-  err,
-  type = "error"
-) {
-  const message =
-    String(err?.message || err || "Unknown error")
-      .slice(0, 1000);
-
-  const attempts =
-    Number(job.attempts || 1);
-
-  const permanent =
-    attempts >= MAX_RETRIES;
-
-  const status =
-    permanent ? "dead" : "failed";
-
-  try {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = $1,
-        last_error = $2,
-        locked_at = NULL,
-        failure_type = $3,
-        next_crawl_at =
-          CASE
-            WHEN $4 = TRUE THEN NULL
-            ELSE NOW() +
-              ($5 * INTERVAL '1 second')
-          END
-      WHERE id = $6
-      `,
-      [
-        status,
-        message,
-        type,
-        permanent,
-        Math.min(
-          RETRY_DELAY / 1000 * attempts,
-          3600
-        ),
-        job.id,
-      ]
-    );
-  } catch {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = $1,
-        last_error = $2,
-        locked_at = NULL
-      WHERE id = $3
-      `,
-      [
-        status,
-        message,
-        job.id,
-      ]
-    );
-  }
-
-  errorLog(
-    `[HEXORA] ${status}: ${job.url} -> ${message}`
-  );
-}
-
-/* =========================================================
-   MARK BLOCKED
-   ========================================================= */
-
-async function markBlocked(
-  job,
-  reason
-) {
-  try {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'blocked',
-        last_error = $1,
-        locked_at = NULL,
-        failure_type = 'robots'
-      WHERE id = $2
-      `,
-      [
-        String(reason || "Blocked").slice(0, 1000),
-        job.id,
-      ]
-    );
-  } catch {
-    await pool.query(
-      `
-      UPDATE crawl_queue
-      SET
-        status = 'blocked',
-        last_error = $1
-      WHERE id = $2
-      `,
-      [
-        String(reason || "Blocked").slice(0, 1000),
-        job.id,
-      ]
-    );
-  }
-}
-
-/* =========================================================
-   CRAWL ONE JOB
-   ========================================================= */
-
-async function crawlJob(job) {
+async function processJob(job) {
   const url = normalizeUrl(job.url);
 
   if (!url) {
-    throw new Error("Invalid URL");
-  }
-
-  const parsed = new URL(url);
-
-  if (!(await safePublicHost(parsed.hostname))) {
-    await markBlocked(
-      job,
-      "Private or unsafe host"
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'failed',
+        last_error = 'Invalid URL',
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [job.id]
     );
 
-    return {
-      status: "blocked",
-    };
+    return false;
   }
 
-  const allowed =
-    await robotsAllowed(url);
+  const allowed = await canCrawl(url);
 
   if (!allowed) {
-    await markBlocked(
-      job,
-      "robots.txt disallow"
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'blocked',
+        last_error = 'Blocked by robots.txt',
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [job.id]
     );
 
-    return {
-      status: "blocked",
-    };
-  }
-
-  await domainDelay(
-    parsed.hostname
-  );
-
-  const result =
-    await fetchWithRetry(url, 3);
-
-  const finalUrl =
-    normalizeUrl(result.finalUrl) || url;
-
-  const page =
-    extractPage(
-      result.html,
-      finalUrl
+    console.log(
+      `[HEXORA] robots blocked: ${url}`
     );
 
-  if (
-    !page.content &&
-    !page.title &&
-    !page.description
-  ) {
-    throw new Error(
-      "No useful page content"
+    return false;
+  }
+
+  const page = await fetchPage(url);
+
+  if (!page.ok) {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'failed',
+        last_error = $2,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [
+        job.id,
+        page.error ||
+          `HTTP ${page.status || "error"}`
+      ]
     );
+
+    console.warn(
+      `[HEXORA] crawl failed: ${url}`
+    );
+
+    return false;
   }
 
-  await savePage(
-    page,
-    result.html
-  );
+  try {
+    await savePage({
+      url,
+      finalUrl: page.finalUrl,
+      html: page.html
+    });
 
-  /*
-    Queue discovered URLs.
-  */
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'done',
+        last_error = NULL,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [job.id]
+    );
 
-  let discovered = 0;
+    console.log(
+      `[HEXORA] indexed: ${page.finalUrl || url}`
+    );
 
-  for (const link of page.links) {
-    if (shuttingDown) break;
+    return true;
+  } catch (error) {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'failed',
+        last_error = $2,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [
+        job.id,
+        error.message
+      ]
+    );
 
-    const ok =
-      await queueUrl(
-        link,
-        finalUrl,
-        0
-      );
+    console.error(
+      `[HEXORA] index failed: ${url}`,
+      error.message
+    );
 
-    if (ok) {
-      discovered++;
-    }
+    return false;
   }
-
-  await markSuccess(
-    job.id,
-    finalUrl
-  );
-
-  return {
-    status: "done",
-    discovered,
-    images: page.images.length,
-    videos: page.videos.length,
-  };
 }
 
-/* =========================================================
-   ONE CRAWL CYCLE
-   ========================================================= */
+// --------------------------------------------------
+// RECOVER STALE JOBS
+// --------------------------------------------------
 
-export async function runCrawlCycle() {
-  await recoverJobs();
+async function recoverStaleJobs() {
+  try {
+    const result = await pool.query(`
+      UPDATE crawl_queue
+      SET
+        status = 'pending',
+        updated_at = NOW(),
+        next_crawl_at = NOW()
+      WHERE
+        status = 'processing'
+        AND updated_at < NOW() - INTERVAL '15 minutes'
+      RETURNING id
+    `);
 
-  const jobs =
-    await claimJobs(BATCH_SIZE);
+    if (result.rowCount > 0) {
+      console.log(
+        `[HEXORA] Recovered stale jobs: ${result.rowCount}`
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[HEXORA] stale job recovery failed:",
+      error.message
+    );
+  }
+}
 
-  if (!jobs.length) {
+// --------------------------------------------------
+// CRAWL CYCLE
+// --------------------------------------------------
+
+async function runCrawlCycle() {
+  const storage =
+    await getStorageStatus(true);
+
+  if (storage.pause) {
+    console.warn(
+      "[HEXORA] Storage protection ACTIVE. " +
+      "Crawler paused. Search service remains available."
+    );
+
     return {
+      storagePaused: true,
       jobs: 0,
-      completed: 0,
+      indexed: 0,
       failed: 0,
-      blocked: 0,
+      blocked: 0
     };
   }
 
-  log(
-    `[HEXORA] Starting batch: ${jobs.length} jobs`
+  await recoverStaleJobs();
+
+  const batchSize =
+    getSafeBatchSize(storage);
+
+  if (batchSize <= 0) {
+    return {
+      storagePaused: true,
+      jobs: 0,
+      indexed: 0,
+      failed: 0,
+      blocked: 0
+    };
+  }
+
+  console.log(
+    `[HEXORA] Starting batch: ${batchSize} jobs`
   );
 
-  let completed = 0;
+  const jobs =
+    await claimJobs(batchSize);
+
+  if (!jobs.length) {
+    console.log(
+      "[HEXORA] No crawl jobs available."
+    );
+
+    return {
+      storagePaused: false,
+      jobs: 0,
+      indexed: 0,
+      failed: 0,
+      blocked: 0
+    };
+  }
+
+  let indexed = 0;
   let failed = 0;
   let blocked = 0;
 
-  /*
-    Sequential processing helps avoid hammering
-    websites and keeps memory usage lower.
-  */
-
   for (const job of jobs) {
-    if (shuttingDown) break;
-
     try {
-      const result =
-        await crawlJob(job);
+      const ok =
+        await processJob(job);
 
-      if (result.status === "done") {
-        completed++;
-      } else if (
-        result.status === "blocked"
-      ) {
-        blocked++;
+      if (ok) {
+        indexed++;
+      } else {
+        failed++;
       }
-    } catch (err) {
+    } catch (error) {
       failed++;
 
-      await markFailure(
-        job,
-        err,
-        "crawl"
+      console.error(
+        "[HEXORA] job processing error:",
+        error.message
       );
     }
+
+    await sleep(500);
   }
 
-  log(
-    `[HEXORA] Batch finished: jobs=${jobs.length} indexed=${completed} failed=${failed} blocked=${blocked}`
+  console.log(
+    `[HEXORA] Batch finished: ` +
+      `jobs=${jobs.length} ` +
+      `indexed=${indexed} ` +
+      `failed=${failed} ` +
+      `blocked=${blocked}`
   );
 
   return {
+    storagePaused: false,
     jobs: jobs.length,
-    completed,
+    indexed,
     failed,
-    blocked,
+    blocked
   };
 }
 
-/* =========================================================
-   DATABASE HEALTH
-   ========================================================= */
+// --------------------------------------------------
+// MAIN LOOP
+// --------------------------------------------------
 
-async function databaseHealth() {
-  const result =
-    await pool.query(
-      "SELECT NOW() AS now"
-    );
-
-  return result.rows[0];
-}
-
-/* =========================================================
-   START CRAWLER
-   ========================================================= */
-
-async function startCrawler() {
-  log(
+async function main() {
+  console.log(
     "[HEXORA] Worldwide crawler starting..."
   );
 
-  log(
-    `[HEXORA] Batch size: ${BATCH_SIZE}`
+  console.log(
+    `[HEXORA] Neon pause limit: ${NEON_PAUSE_MB}MB`
   );
 
-  log(
-    `[HEXORA] Timeout: ${REQUEST_TIMEOUT}ms`
+  console.log(
+    `[HEXORA] R2 pause limit: ${R2_PAUSE_GB}GB`
   );
 
-  log(
-    `[HEXORA] Max retries: ${MAX_RETRIES}`
+  console.log(
+    `[HEXORA] R2 metrics: ${
+      CLOUDFLARE_API_TOKEN &&
+      R2_ACCOUNT_ID
+        ? "configured"
+        : "not configured"
+    }`
   );
 
-  log(
-    `[HEXORA] R2 storage: enabled`
-  );
+  await pool.query("SELECT 1");
 
-  await databaseHealth();
-
-  log(
+  console.log(
     "[HEXORA] Neon database connected."
   );
 
-  await ensureSeeds();
+  const initial =
+    await getStorageStatus(true);
 
-  /*
-    CONTINUOUS WORLDWIDE CRAWL LOOP
-  */
+  if (initial.pause) {
+    console.warn(
+      "[HEXORA] Startup storage protection is ACTIVE."
+    );
+  }
 
-  while (!shuttingDown) {
+  while (true) {
     try {
       const result =
         await runCrawlCycle();
 
-      if (result.jobs === 0) {
-        log(
-          `[HEXORA] No ready jobs. Waiting ${Math.round(
-            LOOP_DELAY / 1000
-          )}s...`
+      if (result.storagePaused) {
+        console.warn(
+          `[HEXORA] Storage paused. ` +
+            `Retrying after ${STORAGE_PAUSE_DELAY_MS / 1000}s`
         );
 
-        await sleep(LOOP_DELAY);
-      } else {
-        /*
-          Small pause between batches.
-        */
+        await sleep(
+          STORAGE_PAUSE_DELAY_MS
+        );
 
-        await sleep(1000);
+        continue;
       }
-    } catch (err) {
-      errorLog(
-        "[HEXORA] Crawl cycle error:",
-        err
+
+      await sleep(2000);
+    } catch (error) {
+      console.error(
+        "[HEXORA] Crawl loop error:",
+        error.message
       );
 
-      await sleep(
-        Math.max(LOOP_DELAY, 10000)
-      );
+      await sleep(10000);
     }
   }
-
-  log(
-    "[HEXORA] Crawler stopped."
-  );
 }
 
-/* =========================================================
-   SHUTDOWN
-   ========================================================= */
+// --------------------------------------------------
+// START
+// --------------------------------------------------
 
-export async function shutdownCrawler() {
-  if (shuttingDown) return;
-
-  shuttingDown = true;
-
-  log(
-    "[HEXORA] Shutdown requested..."
-  );
-
-  try {
-    await pool.end();
-  } catch (err) {
-    errorLog(
-      "[HEXORA] Database shutdown error:",
-      err.message
-    );
-  }
-}
-
-process.on(
-  "SIGTERM",
-  shutdownCrawler
-);
-
-process.on(
-  "SIGINT",
-  shutdownCrawler
-);
-
-process.on(
-  "uncaughtException",
-  (err) => {
-    errorLog(
-      "[HEXORA] Uncaught exception:",
-      err
-    );
-  }
-);
-
-process.on(
-  "unhandledRejection",
-  (reason) => {
-    errorLog(
-      "[HEXORA] Unhandled rejection:",
-      reason
-    );
-  }
-);
-
-/* =========================================================
-   AUTO START
-   ========================================================= */
-
-startCrawler().catch((err) => {
-  errorLog(
-    "[HEXORA] FATAL:",
-    err
+main().catch((error) => {
+  console.error(
+    "[HEXORA] Fatal crawler error:",
+    error
   );
 
   process.exit(1);
