@@ -12,7 +12,7 @@ RUN mkdir -p dist
 
 RUN npx vite build
 
-RUN npx esbuild server.ts \
+RUN npx esbuild ./server.ts \
   --bundle \
   --platform=node \
   --format=cjs \
