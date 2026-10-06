@@ -133,6 +133,15 @@ function modeCondition(mode) {
 
 function makeSnippet(text, words, max = 320) {
   const value = String(text || "")
+    .replace(/\{\{[\s\S]*?\}\}/g, " ")
+    .replace(/\[\[Category:[^\]]*\]\]/gi, " ")
+    .replace(/\[\[File:[^\]]*\]\]/gi, " ")
+    .replace(/\[\[Image:[^\]]*\]\]/gi, " ")
+    .replace(/\{\|[\s\S]*?\|\}/g, " ")
+    .replace(/<ref[\s\S]*?<\/ref>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\\n/g, " ")
+    .replace(/\\+"/g, '"')
     .replace(/\s+/g, " ")
     .trim();
 
@@ -515,11 +524,11 @@ async function searchDatabase(
 
       ORDER BY
         exact_title DESC,
-        title_coverage DESC,
         title_starts DESC,
-        title_contains DESC,
+        title_coverage DESC,
         title_word_matches DESC,
-        word_coverage DESC,
+        title_contains DESC,
+        description_word_matches DESC,
         fts_rank DESC,
         title_sim DESC,
         exact_domain DESC,
@@ -527,204 +536,257 @@ async function searchDatabase(
         authority_score DESC NULLS LAST
 
       LIMIT ${SEARCH_CANDIDATE_LIMIT}
-    )
+    ),
 
-    SELECT
-      *,
+    scored AS (
+      SELECT
+        candidate.*,
 
-      (
-        /* Exact title is the strongest signal */
-        (exact_title * 1500.0)
+        /*
+         * RELEVANCE TIER
+         *
+         * 5 = exact title
+         * 4 = title starts with query
+         * 3 = strong title match
+         * 2 = description/excerpt match
+         * 1 = content/FTS-only match
+         */
+        CASE
+          WHEN exact_title = 1
+            THEN 5
 
-        /* Query starts the title */
-        + (title_starts * 650.0)
+          WHEN title_starts = 1
+            THEN 4
 
-        /* Full phrase appears in title */
-        + (title_exact_phrase * 500.0)
+          WHEN title_word_matches > 0
+            THEN 3
 
-        /* Query appears somewhere in title */
-        + (title_contains * 350.0)
+          WHEN title_contains = 1
+            THEN 3
 
-        /* Every query word found in title */
-        + (
-            CASE
-              WHEN cardinality($3::text[]) > 0
-              THEN
-                (
-                  title_word_matches /
-                  cardinality($3::text[])::double precision
-                ) * 1000.0
-              ELSE 0
-            END
-          )
+          WHEN description_word_matches > 0
+            THEN 2
 
-        /* Title coverage */
-        + (title_coverage * 500.0)
+          ELSE 1
+        END AS relevance_tier,
 
-        /* PostgreSQL full-text relevance */
-        + LEAST(
-            220.0,
-            fts_rank * 120.0
-          )
+        (
+          /* Exact title */
+          (exact_title * 1800.0)
 
-        /* Overall query coverage */
-        + (word_coverage * 100.0)
+          /* Title starts with query */
+          + (title_starts * 800.0)
 
-        /* Description relevance */
-        + (
-            CASE
-              WHEN cardinality($3::text[]) > 0
-              THEN
-                (
-                  description_word_matches /
-                  cardinality($3::text[])::double precision
-                ) * 80.0
-              ELSE 0
-            END
-          )
+          /* Full phrase in title */
+          + (title_exact_phrase * 450.0)
 
-        /* Content relevance is intentionally weak */
-        + (
-            CASE
-              WHEN cardinality($3::text[]) > 0
-              THEN
-                (
-                  content_word_matches /
-                  cardinality($3::text[])::double precision
-                ) * 15.0
-              ELSE 0
-            END
-          )
+          /* Query appears in title */
+          + (title_contains * 300.0)
 
-        /* Fuzzy title similarity */
-        + (title_sim * 180.0)
-
-        /* Domain signals */
-        + (exact_domain * 400.0)
-        + (domain_contains * 120.0)
-        + (domain_sim * 70.0)
-
-        /* URL signals */
-        + (url_contains * 70.0)
-        + (url_sim * 40.0)
-
-        /* Authority is now deliberately limited */
-        + LEAST(
-            45.0,
-            GREATEST(
-              0.0,
-              COALESCE(
-                authority_score,
-                0
-              )
+          /* Query words in title */
+          + (
+              CASE
+                WHEN cardinality($3::text[]) > 0
+                THEN
+                  (
+                    title_word_matches /
+                    cardinality($3::text[])::double precision
+                  ) * 850.0
+                ELSE 0
+              END
             )
-          )
 
-        + LEAST(
-            30.0,
-            GREATEST(
-              0.0,
-              COALESCE(
-                quality_score,
-                0
-              ) * 0.4
+          /* Title coverage */
+          + (title_coverage * 450.0)
+
+          /* Description */
+          + (
+              CASE
+                WHEN cardinality($3::text[]) > 0
+                THEN
+                  (
+                    description_word_matches /
+                    cardinality($3::text[])::double precision
+                  ) * 180.0
+                ELSE 0
+              END
             )
-          )
 
-        + LEAST(
-            20.0,
-            GREATEST(
-              0.0,
-              COALESCE(
-                popularity_score,
-                0
-              )
+          /* FTS */
+          + LEAST(
+              180.0,
+              fts_rank * 100.0
             )
-          )
 
-        + LEAST(
-            15.0,
-            GREATEST(
-              0.0,
-              COALESCE(
-                inbound_links,
-                0
-              )::double precision * 0.4
+          /* Overall coverage */
+          + (word_coverage * 70.0)
+
+          /* Content is weak */
+          + (
+              CASE
+                WHEN cardinality($3::text[]) > 0
+                THEN
+                  (
+                    content_word_matches /
+                    cardinality($3::text[])::double precision
+                  ) * 8.0
+                ELSE 0
+              END
             )
-          )
 
-        /* News freshness */
-        + CASE
-            WHEN $6 = 'news'
-            THEN LEAST(
-              30.0,
+          /* Fuzzy title */
+          + (title_sim * 160.0)
+
+          /* Domain */
+          + (exact_domain * 350.0)
+          + (domain_contains * 100.0)
+          + (domain_sim * 60.0)
+
+          /* URL */
+          + (url_contains * 50.0)
+          + (url_sim * 30.0)
+
+          /* Authority */
+          + LEAST(
+              40.0,
               GREATEST(
                 0.0,
-                news_freshness
+                COALESCE(
+                  authority_score,
+                  0
+                )
               )
             )
-            ELSE 0
-          END
 
-        /* Navigational */
-        + CASE
-            WHEN $6 = 'navigational'
-             AND (
-               exact_title = 1
-               OR exact_domain = 1
-               OR title_starts = 1
-             )
-            THEN 180.0
-            ELSE 0
-          END
+          /* Quality */
+          + LEAST(
+              25.0,
+              GREATEST(
+                0.0,
+                COALESCE(
+                  quality_score,
+                  0
+                ) * 0.4
+              )
+            )
 
-        /* Transactional */
-        + CASE
-            WHEN $6 = 'transactional'
-             AND (
-               exact_domain = 1
-               OR exact_title = 1
-               OR title_starts = 1
-             )
-            THEN 100.0
-            ELSE 0
-          END
+          /* Popularity */
+          + LEAST(
+              15.0,
+              GREATEST(
+                0.0,
+                COALESCE(
+                  popularity_score,
+                  0
+                )
+              )
+            )
 
-        /* Informational */
-        + CASE
-            WHEN $6 = 'informational'
-             AND (
-               title_contains = 1
-               OR title_word_matches > 0
-             )
-            THEN 60.0
-            ELSE 0
-          END
+          /* Inbound links */
+          + LEAST(
+              12.0,
+              GREATEST(
+                0.0,
+                COALESCE(
+                  inbound_links,
+                  0
+                )::double precision * 0.3
+              )
+            )
 
-        /* Strong penalty:
-           word appears only in body/content */
-        - CASE
-            WHEN title_word_matches = 0
-             AND description_word_matches = 0
-             AND content_word_matches > 0
-            THEN 350.0
-            ELSE 0
-          END
+          /* News freshness */
+          + CASE
+              WHEN $6 = 'news'
+              THEN LEAST(
+                30.0,
+                GREATEST(
+                  0.0,
+                  news_freshness
+                )
+              )
+              ELSE 0
+            END
 
-        /* Additional penalty when title and description
-           contain none of the query words */
-        - CASE
-            WHEN title_word_matches = 0
-             AND description_word_matches = 0
-            THEN 180.0
-            ELSE 0
-          END
+          /* Navigational */
+          + CASE
+              WHEN $6 = 'navigational'
+               AND (
+                 exact_title = 1
+                 OR exact_domain = 1
+                 OR title_starts = 1
+               )
+              THEN 180.0
+              ELSE 0
+            END
 
-      ) AS score
+          /* Transactional */
+          + CASE
+              WHEN $6 = 'transactional'
+               AND (
+                 exact_domain = 1
+                 OR exact_title = 1
+                 OR title_starts = 1
+               )
+              THEN 100.0
+              ELSE 0
+            END
 
-    FROM candidate
+          /* Informational */
+          + CASE
+              WHEN $6 = 'informational'
+               AND (
+                 title_contains = 1
+                 OR title_word_matches > 0
+                 OR description_word_matches > 0
+               )
+              THEN 60.0
+              ELSE 0
+            END
+
+          /*
+           * BODY-ONLY PENALTY
+           *
+           * If the query is not in title/description,
+           * the page is treated as a weak result.
+           */
+          - CASE
+              WHEN title_word_matches = 0
+               AND description_word_matches = 0
+               AND content_word_matches > 0
+              THEN 500.0
+              ELSE 0
+            END
+
+          /*
+           * No title/description match at all.
+           */
+          - CASE
+              WHEN title_word_matches = 0
+               AND title_contains = 0
+               AND description_word_matches = 0
+              THEN 250.0
+              ELSE 0
+            END
+
+        ) AS score
+
+      FROM candidate
+    )
+
+    SELECT *
+    FROM scored
 
     ORDER BY
+      /*
+       * MOST IMPORTANT:
+       * relevance tier comes BEFORE raw score.
+       *
+       * This prevents a high-authority page that only
+       * mentions "India" in references from beating a
+       * genuinely relevant title page.
+       */
+      relevance_tier DESC,
+
       score DESC,
 
       exact_title DESC,
@@ -737,13 +799,15 @@ async function searchDatabase(
 
       title_contains DESC,
 
-      exact_domain DESC,
+      description_word_matches DESC,
 
       word_coverage DESC,
 
       fts_rank DESC,
 
       title_sim DESC,
+
+      exact_domain DESC,
 
       authority_score DESC NULLS LAST,
 
@@ -822,7 +886,9 @@ async function searchDatabase(
       )
   );
 
-  /* Domain diversification */
+  /*
+   * Domain diversification
+   */
   const seenDomains = new Map();
   const diversified = [];
   const deferred = [];
