@@ -166,11 +166,23 @@ function makeSnippet(text, words, max = 320) {
 }
 
 function resultFromRow(row, mode, words) {
-  const images = Array.isArray(row.image_items) ? row.image_items : [];
-  const videos = Array.isArray(row.video_items) ? row.video_items : [];
+  const images = Array.isArray(row.image_items)
+    ? row.image_items
+    : [];
 
-  const image = images[0]?.url || images[0]?.src || "";
-  const video = videos[0]?.url || videos[0]?.src || "";
+  const videos = Array.isArray(row.video_items)
+    ? row.video_items
+    : [];
+
+  const image =
+    images[0]?.url ||
+    images[0]?.src ||
+    "";
+
+  const video =
+    videos[0]?.url ||
+    videos[0]?.src ||
+    "";
 
   const content =
     row.content ||
@@ -178,7 +190,11 @@ function resultFromRow(row, mode, words) {
     row.description ||
     "";
 
-  const title = String(row.title || row.url || "Untitled");
+  const title = String(
+    row.title ||
+    row.url ||
+    "Untitled"
+  );
 
   const result = {
     id: row.id,
@@ -187,20 +203,37 @@ function resultFromRow(row, mode, words) {
     canonical_url: row.canonical_url || row.url,
     domain: row.domain || "",
     source: row.domain || "",
-    description: row.description || row.excerpt || "",
-    snippet: makeSnippet(content, words),
-    language: row.language || "unknown",
+    description:
+      row.description ||
+      row.excerpt ||
+      "",
+    snippet: makeSnippet(
+      content,
+      words
+    ),
+    language:
+      row.language ||
+      "unknown",
     date:
       row.published_at ||
       row.updated_at ||
       row.last_crawled_at ||
       null,
-    published_at: row.published_at || null,
-    score: Number(Number(row.score || 0).toFixed(5)),
+    published_at:
+      row.published_at ||
+      null,
+    score: Number(
+      Number(row.score || 0).toFixed(5)
+    ),
   };
 
-  if (image) result.image = image;
-  if (video) result.video_url = video;
+  if (image) {
+    result.image = image;
+  }
+
+  if (video) {
+    result.video_url = video;
+  }
 
   if (mode === "images") {
     result.image_url = image;
@@ -226,11 +259,13 @@ async function suggestQuery(query) {
       [query]
     );
 
-    const suggestion = rows[0]?.title?.trim();
+    const suggestion =
+      rows[0]?.title?.trim();
 
     if (
       !suggestion ||
-      suggestion.toLocaleLowerCase() === query.toLocaleLowerCase()
+      suggestion.toLocaleLowerCase() ===
+        query.toLocaleLowerCase()
     ) {
       return null;
     }
@@ -251,7 +286,9 @@ async function searchDatabase(
   } = {}
 ) {
   if (!pool) {
-    throw new Error("DATABASE_URL is missing");
+    throw new Error(
+      "DATABASE_URL is missing"
+    );
   }
 
   const q = normalizeQuery(query);
@@ -265,40 +302,17 @@ async function searchDatabase(
     };
   }
 
-  /*
-   * IMPORTANT:
-   * PostgreSQL websearch_to_tsquery should receive the original
-   * normalized query, not an "&"-joined string.
-   *
-   * This allows multi-word searches to behave naturally.
-   */
   const tsQuery = q;
-
   const offset = (page - 1) * limit;
   const intent = detectIntent(q);
 
   const languageFilter =
-    language && /^[a-zA-Z-]{2,12}$/.test(language)
+    language &&
+    /^[a-zA-Z-]{2,12}$/.test(language)
       ? language
       : "";
 
   const condition = modeCondition(mode);
-
-  /*
-   * Ranking philosophy:
-   *
-   * 1. Exact title = extremely strong
-   * 2. Title starts with query = very strong
-   * 3. Title contains all query words = strong
-   * 4. Exact domain / domain contains query = strong
-   * 5. URL relevance
-   * 6. Full-text relevance
-   * 7. Authority / quality / popularity / inbound links
-   * 8. Freshness only where useful
-   *
-   * This prevents pages such as a random Wikipedia page that merely
-   * mentions "Google" many times from beating an actual Google page.
-   */
 
   const sql = `
     WITH candidate AS (
@@ -325,7 +339,10 @@ async function searchDatabase(
 
         ts_rank_cd(
           p.search_vector,
-          websearch_to_tsquery('simple', $1),
+          websearch_to_tsquery(
+            'simple',
+            $1
+          ),
           32
         ) AS fts_rank,
 
@@ -395,7 +412,7 @@ async function searchDatabase(
 
         CASE
           WHEN $6 = 'news'
-               AND p.published_at IS NOT NULL
+           AND p.published_at IS NOT NULL
           THEN GREATEST(
             0,
             30 -
@@ -426,9 +443,7 @@ async function searchDatabase(
           )
 
           OR p.title % $2
-
           OR p.url % $2
-
           OR p.domain % $2
 
           OR EXISTS (
@@ -457,124 +472,124 @@ async function searchDatabase(
 
     SELECT
       *,
+
       (
-        /*
-         * TITLE RELEVANCE
-         */
+        /* EXACT TITLE */
         (exact_title * 500.0)
 
+        /* TITLE */
         + (title_starts * 240.0)
-
         + (title_contains * 150.0)
-
         + (title_exact_phrase * 100.0)
-
         + (title_sim * 160.0)
 
-        /*
-         * DOMAIN / URL INTENT
-         */
+        /* DOMAIN */
         + (exact_domain * 420.0)
-
         + (domain_contains * 180.0)
-
         + (domain_sim * 90.0)
 
+        /* URL */
         + (url_contains * 90.0)
-
         + (url_sim * 55.0)
 
-        /*
-         * FULL TEXT
-         *
-         * Important but intentionally below exact title/domain.
-         */
-        + LEAST(180.0, fts_rank * 100.0)
+        /* FULL TEXT */
+        + LEAST(
+            180.0,
+            fts_rank * 100.0
+          )
 
-        /*
-         * AUTHORITY / QUALITY
-         */
+        /* AUTHORITY */
         + LEAST(
             80.0,
             GREATEST(
               0.0,
-              COALESCE(authority_score, 0)
+              COALESCE(
+                authority_score,
+                0
+              )
             )
           )
 
+        /* QUALITY */
         + LEAST(
             50.0,
             GREATEST(
               0.0,
-              COALESCE(quality_score, 0) * 0.5
+              COALESCE(
+                quality_score,
+                0
+              ) * 0.5
             )
           )
 
+        /* POPULARITY */
         + LEAST(
             30.0,
             GREATEST(
               0.0,
-              COALESCE(popularity_score, 0)
+              COALESCE(
+                popularity_score,
+                0
+              )
             )
           )
 
+        /* INBOUND LINKS */
         + LEAST(
             25.0,
             GREATEST(
               0.0,
-              COALESCE(inbound_links, 0)::double precision * 0.6
+              COALESCE(
+                inbound_links,
+                0
+              )::double precision * 0.6
             )
           )
 
-        /*
-         * NEWS FRESHNESS
-         */
+        /* NEWS FRESHNESS */
         + CASE
             WHEN $6 = 'news'
-            THEN LEAST(30.0, GREATEST(0.0, news_freshness))
+            THEN LEAST(
+              30.0,
+              GREATEST(
+                0.0,
+                news_freshness
+              )
+            )
             ELSE 0
           END
 
-        /*
-         * NAVIGATIONAL INTENT:
-         * prefer a domain/title that directly represents the query.
-         */
+        /* NAVIGATIONAL */
         + CASE
             WHEN $6 = 'navigational'
-                 AND (
-                   exact_title = 1
-                   OR exact_domain = 1
-                   OR title_starts = 1
-                 )
+             AND (
+               exact_title = 1
+               OR exact_domain = 1
+               OR title_starts = 1
+             )
             THEN 180.0
             ELSE 0
           END
 
-        /*
-         * TRANSACTIONAL / OFFICIAL INTENT
-         */
+        /* TRANSACTIONAL */
         + CASE
             WHEN $6 = 'transactional'
-                 AND (
-                   exact_domain = 1
-                   OR exact_title = 1
-                   OR title_starts = 1
-                 )
+             AND (
+               exact_domain = 1
+               OR exact_title = 1
+               OR title_starts = 1
+             )
             THEN 100.0
             ELSE 0
           END
 
-        /*
-         * INFORMATIONAL INTENT:
-         * title relevance still matters more than raw body mentions.
-         */
+        /* INFORMATIONAL */
         + CASE
             WHEN $6 = 'informational'
-                 AND title_contains = 1
+             AND title_contains = 1
             THEN 45.0
             ELSE 0
           END
-
       ) AS score
 
     FROM candidate
@@ -584,9 +599,13 @@ async function searchDatabase(
       exact_title DESC,
       exact_domain DESC,
       title_starts DESC,
+      title_contains DESC,
+      fts_rank DESC,
       title_sim DESC,
       authority_score DESC NULLS LAST,
-      quality_score DESC NULLS LAST
+      quality_score DESC NULLS LAST,
+      popularity_score DESC NULLS LAST,
+      inbound_links DESC NULLS LAST
 
     LIMIT $4
     OFFSET ${offset};
@@ -610,9 +629,7 @@ async function searchDatabase(
         )
 
         OR p.title % $2
-
         OR p.url % $2
-
         OR p.domain % $2
 
         OR EXISTS (
@@ -627,54 +644,76 @@ async function searchDatabase(
       );
   `;
 
-  const [result, count, suggestion] = await Promise.all([
-    pool.query(sql, [
-      tsQuery,
-      q,
-      words,
-      limit,
-      languageFilter,
-      intent,
-    ]),
+  const [result, count, suggestion] =
+    await Promise.all([
+      pool.query(sql, [
+        tsQuery,
+        q,
+        words,
+        limit,
+        languageFilter,
+        intent,
+      ]),
 
-    pool.query(countSql, [
-      tsQuery,
-      q,
-      words,
-      languageFilter,
-    ]),
+      pool.query(countSql, [
+        tsQuery,
+        q,
+        words,
+        languageFilter,
+      ]),
 
-    page === 1
-      ? suggestQuery(q)
-      : Promise.resolve(null),
-  ]);
+      page === 1
+        ? suggestQuery(q)
+        : Promise.resolve(null),
+    ]);
 
-  let rows = result.rows.map((row) =>
-    resultFromRow(row, mode, words)
+  let rows = result.rows.map(
+    (row) =>
+      resultFromRow(
+        row,
+        mode,
+        words
+      )
   );
 
   /*
-   * Domain diversification:
+   * SAFE DOMAIN DIVERSIFICATION
    *
-   * Do not allow one domain to completely dominate the first page,
-   * but never move a much stronger result below a weak result merely
-   * because it has the same domain.
+   * Maximum 3 results from one domain
+   * before deferred results are added.
    */
+
   const seenDomains = new Map();
   const diversified = [];
   const deferred = [];
 
   for (const item of rows) {
-    const domain = String(
-      item.domain ||
-      new URL(item.url).hostname ||
-      item.url
+    let domain = String(
+      item.domain || ""
     ).toLocaleLowerCase();
 
-    const countForDomain = seenDomains.get(domain) || 0;
+    if (!domain && item.url) {
+      try {
+        domain = new URL(
+          item.url
+        ).hostname.toLocaleLowerCase();
+      } catch {
+        domain = String(
+          item.url
+        ).toLocaleLowerCase();
+      }
+    }
+
+    if (!domain) {
+      domain = "unknown";
+    }
+
+    const countForDomain =
+      seenDomains.get(domain) || 0;
 
     if (countForDomain < 3) {
       diversified.push(item);
+
       seenDomains.set(
         domain,
         countForDomain + 1
@@ -717,7 +756,9 @@ function serveFile(res, pathname) {
   let decoded;
 
   try {
-    decoded = decodeURIComponent(pathname || "/");
+    decoded = decodeURIComponent(
+      pathname || "/"
+    );
   } catch {
     return sendJson(res, 400, {
       success: false,
@@ -736,7 +777,10 @@ function serveFile(res, pathname) {
     decoded = "/index.html";
   }
 
-  const root = path.resolve(__dirname);
+  const root = path.resolve(
+    __dirname
+  );
+
   const filePath = path.resolve(
     root,
     `.${decoded}`
@@ -744,7 +788,9 @@ function serveFile(res, pathname) {
 
   if (
     filePath !== root &&
-    !filePath.startsWith(`${root}${path.sep}`)
+    !filePath.startsWith(
+      `${root}${path.sep}`
+    )
   ) {
     return sendJson(res, 403, {
       success: false,
@@ -774,17 +820,22 @@ function serveFile(res, pathname) {
   res.writeHead(200, {
     "Content-Type":
       contentTypes[
-        path.extname(target).toLowerCase()
+        path.extname(
+          target
+        ).toLowerCase()
       ] ||
       "application/octet-stream",
 
     "Cache-Control":
-      path.basename(target) === "index.html"
+      path.basename(target) ===
+      "index.html"
         ? "no-cache"
         : "public, max-age=300",
   });
 
-  fs.createReadStream(target).pipe(res);
+  fs.createReadStream(
+    target
+  ).pipe(res);
 }
 
 async function handle(req, res) {
@@ -812,9 +863,6 @@ async function handle(req, res) {
     });
   }
 
-  /*
-   * Health endpoint
-   */
   if (
     u.pathname === "/health" ||
     u.pathname === "/api/health"
@@ -823,8 +871,12 @@ async function handle(req, res) {
 
     if (pool) {
       try {
-        await pool.query("SELECT 1");
-        databaseStatus = "connected";
+        await pool.query(
+          "SELECT 1"
+        );
+
+        databaseStatus =
+          "connected";
       } catch (error) {
         databaseStatus =
           `error: ${error.message}`;
@@ -833,15 +885,18 @@ async function handle(req, res) {
 
     return sendJson(res, 200, {
       success: true,
+
       status:
-        databaseStatus === "connected"
+        databaseStatus ===
+        "connected"
           ? "ok"
           : "degraded",
 
       engine:
         "HEXORA Independent Search Engine",
 
-      database: "Neon PostgreSQL",
+      database:
+        "Neon PostgreSQL",
 
       database_status:
         databaseStatus,
@@ -854,33 +909,44 @@ async function handle(req, res) {
     });
   }
 
-  const searchRoutes = new Set([
-    "/search",
-    "/api/search",
-    "/news",
-    "/api/news",
-    "/images",
-    "/api/images",
-    "/videos",
-    "/api/videos",
-  ]);
+  const searchRoutes =
+    new Set([
+      "/search",
+      "/api/search",
+      "/news",
+      "/api/news",
+      "/images",
+      "/api/images",
+      "/videos",
+      "/api/videos",
+    ]);
 
-  if (searchRoutes.has(u.pathname)) {
-    const query = normalizeQuery(
-      u.searchParams.get("q") ||
-      u.searchParams.get("query") ||
-      ""
-    );
+  if (
+    searchRoutes.has(
+      u.pathname
+    )
+  ) {
+    const query =
+      normalizeQuery(
+        u.searchParams.get("q") ||
+        u.searchParams.get("query") ||
+        ""
+      );
 
     const routeMode =
       u.pathname.includes("news")
         ? "news"
-        : u.pathname.includes("images")
+        : u.pathname.includes(
+            "images"
+          )
         ? "images"
-        : u.pathname.includes("videos")
+        : u.pathname.includes(
+            "videos"
+          )
         ? "videos"
-        : u.searchParams.get("mode") ||
-          "web";
+        : u.searchParams.get(
+            "mode"
+          ) || "web";
 
     const mode = [
       "web",
@@ -892,23 +958,29 @@ async function handle(req, res) {
       : "web";
 
     const page = safeInt(
-      u.searchParams.get("page"),
+      u.searchParams.get(
+        "page"
+      ),
       1,
       1,
       MAX_PAGE
     );
 
     const limit = safeInt(
-      u.searchParams.get("limit"),
+      u.searchParams.get(
+        "limit"
+      ),
       DEFAULT_LIMIT,
       1,
       MAX_LIMIT
     );
 
-    const language = String(
-      u.searchParams.get("language") ||
-        ""
-    ).trim();
+    const language =
+      String(
+        u.searchParams.get(
+          "language"
+        ) || ""
+      ).trim();
 
     if (!query) {
       return sendJson(res, 200, {
@@ -925,15 +997,16 @@ async function handle(req, res) {
     }
 
     try {
-      const data = await searchDatabase(
-        query,
-        {
-          mode,
-          page,
-          limit,
-          language,
-        }
-      );
+      const data =
+        await searchDatabase(
+          query,
+          {
+            mode,
+            page,
+            limit,
+            language,
+          }
+        );
 
       return sendJson(
         res,
@@ -946,8 +1019,10 @@ async function handle(req, res) {
           page,
           limit,
           total: data.total,
-          suggestion: data.suggestion,
-          results: data.results,
+          suggestion:
+            data.suggestion,
+          results:
+            data.results,
         },
         "public, max-age=15, stale-while-revalidate=30"
       );
@@ -957,27 +1032,29 @@ async function handle(req, res) {
         error
       );
 
-      return sendJson(res, 503, {
-        success: false,
-        engine: "HEXORA",
-        query,
-        mode,
-        page,
-        limit,
-        total: 0,
-        results: [],
-        error: DATABASE_URL
-          ? "Search database temporarily unavailable"
-          : "DATABASE_URL is not configured",
-      });
+      return sendJson(
+        res,
+        503,
+        {
+          success: false,
+          engine: "HEXORA",
+          query,
+          mode,
+          page,
+          limit,
+          total: 0,
+          results: [],
+          error: DATABASE_URL
+            ? "Search database temporarily unavailable"
+            : "DATABASE_URL is not configured",
+        }
+      );
     }
   }
 
-  /*
-   * Maps deliberately does not return fabricated results.
-   */
   if (
-    u.pathname === "/api/maps" ||
+    u.pathname ===
+      "/api/maps" ||
     u.pathname === "/maps"
   ) {
     return sendJson(res, 200, {
@@ -989,30 +1066,45 @@ async function handle(req, res) {
     });
   }
 
-  return serveFile(res, u.pathname);
+  return serveFile(
+    res,
+    u.pathname
+  );
 }
 
-const server = http.createServer(
-  (req, res) => {
-    handle(req, res).catch((error) => {
-      console.error(
-        "[HEXORA] Request error:",
-        error
+const server =
+  http.createServer(
+    (req, res) => {
+      handle(req, res).catch(
+        (error) => {
+          console.error(
+            "[HEXORA] Request error:",
+            error
+          );
+
+          if (
+            !res.headersSent
+          ) {
+            sendJson(
+              res,
+              500,
+              {
+                success: false,
+                error:
+                  "Internal server error",
+              }
+            );
+          } else {
+            res.end();
+          }
+        }
       );
+    }
+  );
 
-      if (!res.headersSent) {
-        sendJson(res, 500, {
-          success: false,
-          error: "Internal server error",
-        });
-      } else {
-        res.end();
-      }
-    });
-  }
-);
-
-async function shutdown(signal) {
+async function shutdown(
+  signal
+) {
   console.log(
     `[HEXORA] ${signal} received`
   );
@@ -1036,12 +1128,14 @@ async function shutdown(signal) {
   ).unref();
 }
 
-process.on("SIGTERM", () =>
-  shutdown("SIGTERM")
+process.on(
+  "SIGTERM",
+  () => shutdown("SIGTERM")
 );
 
-process.on("SIGINT", () =>
-  shutdown("SIGINT")
+process.on(
+  "SIGINT",
+  () => shutdown("SIGINT")
 );
 
 process.on(
