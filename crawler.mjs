@@ -1,163 +1,213 @@
-// crawler.mjs
-import crypto from "node:crypto";
-import dns from "node:dns/promises";
+import crypto from "crypto";
+import dns from "dns/promises";
 import * as cheerio from "cheerio";
 import pg from "pg";
 import { putHtml } from "./storage.mjs";
 
 const { Pool } = pg;
 
+/* =========================================================
+   HEXORA WORLDWIDE CRAWLER
+   ========================================================= */
+
 const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) throw new Error("DATABASE_URL is required");
+
+if (!DATABASE_URL) {
+  throw new Error("[HEXORA] DATABASE_URL is missing");
+}
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: Number(process.env.CRAWL_DB_POOL || 5),
-  ssl: process.env.DATABASE_SSL === "false"
-    ? false
-    : { rejectUnauthorized: false }
+  max: Number(process.env.DB_POOL_MAX || 5),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 15000,
+  ssl:
+    process.env.DATABASE_SSL === "false"
+      ? false
+      : { rejectUnauthorized: false },
 });
 
+/* =========================================================
+   CONFIG
+   ========================================================= */
+
 const USER_AGENT =
-  process.env.HEXORA_USER_AGENT ||
-  "HEXORA-Crawler/2.0 (+https://hexora.example)";
+  process.env.CRAWLER_USER_AGENT ||
+  "HEXORA-Bot/1.0 (+https://hexora-search.com/bot)";
 
-const TIMEOUT = Number(process.env.CRAWL_TIMEOUT_MS || 20000);
-const MAX_HTML = Number(process.env.CRAWL_MAX_HTML_BYTES || 5000000);
-const MAX_CONTENT = Number(process.env.CRAWL_MAX_CONTENT || 50000);
-const MAX_LINKS = Number(process.env.CRAWL_MAX_LINKS || 500);
-const MAX_IMAGES = Number(process.env.CRAWL_MAX_IMAGES || 50);
-const MAX_VIDEOS = Number(process.env.CRAWL_MAX_VIDEOS || 30);
+const REQUEST_TIMEOUT =
+  Number(process.env.CRAWL_TIMEOUT_MS || 15000);
 
-const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE || 5);
-const SUCCESS_RECRAWL_HOURS =
-  Number(process.env.CRAWL_SUCCESS_RECRAWL_HOURS || 168);
-const ERROR_RETRY_MINUTES =
-  Number(process.env.CRAWL_ERROR_RETRY_MINUTES || 60);
+const MAX_HTML =
+  Number(process.env.MAX_HTML_BYTES || 5000000);
+
+const MAX_CONTENT =
+  Number(process.env.MAX_CONTENT_CHARS || 100000);
+
+const MAX_LINKS =
+  Number(process.env.MAX_LINKS_PER_PAGE || 200);
+
+const MAX_IMAGES =
+  Number(process.env.MAX_IMAGES_PER_PAGE || 50);
+
+const MAX_VIDEOS =
+  Number(process.env.MAX_VIDEOS_PER_PAGE || 30);
+
+const BATCH_SIZE =
+  Number(process.env.CRAWL_BATCH_SIZE || 5);
+
+const LOOP_DELAY =
+  Number(process.env.CRAWL_LOOP_DELAY_MS || 5000);
+
+const RECRAWL_HOURS =
+  Number(process.env.RECRAWL_HOURS || 24);
+
+const RETRY_DELAY =
+  Number(process.env.RETRY_DELAY_MS || 60000);
+
+const MAX_RETRIES =
+  Number(process.env.MAX_RETRIES || 5);
+
+const JOB_TIMEOUT =
+  Number(process.env.CRAWL_JOB_TIMEOUT_MS || 20 * 60 * 1000);
+
+/* =========================================================
+   STATE
+   ========================================================= */
+
+let shuttingDown = false;
 
 const robotsCache = new Map();
-const domainLastFetch = new Map();
+const hostLastRequest = new Map();
 
-const BLOCKED_EXTENSIONS =
-  /\.(jpg|jpeg|png|gif|webp|svg|ico|pdf|zip|rar|7z|mp3|wav|mp4|avi|mov|mkv|exe|dmg|iso|apk)$/i;
+/* =========================================================
+   LOGGING
+   ========================================================= */
+
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
+}
+
+function warn(...args) {
+  console.warn(new Date().toISOString(), ...args);
+}
+
+function errorLog(...args) {
+  console.error(new Date().toISOString(), ...args);
+}
+
+/* =========================================================
+   SLEEP
+   ========================================================= */
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function clean(value, max = 10000) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-}
+/* =========================================================
+   HASH
+   ========================================================= */
 
-function hash(value) {
+function sha256(value) {
   return crypto
     .createHash("sha256")
-    .update(value)
+    .update(String(value || ""))
     .digest("hex");
 }
 
-function domainOf(url) {
+/* =========================================================
+   URL NORMALIZATION
+   ========================================================= */
+
+function normalizeUrl(rawUrl, baseUrl = null) {
   try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
+    const url = baseUrl
+      ? new URL(rawUrl, baseUrl)
+      : new URL(rawUrl);
 
-function normalizeUrl(raw, base = null) {
-  try {
-    const u = base
-      ? new URL(raw, base)
-      : new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return null;
+    }
 
-    if (!["http:", "https:"].includes(u.protocol)) return null;
+    url.hash = "";
 
-    u.hash = "";
-
-    u.hostname = u.hostname.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
 
     if (
-      (u.protocol === "https:" && u.port === "443") ||
-      (u.protocol === "http:" && u.port === "80")
+      (url.protocol === "http:" && url.port === "80") ||
+      (url.protocol === "https:" && url.port === "443")
     ) {
-      u.port = "";
+      url.port = "";
     }
 
-    const remove = [
-      "utm_source",
-      "utm_medium",
-      "utm_campaign",
-      "utm_term",
-      "utm_content",
-      "gclid",
-      "fbclid"
-    ];
-
-    for (const key of remove) {
-      u.searchParams.delete(key);
-    }
-
-    return u.toString();
+    return url.toString();
   } catch {
     return null;
   }
 }
 
-function validUrl(url) {
-  if (!url) return false;
+/* =========================================================
+   PUBLIC HOST SAFETY
+   ========================================================= */
 
-  try {
-    const u = new URL(url);
+function isPrivateIPv4(ip) {
+  const parts = ip.split(".").map(Number);
 
-    if (!["http:", "https:"].includes(u.protocol)) {
-      return false;
-    }
-
-    if (BLOCKED_EXTENSIONS.test(u.pathname)) {
-      return false;
-    }
-
-    return true;
-  } catch {
+  if (parts.length !== 4 || parts.some(Number.isNaN)) {
     return false;
   }
+
+  const [a, b] = parts;
+
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+
+  return false;
+}
+
+function isPrivateIPv6(ip) {
+  const value = ip.toLowerCase();
+
+  return (
+    value === "::1" ||
+    value.startsWith("fc") ||
+    value.startsWith("fd") ||
+    value.startsWith("fe80:")
+  );
 }
 
 async function safePublicHost(hostname) {
+  const host = String(hostname || "")
+    .toLowerCase()
+    .replace(/\.$/, "");
+
+  if (!host) return false;
+
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local")
+  ) {
+    return false;
+  }
+
   try {
-    const records = await dns.lookup(hostname, {
+    const records = await dns.lookup(host, {
       all: true,
-      verbatim: true
+      verbatim: true,
     });
 
-    for (const record of records) {
-      const ip = record.address;
+    if (!records.length) return false;
 
-      if (
-        ip === "127.0.0.1" ||
-        ip === "::1" ||
-        ip.startsWith("10.") ||
-        ip.startsWith("192.168.") ||
-        ip.startsWith("172.16.") ||
-        ip.startsWith("172.17.") ||
-        ip.startsWith("172.18.") ||
-        ip.startsWith("172.19.") ||
-        ip.startsWith("172.20.") ||
-        ip.startsWith("172.21.") ||
-        ip.startsWith("172.22.") ||
-        ip.startsWith("172.23.") ||
-        ip.startsWith("172.24.") ||
-        ip.startsWith("172.25.") ||
-        ip.startsWith("172.26.") ||
-        ip.startsWith("172.27.") ||
-        ip.startsWith("172.28.") ||
-        ip.startsWith("172.29.") ||
-        ip.startsWith("172.30.") ||
-        ip.startsWith("172.31.")
-      ) {
+    for (const record of records) {
+      if (record.family === 4 && isPrivateIPv4(record.address)) {
+        return false;
+      }
+
+      if (record.family === 6 && isPrivateIPv6(record.address)) {
         return false;
       }
     }
@@ -168,78 +218,107 @@ async function safePublicHost(hostname) {
   }
 }
 
-async function domainDelay(url) {
-  const domain = domainOf(url);
-  const delay = Number(
-    process.env.CRAWL_DOMAIN_DELAY_MS || 1000
-  );
+/* =========================================================
+   DOMAIN RATE LIMIT
+   ========================================================= */
 
-  const last = domainLastFetch.get(domain) || 0;
+async function domainDelay(hostname) {
+  const host = String(hostname || "").toLowerCase();
+
+  const last = hostLastRequest.get(host) || 0;
+
+  const delay = 500;
+
   const wait = delay - (Date.now() - last);
 
   if (wait > 0) {
     await sleep(wait);
   }
 
-  domainLastFetch.set(domain, Date.now());
+  hostLastRequest.set(host, Date.now());
 }
 
-async function fetchText(url, options = {}) {
-  await domainDelay(url);
+/* =========================================================
+   FETCH
+   ========================================================= */
 
+async function fetchText(url) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT);
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT
+  );
 
   try {
     const response = await fetch(url, {
+      method: "GET",
       redirect: "follow",
       signal: controller.signal,
       headers: {
-        "user-agent": USER_AGENT,
-        "accept":
-          options.accept ||
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-      }
+        "User-Agent": USER_AGENT,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language":
+          "en-US,en;q=0.9,as;q=0.8,hi;q=0.7",
+      },
     });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const type =
+    const contentType =
       response.headers.get("content-type") || "";
 
-    const text = await response.text();
+    if (
+      !contentType.includes("text/html") &&
+      !contentType.includes("application/xhtml+xml")
+    ) {
+      throw new Error(`Not HTML: ${contentType}`);
+    }
 
-    if (Buffer.byteLength(text, "utf8") > MAX_HTML) {
-      throw new Error("HTML_TOO_LARGE");
+    const contentLength =
+      Number(response.headers.get("content-length") || 0);
+
+    if (contentLength > MAX_HTML) {
+      throw new Error("HTML too large");
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (buffer.length > MAX_HTML) {
+      throw new Error("HTML exceeded size limit");
     }
 
     return {
-      text,
-      contentType: type,
+      html: buffer.toString("utf8"),
+      finalUrl: response.url || url,
+      contentType,
       status: response.status,
-      finalUrl: response.url || url
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchWithRetry(url) {
+/* =========================================================
+   RETRY
+   ========================================================= */
+
+async function fetchWithRetry(url, attempts = 3) {
   let lastError;
 
-  const retries =
-    Number(process.env.CRAWL_MAX_RETRIES || 3);
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
+  for (let i = 1; i <= attempts; i++) {
     try {
       return await fetchText(url);
-    } catch (error) {
-      lastError = error;
+    } catch (err) {
+      lastError = err;
 
-      if (attempt < retries) {
-        await sleep(1000 * Math.pow(2, attempt - 1));
+      if (i < attempts) {
+        await sleep(
+          Math.min(RETRY_DELAY * i, 10000)
+        );
       }
     }
   }
@@ -247,642 +326,1310 @@ async function fetchWithRetry(url) {
   throw lastError;
 }
 
-async function getRobots(origin) {
+/* =========================================================
+   ROBOTS
+   ========================================================= */
+
+function robotsAllowedFromText(text, targetUrl) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((x) => x.trim());
+
+  let applies = false;
+  let rules = [];
+
+  for (const line of lines) {
+    if (!line || line.startsWith("#")) continue;
+
+    const index = line.indexOf(":");
+
+    if (index === -1) continue;
+
+    const key = line
+      .slice(0, index)
+      .trim()
+      .toLowerCase();
+
+    const value = line
+      .slice(index + 1)
+      .trim();
+
+    if (key === "user-agent") {
+      applies =
+        value === "*" ||
+        value.toLowerCase() === USER_AGENT.toLowerCase();
+
+      continue;
+    }
+
+    if (applies && key === "disallow") {
+      rules.push({
+        type: "disallow",
+        value,
+      });
+    }
+
+    if (applies && key === "allow") {
+      rules.push({
+        type: "allow",
+        value,
+      });
+    }
+  }
+
+  const pathname = new URL(targetUrl).pathname || "/";
+
+  let best = null;
+
+  for (const rule of rules) {
+    if (!rule.value) continue;
+
+    if (pathname.startsWith(rule.value)) {
+      if (!best || rule.value.length > best.value.length) {
+        best = rule;
+      }
+    }
+  }
+
+  if (!best) return true;
+
+  return best.type === "allow";
+}
+
+async function robotsAllowed(url) {
+  let parsed;
+
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  const origin = parsed.origin;
+
   const cached = robotsCache.get(origin);
 
   if (cached && cached.expires > Date.now()) {
-    return cached;
+    return cached.allowed(url);
   }
 
   const robotsUrl = `${origin}/robots.txt`;
 
-  let result = {
-    allowed: true,
-    sitemaps: [],
-    expires: Date.now() + 6 * 60 * 60 * 1000
-  };
-
   try {
-    const response = await fetchText(
-      robotsUrl,
-      {
-        accept: "text/plain,*/*;q=0.8"
-      }
-    );
+    await domainDelay(parsed.hostname);
 
-    const lines = response.text.split(/\r?\n/);
+    const result = await fetchText(robotsUrl);
 
-    let active = false;
+    const text = result.html;
 
-    for (const raw of lines) {
-      const line = raw
-        .replace(/#.*/, "")
-        .trim();
+    const allowed = (target) =>
+      robotsAllowedFromText(text, target);
 
-      if (!line) continue;
+    robotsCache.set(origin, {
+      expires: Date.now() + 6 * 60 * 60 * 1000,
+      allowed,
+    });
 
-      const [key, ...rest] =
-        line.split(":");
-
-      const value =
-        rest.join(":").trim();
-
-      const lower =
-        key.toLowerCase();
-
-      if (lower === "user-agent") {
-        active =
-          value === "*" ||
-          value.toLowerCase()
-            .includes("hexora");
-      }
-
-      if (
-        active &&
-        lower === "disallow" &&
-        value
-      ) {
-        if (value === "/") {
-          result.allowed = false;
-        }
-      }
-
-      if (lower === "sitemap") {
-        const sitemap =
-          normalizeUrl(value, origin);
-
-        if (sitemap) {
-          result.sitemaps.push(sitemap);
-        }
-      }
-    }
+    return allowed(url);
   } catch {
-    // robots unavailable = do not crash crawler
+    /*
+      If robots.txt cannot be downloaded, don't permanently
+      block the entire website.
+    */
+
+    const allowed = () => true;
+
+    robotsCache.set(origin, {
+      expires: Date.now() + 30 * 60 * 1000,
+      allowed,
+    });
+
+    return true;
   }
-
-  robotsCache.set(origin, result);
-
-  return result;
 }
 
-async function robotsAllowed(url, robots) {
-  if (!robots?.allowed) return false;
-
-  // Basic robots support.
-  // Full path-rule support can be added later.
-  return true;
-}
+/* =========================================================
+   LANGUAGE
+   ========================================================= */
 
 function detectLanguage(text) {
-  const sample = text.slice(0, 10000);
+  const value = String(text || "").slice(0, 20000);
 
-  if (/[\u0980-\u09FF]/.test(sample)) {
+  if (/[\u0980-\u09FF]/.test(value)) {
     return "bn";
   }
 
-  if (/[\u0C00-\u0C7F]/.test(sample)) {
-    return "or";
-  }
-
-  if (/[\u0900-\u097F]/.test(sample)) {
-    return "hi";
-  }
-
-  if (/[\u0A80-\u0AFF]/.test(sample)) {
-    return "gu";
-  }
-
-  if (/[\u0B80-\u0BFF]/.test(sample)) {
+  if (/[\u0B80-\u0BFF]/.test(value)) {
     return "ta";
   }
 
-  return "en";
+  if (/[\u0C00-\u0C7F]/.test(value)) {
+    return "te";
+  }
+
+  if (/[\u0C80-\u0CFF]/.test(value)) {
+    return "kn";
+  }
+
+  if (/[\u0D00-\u0D7F]/.test(value)) {
+    return "ml";
+  }
+
+  if (/[\u0900-\u097F]/.test(value)) {
+    return "hi";
+  }
+
+  if (/[\u0A00-\u0A7F]/.test(value)) {
+    return "pa";
+  }
+
+  if (/[A-Za-z]/.test(value)) {
+    return "en";
+  }
+
+  return "unknown";
 }
 
-function extractPage(html, finalUrl) {
+/* =========================================================
+   TEXT CLEANING
+   ========================================================= */
+
+function cleanText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/\u00a0/g, " ")
+    .trim();
+}
+
+/* =========================================================
+   PAGE EXTRACTION
+   ========================================================= */
+
+function extractPage(html, pageUrl) {
   const $ = cheerio.load(html);
 
-  $("script,style,noscript,template,svg").remove();
-
-  const title = clean(
-    $("title").first().text(),
-    1000
-  );
-
-  const description = clean(
-    $('meta[name="description"]')
-      .attr("content") ||
-    $('meta[property="og:description"]')
-      .attr("content") ||
-    "",
-    3000
-  );
+  $(
+    "script, style, noscript, template, svg, canvas, iframe"
+  ).remove();
 
   const canonical =
-    normalizeUrl(
-      $('link[rel="canonical"]')
-        .attr("href"),
-      finalUrl
-    ) || finalUrl;
+    $('link[rel="canonical"]').attr("href") || null;
+
+  const title =
+    cleanText($("title").first().text()) ||
+    cleanText($("h1").first().text());
+
+  const description =
+    cleanText(
+      $('meta[name="description"]').attr("content") ||
+        $('meta[property="og:description"]').attr("content") ||
+        ""
+    );
+
+  const ogTitle =
+    cleanText(
+      $('meta[property="og:title"]').attr("content") || ""
+    );
+
+  const finalTitle = title || ogTitle;
+
+  const bodyText = cleanText(
+    $("body").text()
+  ).slice(0, MAX_CONTENT);
+
+  const excerpt =
+    description ||
+    bodyText.slice(0, 500);
+
+  const language =
+    $('html').attr("lang") ||
+    detectLanguage(bodyText);
 
   const publishedAt =
-    $('meta[property="article:published_time"]')
-      .attr("content") ||
-    $('meta[name="date"]')
-      .attr("content") ||
+    $('meta[property="article:published_time"]').attr(
+      "content"
+    ) ||
+    $('meta[name="date"]').attr("content") ||
+    $('time[datetime]').first().attr("datetime") ||
     null;
 
-  const text = clean(
-    $("body").text(),
-    MAX_CONTENT
-  );
+  /* ---------------- LINKS ---------------- */
 
-  const contentHash = hash(text);
+  const links = [];
+  const seenLinks = new Set();
 
-  const words =
-    text.split(/\s+/).filter(Boolean);
+  $("a[href]").each((_, el) => {
+    if (links.length >= MAX_LINKS) return;
+
+    const href = $(el).attr("href");
+
+    const normalized = normalizeUrl(
+      href,
+      pageUrl
+    );
+
+    if (!normalized) return;
+
+    if (seenLinks.has(normalized)) return;
+
+    seenLinks.add(normalized);
+
+    links.push(normalized);
+  });
+
+  /* ---------------- IMAGES ---------------- */
 
   const images = [];
+  const seenImages = new Set();
 
   $("img").each((_, el) => {
     if (images.length >= MAX_IMAGES) return;
 
     const src =
       $(el).attr("src") ||
-      $(el).attr("data-src");
+      $(el).attr("data-src") ||
+      $(el).attr("data-lazy-src");
 
-    const imageUrl =
-      normalizeUrl(src, finalUrl);
+    if (!src) return;
 
-    if (!imageUrl) return;
+    const normalized = normalizeUrl(
+      src,
+      pageUrl
+    );
+
+    if (!normalized) return;
+
+    if (seenImages.has(normalized)) return;
+
+    seenImages.add(normalized);
 
     images.push({
-      url: imageUrl,
-      alt: clean($(el).attr("alt"), 500)
+      url: normalized,
+      alt: cleanText($(el).attr("alt") || ""),
+      title: cleanText($(el).attr("title") || ""),
     });
   });
 
+  /* ---------------- OPEN GRAPH IMAGE ---------------- */
+
+  const ogImage =
+    $('meta[property="og:image"]').attr("content");
+
+  if (
+    ogImage &&
+    images.length < MAX_IMAGES
+  ) {
+    const normalized = normalizeUrl(
+      ogImage,
+      pageUrl
+    );
+
+    if (
+      normalized &&
+      !seenImages.has(normalized)
+    ) {
+      images.unshift({
+        url: normalized,
+        alt: finalTitle || "",
+        title: finalTitle || "",
+      });
+    }
+  }
+
+  /* ---------------- VIDEOS ---------------- */
+
   const videos = [];
+  const seenVideos = new Set();
 
   $("video, source").each((_, el) => {
     if (videos.length >= MAX_VIDEOS) return;
 
+    const src =
+      $(el).attr("src") ||
+      $(el).attr("data-src");
+
+    if (!src) return;
+
+    const normalized = normalizeUrl(
+      src,
+      pageUrl
+    );
+
+    if (!normalized) return;
+
+    if (seenVideos.has(normalized)) return;
+
+    seenVideos.add(normalized);
+
+    videos.push({
+      url: normalized,
+      type: $(el).attr("type") || null,
+    });
+  });
+
+  /* ---------------- IFRAME VIDEOS ---------------- */
+
+  $("iframe").each((_, el) => {
+    if (videos.length >= MAX_VIDEOS) return;
+
     const src = $(el).attr("src");
 
-    const videoUrl =
-      normalizeUrl(src, finalUrl);
+    if (!src) return;
 
-    if (videoUrl) {
+    const normalized = normalizeUrl(
+      src,
+      pageUrl
+    );
+
+    if (!normalized) return;
+
+    if (seenVideos.has(normalized)) return;
+
+    const lower = normalized.toLowerCase();
+
+    if (
+      lower.includes("youtube.com") ||
+      lower.includes("youtu.be") ||
+      lower.includes("vimeo.com") ||
+      lower.includes("dailymotion.com")
+    ) {
+      seenVideos.add(normalized);
+
       videos.push({
-        url: videoUrl
+        url: normalized,
+        type: "embed",
       });
     }
   });
 
-  const links = new Set();
+  const domain =
+    (() => {
+      try {
+        return new URL(pageUrl).hostname;
+      } catch {
+        return null;
+      }
+    })();
 
-  $("a[href]").each((_, el) => {
-    if (links.size >= MAX_LINKS) return;
-
-    const url =
-      normalizeUrl(
-        $(el).attr("href"),
-        finalUrl
-      );
-
-    if (url && validUrl(url)) {
-      links.add(url);
-    }
-  });
-
-  const qualityScore =
-    Math.min(
-      100,
-      Math.round(
-        Math.min(words.length / 10, 60) +
-        (title ? 15 : 0) +
-        (description ? 15 : 0) +
-        (images.length ? 5 : 0) +
-        (canonical ? 5 : 0)
-      )
-    );
+  const wordCount =
+    bodyText
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
 
   return {
-    url: finalUrl,
-    canonicalUrl: canonical,
-    title,
+    url: pageUrl,
+    canonicalUrl:
+      normalizeUrl(canonical, pageUrl) ||
+      pageUrl,
+    title: finalTitle,
     description,
-    content: text,
-    contentHash,
-    wordCount: words.length,
-    language: detectLanguage(text),
+    excerpt,
+    content: bodyText,
+    language,
     publishedAt,
+    domain,
+    wordCount,
+    links,
     images,
     videos,
-    links: [...links],
-    qualityScore
   };
 }
 
+/* =========================================================
+   QUEUE URL
+   ========================================================= */
+
 async function queueUrl(
-  client,
   url,
   discoveredFrom = null,
   priority = 0
 ) {
-  const normalized =
-    normalizeUrl(url);
+  const normalized = normalizeUrl(url);
 
-  if (!normalized || !validUrl(normalized)) {
+  if (!normalized) return false;
+
+  try {
+    const host = new URL(normalized).hostname;
+
+    if (!(await safePublicHost(host))) {
+      return false;
+    }
+  } catch {
     return false;
   }
 
-  await client.query(
-    `
-    INSERT INTO crawl_queue
-      (url, status, priority, discovered_from, created_at)
-    VALUES
-      ($1, 'queued', $2, $3, NOW())
-    ON CONFLICT (url)
-    DO NOTHING
-    `,
-    [
-      normalized,
-      priority,
-      discoveredFrom
-    ]
-  );
-
-  return true;
-}
-
-async function ensureSeeds(client) {
-  const raw =
-    process.env.CRAWL_SEEDS || "";
-
-  const seeds = raw
-    .split(/[\n,]+/)
-    .map(x => x.trim())
-    .filter(Boolean);
-
-  for (const seed of seeds) {
-    await queueUrl(
-      client,
-      seed,
-      null,
-      100
+  try {
+    await pool.query(
+      `
+      INSERT INTO crawl_queue
+        (
+          url,
+          status,
+          priority,
+          discovered_from,
+          canonical_url,
+          attempts,
+          next_crawl_at
+        )
+      VALUES
+        ($1, 'pending', $2, $3, $1, 0, NOW())
+      ON CONFLICT (url)
+      DO UPDATE SET
+        priority = GREATEST(
+          COALESCE(crawl_queue.priority, 0),
+          EXCLUDED.priority
+        ),
+        next_crawl_at =
+          CASE
+            WHEN crawl_queue.status IN ('failed', 'error')
+            THEN COALESCE(
+              crawl_queue.next_crawl_at,
+              NOW()
+            )
+            ELSE crawl_queue.next_crawl_at
+          END
+      `,
+      [
+        normalized,
+        priority,
+        discoveredFrom,
+      ]
     );
+
+    return true;
+  } catch (err) {
+    /*
+      Fallback for older queue schemas.
+    */
+
+    try {
+      await pool.query(
+        `
+        INSERT INTO crawl_queue
+          (url, status)
+        VALUES
+          ($1, 'pending')
+        ON CONFLICT (url)
+        DO NOTHING
+        `,
+        [normalized]
+      );
+
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
-async function recoverJobs(client) {
-  await client.query(
-    `
-    UPDATE crawl_queue
-    SET
-      status = 'queued',
-      locked_at = NULL,
-      next_crawl_at = NOW()
-    WHERE
-      status = 'processing'
-      AND locked_at < NOW() - INTERVAL '30 minutes'
-    `
+/* =========================================================
+   SEEDS
+   ========================================================= */
+
+function getSeeds() {
+  const raw =
+    process.env.CRAWL_SEEDS ||
+    process.env.SEED_URLS ||
+    "";
+
+  if (!raw.trim()) {
+    return [
+      "https://www.wikipedia.org/",
+      "https://www.bbc.com/",
+      "https://www.reuters.com/",
+      "https://www.nasa.gov/",
+      "https://www.mozilla.org/",
+      "https://www.w3.org/",
+    ];
+  }
+
+  return raw
+    .split(/[\n,]+/)
+    .map((x) => normalizeUrl(x.trim()))
+    .filter(Boolean);
+}
+
+async function ensureSeeds() {
+  const seeds = getSeeds();
+
+  for (const seed of seeds) {
+    await queueUrl(
+      seed,
+      "seed",
+      100
+    );
+  }
+
+  log(
+    `[HEXORA] Seeds checked: ${seeds.length}`
   );
 }
 
-async function claimJobs(client) {
-  const result =
-    await client.query(
+/* =========================================================
+   RECOVER STALE JOBS
+   ========================================================= */
+
+async function recoverJobs() {
+  try {
+    const result = await pool.query(
       `
-      SELECT *
+      UPDATE crawl_queue
+      SET
+        status = 'pending',
+        locked_at = NULL,
+        next_crawl_at = NOW()
+      WHERE status = 'processing'
+        AND (
+          locked_at IS NULL
+          OR locked_at < NOW() - INTERVAL '20 minutes'
+        )
+      RETURNING id
+      `
+    );
+
+    if (result.rowCount) {
+      log(
+        `[HEXORA] Recovered stale jobs: ${result.rowCount}`
+      );
+    }
+  } catch (err) {
+    /*
+      Compatible fallback for base schema.
+    */
+
+    try {
+      const result = await pool.query(
+        `
+        UPDATE crawl_queue
+        SET status = 'pending'
+        WHERE status = 'processing'
+        `
+      );
+
+      if (result.rowCount) {
+        log(
+          `[HEXORA] Recovered jobs: ${result.rowCount}`
+        );
+      }
+    } catch (fallbackError) {
+      warn(
+        "[HEXORA] Job recovery warning:",
+        fallbackError.message
+      );
+    }
+  }
+}
+
+/* =========================================================
+   CLAIM JOBS
+   ========================================================= */
+
+async function claimJobs(limit) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    /*
+      IMPORTANT:
+      Existing database contains a very large number
+      of PENDING jobs. Therefore pending MUST be included.
+    */
+
+    const result = await client.query(
+      `
+      SELECT
+        id,
+        url,
+        status,
+        attempts
       FROM crawl_queue
-      WHERE
-        status IN ('queued','failed')
-        AND COALESCE(next_crawl_at, NOW()) <= NOW()
-        AND COALESCE(attempts, 0) <
-            $1
+      WHERE status IN ('pending', 'queued', 'failed')
+        AND (
+          next_crawl_at IS NULL
+          OR next_crawl_at <= NOW()
+        )
+        AND COALESCE(attempts, 0) < $1
       ORDER BY
-        priority DESC,
-        created_at ASC
+        COALESCE(priority, 0) DESC,
+        COALESCE(created_at, NOW()) ASC
       LIMIT $2
       FOR UPDATE SKIP LOCKED
       `,
       [
-        Number(
-          process.env.CRAWL_MAX_ATTEMPTS || 4
-        ),
-        BATCH_SIZE
+        MAX_RETRIES + 1,
+        limit,
       ]
     );
 
-  const jobs = result.rows;
+    if (!result.rows.length) {
+      await client.query("COMMIT");
+      return [];
+    }
 
-  for (const job of jobs) {
+    const ids =
+      result.rows.map((row) => row.id);
+
     await client.query(
       `
       UPDATE crawl_queue
       SET
         status = 'processing',
         locked_at = NOW(),
-        attempts = COALESCE(attempts,0) + 1
-      WHERE id = $1
+        attempts = COALESCE(attempts, 0) + 1
+      WHERE id = ANY($1::bigint[])
       `,
-      [job.id]
-    );
-  }
-
-  return jobs;
-}
-
-async function savePage(
-  client,
-  page,
-  html
-) {
-  const stored =
-    await putHtml({
-      url: page.url,
-      html,
-      contentHash: page.contentHash,
-      metadata: {
-        title: page.title,
-        language: page.language
-      }
-    });
-
-  const r2Key =
-    typeof stored === "string"
-      ? stored
-      : stored?.key ||
-        stored?.r2Key ||
-        stored?.Key ||
-        null;
-
-  await client.query(
-    `
-    INSERT INTO pages (
-      url,
-      canonical_url,
-      title,
-      description,
-      excerpt,
-      content,
-      content_hash,
-      word_count,
-      language,
-      published_at,
-      last_crawled_at,
-      crawl_status,
-      quality_score,
-      image_items,
-      video_items,
-      r2_key,
-      updated_at
-    )
-    VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,
-      $10,NOW(),'success',$11,$12,$13,$14,NOW()
-    )
-    ON CONFLICT (url)
-    DO UPDATE SET
-      canonical_url = EXCLUDED.canonical_url,
-      title = EXCLUDED.title,
-      description = EXCLUDED.description,
-      excerpt = EXCLUDED.excerpt,
-      content = EXCLUDED.content,
-      content_hash = EXCLUDED.content_hash,
-      word_count = EXCLUDED.word_count,
-      language = EXCLUDED.language,
-      published_at = EXCLUDED.published_at,
-      last_crawled_at = NOW(),
-      crawl_status = 'success',
-      quality_score = EXCLUDED.quality_score,
-      image_items = EXCLUDED.image_items,
-      video_items = EXCLUDED.video_items,
-      r2_key = EXCLUDED.r2_key,
-      updated_at = NOW()
-    `,
-    [
-      page.url,
-      page.canonicalUrl,
-      page.title,
-      page.description,
-      page.content.slice(0, 3000),
-      page.content,
-      page.contentHash,
-      page.wordCount,
-      page.language,
-      page.publishedAt,
-      page.qualityScore,
-      JSON.stringify(page.images),
-      JSON.stringify(page.videos),
-      r2Key
-    ]
-  );
-
-  for (const link of page.links) {
-    await queueUrl(
-      client,
-      link,
-      page.url,
-      Math.max(
-        0,
-        page.qualityScore
-      )
-    );
-  }
-}
-
-async function markSuccess(
-  client,
-  jobId
-) {
-  await client.query(
-    `
-    UPDATE crawl_queue
-    SET
-      status = 'done',
-      locked_at = NULL,
-      next_crawl_at =
-        NOW() +
-        ($2 || ' hours')::interval,
-      last_crawled_at = NOW(),
-      last_error = NULL
-    WHERE id = $1
-    `,
-    [
-      jobId,
-      SUCCESS_RECRAWL_HOURS
-    ]
-  );
-}
-
-async function markFailure(
-  client,
-  job,
-  error
-) {
-  const attempts =
-    Number(job.attempts || 1);
-
-  const maxAttempts =
-    Number(
-      process.env.CRAWL_MAX_ATTEMPTS || 4
+      [ids]
     );
 
-  const permanent =
-    /HTTP 404|HTTP 410|HTML_TOO_LARGE/i
-      .test(error.message || "");
+    await client.query("COMMIT");
 
-  const status =
-    permanent || attempts >= maxAttempts
-      ? "dead"
-      : "failed";
-
-  await client.query(
-    `
-    UPDATE crawl_queue
-    SET
-      status = $2,
-      locked_at = NULL,
-      last_error = $3,
-      next_crawl_at =
-        CASE
-          WHEN $2 = 'failed'
-          THEN NOW() +
-               ($4 || ' minutes')::interval
-          ELSE NULL
-        END
-    WHERE id = $1
-    `,
-    [
-      job.id,
-      status,
-      clean(error.message, 2000),
-      ERROR_RETRY_MINUTES
-    ]
-  );
-}
-
-async function crawlJob(client, job) {
-  const url =
-    normalizeUrl(job.url);
-
-  if (!url) {
-    throw new Error("INVALID_URL");
-  }
-
-  const host =
-    new URL(url).hostname;
-
-  if (
-    !(await safePublicHost(host))
-  ) {
-    throw new Error(
-      "PRIVATE_OR_INVALID_HOST"
-    );
-  }
-
-  const origin =
-    new URL(url).origin;
-
-  const robots =
-    await getRobots(origin);
-
-  if (!(await robotsAllowed(url, robots))) {
-    throw new Error(
-      "ROBOTS_DISALLOWED"
-    );
-  }
-
-  const response =
-    await fetchWithRetry(url);
-
-  if (
-    !response.contentType
-      .toLowerCase()
-      .includes("html")
-  ) {
-    throw new Error(
-      "NOT_HTML"
-    );
-  }
-
-  const page =
-    extractPage(
-      response.text,
-      response.finalUrl
-    );
-
-  await savePage(
-    client,
-    page,
-    response.text
-  );
-}
-
-export async function runCrawlCycle() {
-  const client =
-    await pool.connect();
-
-  let completed = 0;
-
-  try {
-    await recoverJobs(client);
-
-    await ensureSeeds(client);
-
-    await client.query(
-      "BEGIN"
-    );
-
-    const jobs =
-      await claimJobs(client);
-
-    await client.query(
-      "COMMIT"
-    );
-
-    for (const job of jobs) {
-      try {
-        await crawlJob(
-          client,
-          job
-        );
-
-        await markSuccess(
-          client,
-          job.id
-        );
-
-        completed++;
-
-        console.log(
-          `[HEXORA] indexed: ${job.url}`
-        );
-      } catch (error) {
-        console.error(
-          `[HEXORA] failed: ${job.url}`,
-          error.message
-        );
-
-        await markFailure(
-          client,
-          job,
-          error
-        );
-      }
-    }
-
-    return {
-      jobs: jobs.length,
-      completed
-    };
+    return result.rows.map((row) => ({
+      ...row,
+      attempts:
+        Number(row.attempts || 0) + 1,
+    }));
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
   } finally {
     client.release();
   }
 }
 
-export async function shutdownCrawler() {
-  await pool.end();
+/* =========================================================
+   SAVE PAGE
+   ========================================================= */
+
+async function savePage(page, html) {
+  const contentHash =
+    sha256(page.content);
+
+  let r2Key = null;
+
+  try {
+    r2Key = await putHtml(
+      page.url,
+      html
+    );
+  } catch (err) {
+    warn(
+      `[HEXORA] R2 save failed: ${page.url}`,
+      err.message
+    );
+  }
+
+  const imageJson =
+    JSON.stringify(page.images || []);
+
+  const videoJson =
+    JSON.stringify(page.videos || []);
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO pages
+      (
+        url,
+        title,
+        description,
+        content,
+        content_hash,
+        word_count,
+        language,
+        canonical_url,
+        excerpt,
+        domain,
+        published_at,
+        last_crawled_at,
+        crawl_status,
+        quality_score,
+        authority_score,
+        popularity_score,
+        inbound_links,
+        image_items,
+        video_items,
+        r2_key,
+        updated_at
+      )
+      VALUES
+      (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+        $11,NOW(),'success',
+        $12,$13,$14,0,$15,$16,$17,NOW()
+      )
+      ON CONFLICT (url)
+      DO UPDATE SET
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        content = EXCLUDED.content,
+        content_hash = EXCLUDED.content_hash,
+        word_count = EXCLUDED.word_count,
+        language = EXCLUDED.language,
+        canonical_url = EXCLUDED.canonical_url,
+        excerpt = EXCLUDED.excerpt,
+        domain = EXCLUDED.domain,
+        published_at = EXCLUDED.published_at,
+        last_crawled_at = NOW(),
+        crawl_status = 'success',
+        image_items = EXCLUDED.image_items,
+        video_items = EXCLUDED.video_items,
+        r2_key = EXCLUDED.r2_key,
+        updated_at = NOW()
+      `,
+      [
+        page.url,
+        page.title,
+        page.description,
+        page.content,
+        contentHash,
+        page.wordCount,
+        page.language,
+        page.canonicalUrl,
+        page.excerpt,
+        page.domain,
+        page.publishedAt,
+        0.5,
+        0.1,
+        0.1,
+        imageJson,
+        videoJson,
+        r2Key,
+      ]
+    );
+  } catch (err) {
+    /*
+      Fallback for installations where some optional
+      columns are not available.
+    */
+
+    await pool.query(
+      `
+      INSERT INTO pages
+      (
+        url,
+        title,
+        description,
+        content,
+        content_hash,
+        word_count,
+        language,
+        updated_at
+      )
+      VALUES
+      ($1,$2,$3,$4,$5,$6,$7,NOW())
+      ON CONFLICT (url)
+      DO UPDATE SET
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        content = EXCLUDED.content,
+        content_hash = EXCLUDED.content_hash,
+        word_count = EXCLUDED.word_count,
+        language = EXCLUDED.language,
+        updated_at = NOW()
+      `,
+      [
+        page.url,
+        page.title,
+        page.description,
+        page.content,
+        contentHash,
+        page.wordCount,
+        page.language,
+      ]
+    );
+  }
+
+  return {
+    contentHash,
+    r2Key,
+  };
 }
+
+/* =========================================================
+   MARK SUCCESS
+   ========================================================= */
+
+async function markSuccess(
+  jobId,
+  url
+) {
+  try {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'done',
+        last_crawled_at = NOW(),
+        last_error = NULL,
+        locked_at = NULL,
+        failure_type = NULL,
+        next_crawl_at =
+          NOW() +
+          ($2 * INTERVAL '1 hour')
+      WHERE id = $1
+      `,
+      [
+        jobId,
+        RECRAWL_HOURS,
+      ]
+    );
+  } catch {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'done',
+        last_crawled_at = NOW(),
+        last_error = NULL
+      WHERE id = $1
+      `,
+      [jobId]
+    );
+  }
+
+  log(
+    `[HEXORA] indexed: ${url}`
+  );
+}
+
+/* =========================================================
+   MARK FAILURE
+   ========================================================= */
+
+async function markFailure(
+  job,
+  err,
+  type = "error"
+) {
+  const message =
+    String(err?.message || err || "Unknown error")
+      .slice(0, 1000);
+
+  const attempts =
+    Number(job.attempts || 1);
+
+  const permanent =
+    attempts >= MAX_RETRIES;
+
+  const status =
+    permanent ? "dead" : "failed";
+
+  try {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = $1,
+        last_error = $2,
+        locked_at = NULL,
+        failure_type = $3,
+        next_crawl_at =
+          CASE
+            WHEN $4 = TRUE THEN NULL
+            ELSE NOW() +
+              ($5 * INTERVAL '1 second')
+          END
+      WHERE id = $6
+      `,
+      [
+        status,
+        message,
+        type,
+        permanent,
+        Math.min(
+          RETRY_DELAY / 1000 * attempts,
+          3600
+        ),
+        job.id,
+      ]
+    );
+  } catch {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = $1,
+        last_error = $2,
+        locked_at = NULL
+      WHERE id = $3
+      `,
+      [
+        status,
+        message,
+        job.id,
+      ]
+    );
+  }
+
+  errorLog(
+    `[HEXORA] ${status}: ${job.url} -> ${message}`
+  );
+}
+
+/* =========================================================
+   MARK BLOCKED
+   ========================================================= */
+
+async function markBlocked(
+  job,
+  reason
+) {
+  try {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'blocked',
+        last_error = $1,
+        locked_at = NULL,
+        failure_type = 'robots'
+      WHERE id = $2
+      `,
+      [
+        String(reason || "Blocked").slice(0, 1000),
+        job.id,
+      ]
+    );
+  } catch {
+    await pool.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'blocked',
+        last_error = $1
+      WHERE id = $2
+      `,
+      [
+        String(reason || "Blocked").slice(0, 1000),
+        job.id,
+      ]
+    );
+  }
+}
+
+/* =========================================================
+   CRAWL ONE JOB
+   ========================================================= */
+
+async function crawlJob(job) {
+  const url = normalizeUrl(job.url);
+
+  if (!url) {
+    throw new Error("Invalid URL");
+  }
+
+  const parsed = new URL(url);
+
+  if (!(await safePublicHost(parsed.hostname))) {
+    await markBlocked(
+      job,
+      "Private or unsafe host"
+    );
+
+    return {
+      status: "blocked",
+    };
+  }
+
+  const allowed =
+    await robotsAllowed(url);
+
+  if (!allowed) {
+    await markBlocked(
+      job,
+      "robots.txt disallow"
+    );
+
+    return {
+      status: "blocked",
+    };
+  }
+
+  await domainDelay(
+    parsed.hostname
+  );
+
+  const result =
+    await fetchWithRetry(url, 3);
+
+  const finalUrl =
+    normalizeUrl(result.finalUrl) || url;
+
+  const page =
+    extractPage(
+      result.html,
+      finalUrl
+    );
+
+  if (
+    !page.content &&
+    !page.title &&
+    !page.description
+  ) {
+    throw new Error(
+      "No useful page content"
+    );
+  }
+
+  await savePage(
+    page,
+    result.html
+  );
+
+  /*
+    Queue discovered URLs.
+  */
+
+  let discovered = 0;
+
+  for (const link of page.links) {
+    if (shuttingDown) break;
+
+    const ok =
+      await queueUrl(
+        link,
+        finalUrl,
+        0
+      );
+
+    if (ok) {
+      discovered++;
+    }
+  }
+
+  await markSuccess(
+    job.id,
+    finalUrl
+  );
+
+  return {
+    status: "done",
+    discovered,
+    images: page.images.length,
+    videos: page.videos.length,
+  };
+}
+
+/* =========================================================
+   ONE CRAWL CYCLE
+   ========================================================= */
+
+export async function runCrawlCycle() {
+  await recoverJobs();
+
+  const jobs =
+    await claimJobs(BATCH_SIZE);
+
+  if (!jobs.length) {
+    return {
+      jobs: 0,
+      completed: 0,
+      failed: 0,
+      blocked: 0,
+    };
+  }
+
+  log(
+    `[HEXORA] Starting batch: ${jobs.length} jobs`
+  );
+
+  let completed = 0;
+  let failed = 0;
+  let blocked = 0;
+
+  /*
+    Sequential processing helps avoid hammering
+    websites and keeps memory usage lower.
+  */
+
+  for (const job of jobs) {
+    if (shuttingDown) break;
+
+    try {
+      const result =
+        await crawlJob(job);
+
+      if (result.status === "done") {
+        completed++;
+      } else if (
+        result.status === "blocked"
+      ) {
+        blocked++;
+      }
+    } catch (err) {
+      failed++;
+
+      await markFailure(
+        job,
+        err,
+        "crawl"
+      );
+    }
+  }
+
+  log(
+    `[HEXORA] Batch finished: jobs=${jobs.length} indexed=${completed} failed=${failed} blocked=${blocked}`
+  );
+
+  return {
+    jobs: jobs.length,
+    completed,
+    failed,
+    blocked,
+  };
+}
+
+/* =========================================================
+   DATABASE HEALTH
+   ========================================================= */
+
+async function databaseHealth() {
+  const result =
+    await pool.query(
+      "SELECT NOW() AS now"
+    );
+
+  return result.rows[0];
+}
+
+/* =========================================================
+   START CRAWLER
+   ========================================================= */
+
+async function startCrawler() {
+  log(
+    "[HEXORA] Worldwide crawler starting..."
+  );
+
+  log(
+    `[HEXORA] Batch size: ${BATCH_SIZE}`
+  );
+
+  log(
+    `[HEXORA] Timeout: ${REQUEST_TIMEOUT}ms`
+  );
+
+  log(
+    `[HEXORA] Max retries: ${MAX_RETRIES}`
+  );
+
+  log(
+    `[HEXORA] R2 storage: enabled`
+  );
+
+  await databaseHealth();
+
+  log(
+    "[HEXORA] Neon database connected."
+  );
+
+  await ensureSeeds();
+
+  /*
+    CONTINUOUS WORLDWIDE CRAWL LOOP
+  */
+
+  while (!shuttingDown) {
+    try {
+      const result =
+        await runCrawlCycle();
+
+      if (result.jobs === 0) {
+        log(
+          `[HEXORA] No ready jobs. Waiting ${Math.round(
+            LOOP_DELAY / 1000
+          )}s...`
+        );
+
+        await sleep(LOOP_DELAY);
+      } else {
+        /*
+          Small pause between batches.
+        */
+
+        await sleep(1000);
+      }
+    } catch (err) {
+      errorLog(
+        "[HEXORA] Crawl cycle error:",
+        err
+      );
+
+      await sleep(
+        Math.max(LOOP_DELAY, 10000)
+      );
+    }
+  }
+
+  log(
+    "[HEXORA] Crawler stopped."
+  );
+}
+
+/* =========================================================
+   SHUTDOWN
+   ========================================================= */
+
+export async function shutdownCrawler() {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+
+  log(
+    "[HEXORA] Shutdown requested..."
+  );
+
+  try {
+    await pool.end();
+  } catch (err) {
+    errorLog(
+      "[HEXORA] Database shutdown error:",
+      err.message
+    );
+  }
+}
+
+process.on(
+  "SIGTERM",
+  shutdownCrawler
+);
+
+process.on(
+  "SIGINT",
+  shutdownCrawler
+);
+
+process.on(
+  "uncaughtException",
+  (err) => {
+    errorLog(
+      "[HEXORA] Uncaught exception:",
+      err
+    );
+  }
+);
+
+process.on(
+  "unhandledRejection",
+  (reason) => {
+    errorLog(
+      "[HEXORA] Unhandled rejection:",
+      reason
+    );
+  }
+);
+
+/* =========================================================
+   AUTO START
+   ========================================================= */
+
+startCrawler().catch((err) => {
+  errorLog(
+    "[HEXORA] FATAL:",
+    err
+  );
+
+  process.exit(1);
+});
