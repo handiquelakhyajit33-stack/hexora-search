@@ -1,4 +1,3 @@
-```javascript
 (() => {
   "use strict";
 
@@ -48,7 +47,8 @@
      HELPERS
   ========================================================= */
 
-  const $ = (selector) => document.querySelector(selector);
+  const $ = (selector) =>
+    document.querySelector(selector);
 
   const $$ = (selector) =>
     Array.from(document.querySelectorAll(selector));
@@ -92,18 +92,8 @@
     return text.slice(0, length).trim() + "…";
   }
 
-  function setText(selector, value) {
-    const element = $(selector);
-
-    if (element) {
-      element.textContent = value ?? "";
-    }
-  }
-
   function formatDate(value) {
-    if (!value) {
-      return "";
-    }
+    if (!value) return "";
 
     try {
       const date = new Date(value);
@@ -132,9 +122,7 @@
     try {
       const response = await fetch(url, {
         ...options,
-
         signal: controller.signal,
-
         headers: {
           Accept: "application/json",
           ...(options.headers || {})
@@ -166,7 +154,7 @@
   }
 
   /* =========================================================
-     SEARCH VIEW
+     VIEWS
   ========================================================= */
 
   function showHomeView() {
@@ -179,23 +167,18 @@
     }
 
     if (searchView) {
-      searchView.classList.remove("active");
       searchView.style.display = "none";
+      searchView.classList.remove("active");
     }
 
     if (mapView) {
-      mapView.classList.remove("active");
       mapView.style.display = "none";
+      mapView.classList.remove("active");
     }
 
     document.body.classList.remove(
       "hexora-search-active"
     );
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth"
-    });
   }
 
   function showSearchView() {
@@ -208,8 +191,8 @@
     }
 
     if (mapView) {
-      mapView.classList.remove("active");
       mapView.style.display = "none";
+      mapView.classList.remove("active");
     }
 
     if (searchView) {
@@ -220,16 +203,7 @@
     document.body.classList.add(
       "hexora-search-active"
     );
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth"
-    });
   }
-
-  /* =========================================================
-     MAP VIEW
-  ========================================================= */
 
   function showMapView() {
     const homeView = $("#homeView");
@@ -241,8 +215,8 @@
     }
 
     if (searchView) {
-      searchView.classList.remove("active");
       searchView.style.display = "none";
+      searchView.classList.remove("active");
     }
 
     if (mapView) {
@@ -257,14 +231,12 @@
     initMap();
 
     setTimeout(() => {
-      if (state.map) {
-        state.map.resize();
-      }
+      state.map?.resize();
     }, 150);
   }
 
   /* =========================================================
-     LOADING SCREEN
+     SEARCHING
   ========================================================= */
 
   function showSearching(query) {
@@ -283,13 +255,11 @@
       <div class="hexora-searching">
 
         <div class="hexora-loader">
-
           <div class="hexora-loader-ring"></div>
 
           <div class="hexora-loader-logo">
             H
           </div>
-
         </div>
 
         <div class="hexora-searching-title">
@@ -311,7 +281,7 @@
   }
 
   /* =========================================================
-     SEARCH
+     MAIN SEARCH
   ========================================================= */
 
   async function doSearch(query, mode = "web") {
@@ -319,6 +289,8 @@
 
     state.query = query;
     state.mode = mode;
+
+    updateModeButtons(mode);
 
     if (!query) {
       showSearchView();
@@ -328,17 +300,13 @@
       if (results) {
         results.innerHTML = `
           <div class="hexora-empty">
-
-            <div class="hexora-search-logo">
-              H
-            </div>
+            <div class="hexora-search-logo">H</div>
 
             <h2>Search HEXORA</h2>
 
             <p>
               Type something to search the web.
             </p>
-
           </div>
         `;
       }
@@ -348,32 +316,23 @@
       return;
     }
 
-    /* Show search page first */
     showSearchView();
 
-    /* Show loading animation */
     showSearching(query);
 
-    /* Small delay for loading animation */
     await new Promise((resolve) => {
       setTimeout(resolve, 180);
     });
 
     try {
-
       const endpoint =
         mode === "news"
           ? CONFIG.newsEndpoint
           : CONFIG.searchEndpoint;
 
       /*
-       * IMPORTANT FIX:
-       * Always send the selected mode to backend.
-       *
-       * web    -> mode=web
-       * images -> mode=images
-       * videos -> mode=videos
-       * news   -> mode=news
+       * IMPORTANT:
+       * Send mode to backend.
        */
       const url =
         `${endpoint}?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(mode)}`;
@@ -383,8 +342,7 @@
         url
       );
 
-      const data =
-        await fetchJSON(url);
+      const data = await fetchJSON(url);
 
       console.log(
         "[HEXORA] Search response:",
@@ -396,11 +354,9 @@
           ? data.results
           : [];
 
-      const meta =
-        $("#resultMeta");
+      const meta = $("#resultMeta");
 
       if (meta) {
-
         const total =
           Number.isFinite(Number(data?.total))
             ? Number(data.total)
@@ -421,7 +377,6 @@
       );
 
     } catch (error) {
-
       console.error(
         "[HEXORA] Search error:",
         error
@@ -438,9 +393,7 @@
   function showNoResults(query) {
     const results = $("#results");
 
-    if (!results) {
-      return;
-    }
+    if (!results) return;
 
     const modeText =
       state.mode === "images"
@@ -473,7 +426,7 @@
           class="hexora-retry"
           id="hexoraRetryBtn"
         >
-          🔄 Search Again
+          Search Again
         </button>
 
       </div>
@@ -497,9 +450,7 @@
   function showSearchError(error) {
     const results = $("#results");
 
-    if (!results) {
-      return;
-    }
+    if (!results) return;
 
     results.innerHTML = `
       <div class="hexora-error">
@@ -520,7 +471,7 @@
           class="hexora-retry"
           id="hexoraRetryBtn"
         >
-          🔄 Retry Search
+          Retry Search
         </button>
 
       </div>
@@ -540,310 +491,219 @@
   }
 
   /* =========================================================
-     RESULT CARD
+     RESULTS
   ========================================================= */
 
   function renderResults(items, mode = "web") {
     const results = $("#results");
 
-    if (!results) {
-      return;
-    }
+    if (!results) return;
 
-    results.innerHTML =
-      items
-        .map((item, index) => {
+    results.innerHTML = items
+      .map((item, index) => {
 
-          const title =
-            item.title ||
-            item.name ||
-            item.heading ||
-            "Untitled";
+        const title =
+          item.title ||
+          item.name ||
+          item.heading ||
+          "Untitled";
 
-          const url =
-            item.url ||
-            item.link ||
-            item.href ||
-            "#";
+        const url =
+          item.url ||
+          item.link ||
+          item.href ||
+          "#";
 
-          const description =
-            item.description ||
-            item.snippet ||
-            item.content ||
-            "";
+        const description =
+          item.description ||
+          item.snippet ||
+          item.content ||
+          "";
 
-          const image =
-            item.image ||
-            item.thumbnail ||
-            item.image_url ||
-            "";
+        const image =
+          item.image ||
+          item.thumbnail ||
+          item.image_url ||
+          "";
 
-          const source =
-            item.source ||
-            item.domain ||
-            "";
+        const source =
+          item.source ||
+          item.domain ||
+          "";
 
-          const date =
-            formatDate(
-              item.date ||
-              item.published_at ||
-              item.publishedAt ||
-              item.created_at
-            );
+        const date =
+          formatDate(
+            item.date ||
+            item.published_at ||
+            item.publishedAt ||
+            item.created_at
+          );
 
-          const videoURL =
-            item.video_url ||
-            item.video ||
-            "";
+        const videoURL =
+          item.video_url ||
+          item.video ||
+          "";
 
-          const cleanURL =
-            safeURL(url);
+        const cleanURL =
+          safeURL(url);
 
-          const cleanImage =
-            safeURL(image);
+        const cleanImage =
+          safeURL(image);
 
-          const cleanVideo =
-            safeURL(videoURL);
+        const cleanVideo =
+          safeURL(videoURL);
 
-          /*
-           * IMAGE MODE
-           */
-          if (mode === "images") {
+        /* IMAGE */
 
-            return `
-              <article
-                class="hexora-result hexora-image-result"
-                data-result-index="${index}"
-              >
-
-                ${
-                  image
-                    ? `
-                      <a
-                        href="${cleanURL}"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="hexora-large-image"
-                      >
-                        <img
-                          src="${cleanImage}"
-                          alt="${escapeHTML(title)}"
-                          loading="lazy"
-                          onerror="this.parentElement.style.display='none'"
-                        />
-                      </a>
-                    `
-                    : ""
-                }
-
-                <div class="hexora-result-body">
-
-                  <div class="hexora-result-source">
-                    ${escapeHTML(source || cleanURL)}
-                  </div>
-
-                  <h2 class="hexora-result-title">
-
-                    <a
-                      href="${cleanURL}"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      ${escapeHTML(title)}
-                    </a>
-
-                  </h2>
-
-                  ${
-                    description
-                      ? `
-                        <p class="hexora-result-description">
-                          ${escapeHTML(
-                            truncate(description, 220)
-                          )}
-                        </p>
-                      `
-                      : ""
-                  }
-
-                </div>
-
-              </article>
-            `;
-          }
-
-          /*
-           * VIDEO MODE
-           */
-          if (mode === "videos") {
-
-            return `
-              <article
-                class="hexora-result hexora-video-result"
-                data-result-index="${index}"
-              >
-
-                ${
-                  videoURL
-                    ? `
-                      <div class="hexora-video-box">
-
-                        <a
-                          href="${cleanVideo}"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          ▶ Watch Video
-                        </a>
-
-                      </div>
-                    `
-                    : image
-                    ? `
-                      <a
-                        href="${cleanURL}"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="hexora-large-image"
-                      >
-                        <img
-                          src="${cleanImage}"
-                          alt="${escapeHTML(title)}"
-                          loading="lazy"
-                          onerror="this.parentElement.style.display='none'"
-                        />
-
-                        <span class="hexora-play">
-                          ▶
-                        </span>
-
-                      </a>
-                    `
-                    : ""
-                }
-
-                <div class="hexora-result-body">
-
-                  <div class="hexora-result-source">
-                    ${escapeHTML(source || cleanURL)}
-                  </div>
-
-                  <h2 class="hexora-result-title">
-
-                    <a
-                      href="${cleanURL}"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      ${escapeHTML(title)}
-                    </a>
-
-                  </h2>
-
-                  <div class="hexora-result-url">
-                    ${escapeHTML(url)}
-                  </div>
-
-                  ${
-                    description
-                      ? `
-                        <p class="hexora-result-description">
-                          ${escapeHTML(
-                            truncate(description, 300)
-                          )}
-                        </p>
-                      `
-                      : ""
-                  }
-
-                </div>
-
-              </article>
-            `;
-          }
-
-          /*
-           * NEWS MODE
-           */
-          if (mode === "news") {
-
-            return `
-              <article
-                class="hexora-result hexora-news-result"
-                data-result-index="${index}"
-              >
-
-                <div class="hexora-result-body">
-
-                  <div class="hexora-result-source">
-                    ${escapeHTML(source || cleanURL)}
-                  </div>
-
-                  <h2 class="hexora-result-title">
-
-                    <a
-                      href="${cleanURL}"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      ${escapeHTML(title)}
-                    </a>
-
-                  </h2>
-
-                  <div class="hexora-result-url">
-                    ${escapeHTML(url)}
-                  </div>
-
-                  ${
-                    description
-                      ? `
-                        <p class="hexora-result-description">
-                          ${escapeHTML(
-                            truncate(description, 300)
-                          )}
-                        </p>
-                      `
-                      : ""
-                  }
-
-                  ${
-                    date
-                      ? `
-                        <div class="hexora-result-date">
-                          ${escapeHTML(date)}
-                        </div>
-                      `
-                      : ""
-                  }
-
-                </div>
-
-                ${
-                  image
-                    ? `
-                      <div class="hexora-result-image">
-                        <img
-                          src="${cleanImage}"
-                          alt=""
-                          loading="lazy"
-                          onerror="this.parentElement.style.display='none'"
-                        />
-                      </div>
-                    `
-                    : ""
-                }
-
-              </article>
-            `;
-          }
-
-          /*
-           * NORMAL WEB MODE
-           */
+        if (mode === "images") {
           return `
             <article
-              class="hexora-result"
+              class="hexora-result hexora-image-result"
+              data-result-index="${index}"
+            >
+
+              ${
+                image
+                  ? `
+                    <a
+                      href="${cleanURL}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="hexora-large-image"
+                    >
+                      <img
+                        src="${cleanImage}"
+                        alt="${escapeHTML(title)}"
+                        loading="lazy"
+                        onerror="this.parentElement.style.display='none'"
+                      />
+                    </a>
+                  `
+                  : ""
+              }
+
+              <div class="hexora-result-body">
+
+                <div class="hexora-result-source">
+                  ${escapeHTML(source || cleanURL)}
+                </div>
+
+                <h2 class="hexora-result-title">
+                  <a
+                    href="${cleanURL}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    ${escapeHTML(title)}
+                  </a>
+                </h2>
+
+                ${
+                  description
+                    ? `
+                      <p class="hexora-result-description">
+                        ${escapeHTML(
+                          truncate(description, 220)
+                        )}
+                      </p>
+                    `
+                    : ""
+                }
+
+              </div>
+
+            </article>
+          `;
+        }
+
+        /* VIDEO */
+
+        if (mode === "videos") {
+          return `
+            <article
+              class="hexora-result hexora-video-result"
+              data-result-index="${index}"
+            >
+
+              ${
+                videoURL
+                  ? `
+                    <div class="hexora-video-box">
+                      <a
+                        href="${cleanVideo}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        ▶ Watch Video
+                      </a>
+                    </div>
+                  `
+                  : image
+                  ? `
+                    <a
+                      href="${cleanURL}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="hexora-large-image"
+                    >
+                      <img
+                        src="${cleanImage}"
+                        alt="${escapeHTML(title)}"
+                        loading="lazy"
+                      />
+
+                      <span class="hexora-play">
+                        ▶
+                      </span>
+                    </a>
+                  `
+                  : ""
+              }
+
+              <div class="hexora-result-body">
+
+                <div class="hexora-result-source">
+                  ${escapeHTML(source || cleanURL)}
+                </div>
+
+                <h2 class="hexora-result-title">
+                  <a
+                    href="${cleanURL}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    ${escapeHTML(title)}
+                  </a>
+                </h2>
+
+                <div class="hexora-result-url">
+                  ${escapeHTML(url)}
+                </div>
+
+                ${
+                  description
+                    ? `
+                      <p class="hexora-result-description">
+                        ${escapeHTML(
+                          truncate(description, 300)
+                        )}
+                      </p>
+                    `
+                    : ""
+                }
+
+              </div>
+
+            </article>
+          `;
+        }
+
+        /* NEWS */
+
+        if (mode === "news") {
+          return `
+            <article
+              class="hexora-result hexora-news-result"
               data-result-index="${index}"
             >
 
@@ -854,7 +714,6 @@
                 </div>
 
                 <h2 class="hexora-result-title">
-
                   <a
                     href="${cleanURL}"
                     target="_blank"
@@ -862,7 +721,6 @@
                   >
                     ${escapeHTML(title)}
                   </a>
-
                 </h2>
 
                 <div class="hexora-result-url">
@@ -897,14 +755,11 @@
                 image
                   ? `
                     <div class="hexora-result-image">
-
                       <img
                         src="${cleanImage}"
                         alt=""
                         loading="lazy"
-                        onerror="this.parentElement.style.display='none'"
                       />
-
                     </div>
                   `
                   : ""
@@ -912,8 +767,78 @@
 
             </article>
           `;
-        })
-        .join("");
+        }
+
+        /* WEB */
+
+        return `
+          <article
+            class="hexora-result"
+            data-result-index="${index}"
+          >
+
+            <div class="hexora-result-body">
+
+              <div class="hexora-result-source">
+                ${escapeHTML(source || cleanURL)}
+              </div>
+
+              <h2 class="hexora-result-title">
+                <a
+                  href="${cleanURL}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  ${escapeHTML(title)}
+                </a>
+              </h2>
+
+              <div class="hexora-result-url">
+                ${escapeHTML(url)}
+              </div>
+
+              ${
+                description
+                  ? `
+                    <p class="hexora-result-description">
+                      ${escapeHTML(
+                        truncate(description, 300)
+                      )}
+                    </p>
+                  `
+                  : ""
+              }
+
+              ${
+                date
+                  ? `
+                    <div class="hexora-result-date">
+                      ${escapeHTML(date)}
+                    </div>
+                  `
+                  : ""
+              }
+
+            </div>
+
+            ${
+              image
+                ? `
+                  <div class="hexora-result-image">
+                    <img
+                      src="${cleanImage}"
+                      alt=""
+                      loading="lazy"
+                    />
+                  </div>
+                `
+                : ""
+            }
+
+          </article>
+        `;
+      })
+      .join("");
   }
 
   /* =========================================================
@@ -921,31 +846,23 @@
   ========================================================= */
 
   function updateModeButtons(mode) {
-
     $$(".mode").forEach((button) => {
-
       button.classList.toggle(
         "active",
         button.dataset.mode === mode
       );
-
     });
 
     $$("[data-mode]").forEach((button) => {
-
       button.classList.toggle(
         "active",
         button.dataset.mode === mode
       );
-
     });
   }
 
   function setMode(mode) {
-
-    if (!mode) {
-      return;
-    }
+    if (!mode) return;
 
     state.mode = mode;
 
@@ -958,11 +875,9 @@
 
     showSearchView();
 
-    const input =
-      $("#searchInput");
+    const input = $("#searchInput");
 
     if (state.query) {
-
       if (input) {
         input.value = state.query;
       }
@@ -971,49 +886,152 @@
         state.query,
         mode
       );
-
     } else {
-
-      if (input) {
-        input.focus();
-      }
-
+      input?.focus();
     }
   }
 
   /* =========================================================
      SEARCH FORM
+     FIXED: supports form, buttons and Enter
   ========================================================= */
 
   function setupSearch() {
+    const form = $("#searchForm");
+    const input = $("#searchInput");
 
-    const form =
-      $("#searchForm");
+    console.log(
+      "[HEXORA] Search setup:",
+      {
+        formFound: !!form,
+        inputFound: !!input
+      }
+    );
 
-    const input =
-      $("#searchInput");
+    /* Form submit */
 
-    if (!form) {
+    if (form) {
+      form.addEventListener(
+        "submit",
+        (event) => {
+          event.preventDefault();
 
-      console.warn(
-        "[HEXORA] #searchForm not found"
+          const query =
+            input?.value?.trim() || "";
+
+          console.log(
+            "[HEXORA] Form search:",
+            query
+          );
+
+          doSearch(
+            query,
+            state.mode
+          );
+        }
       );
-
-      return;
     }
 
-    form.addEventListener(
-      "submit",
-      (event) => {
+    /*
+     * Search buttons outside form.
+     */
 
-        event.preventDefault();
+    const searchSelectors = [
+      "#searchBtn",
+      "#searchButton",
+      ".search-btn",
+      ".search-button",
+      ".search-submit",
+      "[data-search]"
+    ];
 
-        const query =
-          input?.value?.trim() || "";
+    searchSelectors.forEach(
+      (selector) => {
+        $$(selector).forEach(
+          (button) => {
 
-        doSearch(
-          query,
-          state.mode
+            button.addEventListener(
+              "click",
+              (event) => {
+
+                event.preventDefault();
+
+                const query =
+                  input?.value?.trim() || "";
+
+                console.log(
+                  "[HEXORA] Button search:",
+                  query
+                );
+
+                doSearch(
+                  query,
+                  state.mode
+                );
+
+              }
+            );
+
+          }
+        );
+      }
+    );
+
+    /*
+     * Enter key.
+     */
+
+    if (input) {
+      input.addEventListener(
+        "keydown",
+        (event) => {
+
+          if (event.key !== "Enter") {
+            return;
+          }
+
+          event.preventDefault();
+
+          const query =
+            input.value?.trim() || "";
+
+          console.log(
+            "[HEXORA] Enter search:",
+            query
+          );
+
+          doSearch(
+            query,
+            state.mode
+          );
+
+        }
+      );
+    }
+
+    /*
+     * Generic fallback:
+     * any element with data-search-submit.
+     */
+
+    $$("[data-search-submit]").forEach(
+      (button) => {
+
+        button.addEventListener(
+          "click",
+          (event) => {
+
+            event.preventDefault();
+
+            const query =
+              input?.value?.trim() || "";
+
+            doSearch(
+              query,
+              state.mode
+            );
+
+          }
         );
 
       }
@@ -1021,79 +1039,57 @@
   }
 
   /* =========================================================
-     ALL MODE BUTTONS
+     MODE EVENTS
   ========================================================= */
 
   function setupModes() {
+    $$("[data-mode]").forEach(
+      (button) => {
 
-    $$(".mode").forEach((button) => {
+        button.addEventListener(
+          "click",
+          (event) => {
 
-      button.addEventListener(
-        "click",
-        (event) => {
+            event.preventDefault();
 
-          event.preventDefault();
+            const mode =
+              button.dataset.mode;
 
-          const mode =
-            button.dataset.mode;
+            setMode(mode);
 
-          setMode(mode);
+          }
+        );
 
-        }
-      );
-
-    });
-
-    $$("[data-mode]").forEach((button) => {
-
-      if (
-        button.classList.contains("mode")
-      ) {
-        return;
       }
-
-      button.addEventListener(
-        "click",
-        (event) => {
-
-          event.preventDefault();
-
-          const mode =
-            button.dataset.mode;
-
-          setMode(mode);
-
-        }
-      );
-
-    });
+    );
   }
 
   /* =========================================================
-     HOME BUTTON
+     HOME
   ========================================================= */
 
   function setupHomeButtons() {
+    $$("[data-home]").forEach(
+      (button) => {
 
-    $$("[data-home]").forEach((button) => {
+        button.addEventListener(
+          "click",
+          (event) => {
 
-      button.addEventListener(
-        "click",
-        (event) => {
+            event.preventDefault();
 
-          event.preventDefault();
+            state.query = "";
+            state.mode = "web";
 
-          state.query = "";
-          state.mode = "web";
+            updateModeButtons("web");
 
-          updateModeButtons("web");
+            showHomeView();
 
-          showHomeView();
+          }
+        );
 
-        }
-      );
-
-    });
+      }
+    );
   }
 
   /* =========================================================
@@ -1101,7 +1097,6 @@
   ========================================================= */
 
   function setupKeyboard() {
-
     document.addEventListener(
       "keydown",
       (event) => {
@@ -1112,9 +1107,7 @@
             "hexora-search-active"
           )
         ) {
-
           showHomeView();
-
         }
 
         if (
@@ -1140,7 +1133,6 @@
   ========================================================= */
 
   async function loadNews() {
-
     const newsContainer =
       $("#newsResults");
 
@@ -1149,7 +1141,6 @@
     }
 
     try {
-
       const data =
         await fetchJSON(
           `${CONFIG.newsEndpoint}?q=latest&mode=news`
@@ -1196,21 +1187,18 @@
           .join("");
 
     } catch (error) {
-
       console.warn(
         "[HEXORA] News unavailable:",
         error
       );
-
     }
   }
 
   /* =========================================================
-     MAPLIBRE CSS
+     MAP CSS
   ========================================================= */
 
   function loadMapCSS() {
-
     if (
       document.querySelector(
         'link[data-hexora-maplibre]'
@@ -1232,20 +1220,17 @@
   }
 
   /* =========================================================
-     MAPLIBRE JS
+     MAPLIBRE
   ========================================================= */
 
   function loadMapLibre() {
-
     return new Promise(
       (resolve, reject) => {
 
         if (window.maplibregl) {
-
           resolve(
             window.maplibregl
           );
-
           return;
         }
 
@@ -1271,13 +1256,11 @@
             clearInterval(timer);
 
             if (!window.maplibregl) {
-
               reject(
                 new Error(
                   "MapLibre loading timeout"
                 )
               );
-
             }
 
           }, 15000);
@@ -1302,19 +1285,15 @@
           state.mapLoading = false;
 
           if (window.maplibregl) {
-
             resolve(
               window.maplibregl
             );
-
           } else {
-
             reject(
               new Error(
                 "MapLibre unavailable"
               )
             );
-
           }
 
         };
@@ -1339,12 +1318,7 @@
     );
   }
 
-  /* =========================================================
-     FIND MAP ELEMENT
-  ========================================================= */
-
   function getMapElement() {
-
     return (
       $("#map") ||
       $("#mapContainer") ||
@@ -1354,17 +1328,14 @@
   }
 
   /* =========================================================
-     INIT MAP
+     MAP
   ========================================================= */
 
   async function initMap() {
-
     if (state.map) {
 
       setTimeout(() => {
-
         state.map.resize();
-
       }, 100);
 
       return;
@@ -1398,36 +1369,23 @@
             version: 8,
 
             sources: {
-
               osm: {
-
                 type: "raster",
-
                 tiles: [
                   CONFIG.mapTiles
                 ],
-
                 tileSize: 256,
-
                 attribution:
                   "© OpenStreetMap contributors"
-
               }
-
             },
 
             layers: [
-
               {
-
                 id: "osm",
-
                 type: "raster",
-
                 source: "osm"
-
               }
-
             ]
 
           },
@@ -1450,13 +1408,9 @@
       state.map.on(
         "load",
         () => {
-
           setTimeout(() => {
-
-            state.map.resize();
-
+            state.map?.resize();
           }, 100);
-
         }
       );
 
@@ -1475,13 +1429,10 @@
   ========================================================= */
 
   async function searchMapPlace(query) {
-
     query =
       String(query || "").trim();
 
-    if (!query) {
-      return;
-    }
+    if (!query) return;
 
     try {
 
@@ -1505,11 +1456,7 @@
           : null;
 
       if (!place) {
-
-        alert(
-          "Location not found."
-        );
-
+        alert("Location not found.");
         return;
       }
 
@@ -1528,27 +1475,19 @@
 
       await initMap();
 
-      if (!state.map) {
-        return;
-      }
+      if (!state.map) return;
 
       state.map.flyTo({
-
         center: [
           lon,
           lat
         ],
-
         zoom: 12,
-
         essential: true
-
       });
 
       if (state.searchMarker) {
-
         state.searchMarker.remove();
-
       }
 
       const maplibregl =
@@ -1589,13 +1528,10 @@
   ========================================================= */
 
   function locateUser() {
-
     if (!navigator.geolocation) {
-
       alert(
         "Location is not supported by this browser."
       );
-
       return;
     }
 
@@ -1616,34 +1552,24 @@
 
         await initMap();
 
-        if (!state.map) {
-          return;
-        }
+        if (!state.map) return;
 
         state.map.flyTo({
-
           center: [
             lon,
             lat
           ],
-
           zoom: 14,
-
           essential: true
-
         });
 
         const maplibregl =
           window.maplibregl;
 
-        if (!maplibregl) {
-          return;
-        }
+        if (!maplibregl) return;
 
         if (state.userMarker) {
-
           state.userMarker.remove();
-
         }
 
         state.userMarker =
@@ -1678,7 +1604,6 @@
         timeout: 10000,
         maximumAge: 30000
       }
-
     );
   }
 
@@ -1717,9 +1642,7 @@
         "keydown",
         (event) => {
 
-          if (
-            event.key === "Enter"
-          ) {
+          if (event.key === "Enter") {
 
             event.preventDefault();
 
@@ -1763,18 +1686,13 @@
 
           event.preventDefault();
 
-          if (!state.map) {
-            return;
-          }
+          if (!state.map) return;
 
           state.map.flyTo({
-
             center:
               CONFIG.defaultCenter,
-
             zoom:
               CONFIG.defaultZoom
-
           });
 
         }
@@ -1796,20 +1714,15 @@
           const mapElement =
             getMapElement();
 
-          if (!mapElement) {
-            return;
-          }
+          if (!mapElement) return;
 
-          if (
-            document.fullscreenElement
-          ) {
+          if (document.fullscreenElement) {
 
             document.exitFullscreen?.();
 
           } else {
 
-            mapElement
-              .requestFullscreen?.();
+            mapElement.requestFullscreen?.();
 
           }
 
@@ -1818,9 +1731,6 @@
 
     }
 
-    /*
-     * Satellite is not connected.
-     */
     $$("#satelliteMapBtn").forEach(
       (button) => {
 
@@ -1840,9 +1750,6 @@
       }
     );
 
-    /*
-     * 3D is not connected.
-     */
     $$("#3dMapBtn").forEach(
       (button) => {
 
@@ -1869,59 +1776,38 @@
 
   function setupFeatureButtons() {
 
-    const openMapBtn =
-      $("#openMapBtn");
+    $("#openMapBtn")?.addEventListener(
+      "click",
+      (event) => {
 
-    if (openMapBtn) {
+        event.preventDefault();
 
-      openMapBtn.addEventListener(
-        "click",
-        (event) => {
+        setMode("maps");
 
-          event.preventDefault();
+      }
+    );
 
-          setMode("maps");
+    $("#mapPreviewBtn")?.addEventListener(
+      "click",
+      (event) => {
 
-        }
-      );
+        event.preventDefault();
 
-    }
+        setMode("maps");
 
-    const mapPreviewBtn =
-      $("#mapPreviewBtn");
+      }
+    );
 
-    if (mapPreviewBtn) {
+    $("#viewNewsBtn")?.addEventListener(
+      "click",
+      (event) => {
 
-      mapPreviewBtn.addEventListener(
-        "click",
-        (event) => {
+        event.preventDefault();
 
-          event.preventDefault();
+        setMode("news");
 
-          setMode("maps");
-
-        }
-      );
-
-    }
-
-    const viewNewsBtn =
-      $("#viewNewsBtn");
-
-    if (viewNewsBtn) {
-
-      viewNewsBtn.addEventListener(
-        "click",
-        (event) => {
-
-          event.preventDefault();
-
-          setMode("news");
-
-        }
-      );
-
-    }
+      }
+    );
   }
 
   /* =========================================================
@@ -1980,21 +1866,19 @@
             const query =
               button.dataset.quick;
 
-            if (query) {
+            if (!query) return;
 
-              const input =
-                $("#searchInput");
+            const input =
+              $("#searchInput");
 
-              if (input) {
-                input.value = query;
-              }
-
-              doSearch(
-                query,
-                "web"
-              );
-
+            if (input) {
+              input.value = query;
             }
+
+            doSearch(
+              query,
+              "web"
+            );
 
           }
         );
@@ -2033,8 +1917,6 @@
         display: block !important;
       }
 
-      /* SEARCHING */
-
       .hexora-searching {
         min-height: 330px;
         display: flex;
@@ -2061,16 +1943,11 @@
         height: 86px;
         border-radius: 50%;
         border: 3px solid
-          rgba(0, 255, 255, .12);
-        border-top-color:
-          #00ffff;
-        border-right-color:
-          #00ffff;
+          rgba(0,255,255,.12);
+        border-top-color: #00ffff;
+        border-right-color: #00ffff;
         animation:
-          hexoraSpin
-          .9s
-          linear
-          infinite;
+          hexoraSpin .9s linear infinite;
       }
 
       .hexora-loader-logo {
@@ -2084,19 +1961,16 @@
         font-weight: 900;
         color: #00ffff;
         background:
-          rgba(0, 255, 255, .08);
+          rgba(0,255,255,.08);
         border:
           1px solid
-          rgba(0, 255, 255, .4);
-        box-shadow:
-          0 0 25px
-          rgba(0, 255, 255, .2);
+          rgba(0,255,255,.4);
       }
 
       .hexora-searching-title {
         font-size: 22px;
         font-weight: 700;
-        color: #ffffff;
+        color: #fff;
         margin-bottom: 8px;
       }
 
@@ -2122,10 +1996,7 @@
         border-radius: 50%;
         background: #00ffff;
         animation:
-          hexoraDot
-          1.2s
-          infinite
-          ease-in-out;
+          hexoraDot 1.2s infinite ease-in-out;
       }
 
       .hexora-searching-dots
@@ -2145,7 +2016,6 @@
       }
 
       @keyframes hexoraDot {
-
         0%, 80%, 100% {
           opacity: .25;
           transform: scale(.7);
@@ -2155,10 +2025,7 @@
           opacity: 1;
           transform: scale(1);
         }
-
       }
-
-      /* EMPTY */
 
       .hexora-empty,
       .hexora-no-results,
@@ -2170,28 +2037,18 @@
       .hexora-search-logo,
       .hexora-no-results-logo,
       .hexora-error-logo {
-
         width: 64px;
         height: 64px;
-
-        margin:
-          0 auto 20px;
-
+        margin: 0 auto 20px;
         display: flex;
-
         align-items: center;
         justify-content: center;
-
         border-radius: 18px;
-
         font-size: 28px;
         font-weight: 900;
-
         color: #00ffff;
-
         background:
           rgba(0,255,255,.06);
-
         border:
           1px solid
           rgba(0,255,255,.35);
@@ -2209,55 +2066,28 @@
       .hexora-error p {
         color:
           rgba(255,255,255,.6);
-
         max-width: 520px;
-
-        margin:
-          0 auto 25px;
+        margin: 0 auto 25px;
       }
 
-      /* RETRY */
-
       .hexora-retry {
-
         border:
           1px solid
           rgba(0,255,255,.4);
-
         background:
           rgba(0,255,255,.08);
-
         color: #00ffff;
-
-        padding:
-          11px 20px;
-
+        padding: 11px 20px;
         border-radius: 10px;
-
         cursor: pointer;
-
         font-weight: 600;
       }
 
-      .hexora-retry:hover {
-        background:
-          rgba(0,255,255,.15);
-      }
-
-      /* RESULT */
-
       .hexora-result {
-
         display: flex;
-
-        justify-content:
-          space-between;
-
+        justify-content: space-between;
         gap: 20px;
-
-        padding:
-          20px 0;
-
+        padding: 20px 0;
         border-bottom:
           1px solid
           rgba(255,255,255,.08);
@@ -2270,23 +2100,18 @@
 
       .hexora-result-source {
         font-size: 13px;
-
         color:
           rgba(255,255,255,.5);
-
         margin-bottom: 5px;
       }
 
       .hexora-result-title {
-        margin:
-          0 0 5px;
+        margin: 0 0 5px;
       }
 
       .hexora-result-title a {
         color: #00ffff;
-
         text-decoration: none;
-
         font-size: 20px;
       }
 
@@ -2296,78 +2121,56 @@
 
       .hexora-result-url {
         font-size: 12px;
-
         color:
           rgba(255,255,255,.42);
-
         white-space: nowrap;
-
         overflow: hidden;
-
         text-overflow: ellipsis;
-
         margin-bottom: 8px;
       }
 
       .hexora-result-description {
         color:
           rgba(255,255,255,.7);
-
         line-height: 1.6;
-
         margin: 0;
       }
 
       .hexora-result-date {
         color:
           rgba(255,255,255,.4);
-
         font-size: 12px;
-
         margin-top: 8px;
       }
 
       .hexora-result-image {
         width: 120px;
         height: 90px;
-
         flex-shrink: 0;
-
         overflow: hidden;
-
         border-radius: 10px;
       }
 
       .hexora-result-image img {
         width: 100%;
         height: 100%;
-
         object-fit: cover;
       }
 
-      /* IMAGE SEARCH */
-
-      .hexora-image-result {
+      .hexora-image-result,
+      .hexora-video-result {
         display: block;
       }
 
       .hexora-large-image {
         display: block;
-
         width: 100%;
-
         max-width: 420px;
-
         height: 240px;
-
         margin-bottom: 15px;
-
         overflow: hidden;
-
         border-radius: 14px;
-
         position: relative;
-
         background:
           rgba(255,255,255,.04);
       }
@@ -2375,37 +2178,21 @@
       .hexora-large-image img {
         width: 100%;
         height: 100%;
-
         object-fit: cover;
-
-        display: block;
-      }
-
-      /* VIDEO SEARCH */
-
-      .hexora-video-result {
         display: block;
       }
 
       .hexora-video-box {
         width: 100%;
         max-width: 520px;
-
         min-height: 100px;
-
         display: flex;
-
         align-items: center;
-
         justify-content: center;
-
         margin-bottom: 15px;
-
         border-radius: 14px;
-
         background:
           rgba(0,255,255,.05);
-
         border:
           1px solid
           rgba(0,255,255,.18);
@@ -2413,58 +2200,35 @@
 
       .hexora-video-box a {
         color: #00ffff;
-
         text-decoration: none;
-
         font-weight: 700;
-
         font-size: 17px;
-
         padding: 15px 22px;
-      }
-
-      .hexora-video-box a:hover {
-        text-decoration: underline;
       }
 
       .hexora-play {
         position: absolute;
-
         left: 50%;
         top: 50%;
-
         transform:
           translate(-50%, -50%);
-
         width: 55px;
         height: 55px;
-
         border-radius: 50%;
-
         display: flex;
-
         align-items: center;
         justify-content: center;
-
         background:
           rgba(0,0,0,.65);
-
         color: #00ffff;
-
         font-size: 24px;
       }
 
-      /* NEWS */
-
       .hexora-news-item {
         display: block;
-
         color: #fff;
-
         text-decoration: none;
-
         padding: 10px 0;
-
         border-bottom:
           1px solid
           rgba(255,255,255,.08);
@@ -2473,8 +2237,6 @@
       .hexora-news-item:hover {
         color: #00ffff;
       }
-
-      /* MOBILE */
 
       @media (max-width: 650px) {
 
@@ -2520,9 +2282,7 @@
     const mode =
       params.get("mode") || "web";
 
-    if (!query) {
-      return;
-    }
+    if (!query) return;
 
     state.query = query;
     state.mode = mode;
@@ -2537,16 +2297,12 @@
     updateModeButtons(mode);
 
     if (mode === "maps") {
-
       showMapView();
-
     } else {
-
       doSearch(
         query,
         mode
       );
-
     }
   }
 
@@ -2564,33 +2320,21 @@
         );
 
       if (query) {
-
         url.searchParams.set(
           "q",
           query
         );
-
       } else {
-
-        url.searchParams.delete(
-          "q"
-        );
-
+        url.searchParams.delete("q");
       }
 
       if (mode) {
-
         url.searchParams.set(
           "mode",
           mode
         );
-
       } else {
-
-        url.searchParams.delete(
-          "mode"
-        );
-
+        url.searchParams.delete("mode");
       }
 
       window.history.replaceState(
@@ -2600,16 +2344,13 @@
       );
 
     } catch {
-      /* Ignore URL errors */
+      /* Ignore */
     }
   }
 
   /* =========================================================
-     PUBLIC SEARCH
+     PUBLIC API
   ========================================================= */
-
-  const originalDoSearch =
-    doSearch;
 
   window.hexoraSearch =
     async function (
@@ -2622,7 +2363,7 @@
         mode
       );
 
-      return originalDoSearch(
+      return doSearch(
         query,
         mode
       );
@@ -2642,44 +2383,23 @@
     injectUtilityStyles();
 
     setupSearch();
-
     setupModes();
-
     setupHomeButtons();
-
     setupKeyboard();
-
     setupTrending();
-
     setupQuickActions();
-
     setupMapControls();
-
     setupFeatureButtons();
 
     updateModeButtons(
       state.mode
     );
 
-    /*
-     * News failure must not
-     * break main search.
-     */
     loadNews();
 
-    /*
-     * Map loads only when opened.
-     */
-
     setTimeout(() => {
-
       loadURLState();
-
     }, 50);
-
-    /*
-     * Public API
-     */
 
     window.HEXORA = {
 
@@ -2711,8 +2431,7 @@
   ========================================================= */
 
   if (
-    document.readyState ===
-    "loading"
+    document.readyState === "loading"
   ) {
 
     document.addEventListener(
@@ -2730,4 +2449,3 @@
   }
 
 })();
-```
