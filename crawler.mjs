@@ -1,3 +1,4 @@
+// crawler.mjs
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import * as cheerio from "cheerio";
@@ -6,176 +7,56 @@ import { putHtml } from "./storage.mjs";
 
 const { Pool } = pg;
 
-/* =========================================================
-   HEXORA INDEPENDENT WEB CRAWLER
-   No Google Search API
-   No Google Search results
-   No external search index
-   HEXORA crawls -> stores -> indexes its own web data
-   ========================================================= */
-
-const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
-
-if (!DATABASE_URL) {
-  throw new Error("[HEXORA] DATABASE_URL is missing");
-}
-
-/* ---------------- CONFIG ---------------- */
-
-const USER_AGENT =
-  process.env.HEXORA_USER_AGENT ||
-  "HEXORA-Bot/1.0 (+https://www.hexsorasearch.com/)";
-
-const REQUEST_TIMEOUT = Math.max(
-  5000,
-  Number(process.env.CRAWL_TIMEOUT_MS || 20000)
-);
-
-const MAX_CONTENT = Math.max(
-  10000,
-  Number(process.env.CRAWL_MAX_CONTENT || 150000)
-);
-
-const MAX_HTML_BYTES = Math.max(
-  100000,
-  Number(process.env.CRAWL_MAX_HTML_BYTES || 5000000)
-);
-
-const MAX_LINKS = Math.max(
-  20,
-  Number(process.env.CRAWL_MAX_LINKS || 200)
-);
-
-const MAX_IMAGES = Math.max(
-  5,
-  Number(process.env.CRAWL_MAX_IMAGES || 20)
-);
-
-const MAX_VIDEOS = Math.max(
-  5,
-  Number(process.env.CRAWL_MAX_VIDEOS || 10)
-);
-
-const DOMAIN_DELAY = Math.max(
-  250,
-  Number(process.env.CRAWL_DOMAIN_DELAY_MS || 1000)
-);
-
-const MAX_REDIRECTS = Math.max(
-  0,
-  Number(process.env.CRAWL_MAX_REDIRECTS || 5)
-);
-
-const MAX_RETRIES = Math.max(
-  1,
-  Number(process.env.CRAWL_MAX_RETRIES || 3)
-);
-
-const MAX_ATTEMPTS = Math.max(
-  1,
-  Number(process.env.CRAWL_MAX_ATTEMPTS || 4)
-);
-
-const IDLE_WAIT = Math.max(
-  2000,
-  Number(process.env.CRAWL_IDLE_WAIT_MS || 10000)
-);
-
-const WORKER_BATCH = Math.max(
-  1,
-  Number(process.env.CRAWL_BATCH_SIZE || 5)
-);
-
-const MAX_SITEMAP_URLS = Math.max(
-  100,
-  Number(process.env.CRAWL_MAX_SITEMAP_URLS || 2000)
-);
-
-const MAX_DISCOVERY_LINKS = Math.max(
-  10,
-  Number(process.env.CRAWL_MAX_DISCOVERY_LINKS || 75)
-);
-
-/* ---------------- DATABASE ---------------- */
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) throw new Error("DATABASE_URL is required");
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-
-  max: Math.max(
-    2,
-    Number(process.env.CRAWL_DB_POOL_MAX || 8)
-  ),
-
-  connectionTimeoutMillis: 15000,
-
-  idleTimeoutMillis: 30000,
-
-  ssl: /neon\.tech|neon\.com|neon\.io|neon\./i.test(
-    DATABASE_URL
-  )
-    ? { rejectUnauthorized: false }
-    : undefined,
+  max: Number(process.env.CRAWL_DB_POOL || 5),
+  ssl: process.env.DATABASE_SSL === "false"
+    ? false
+    : { rejectUnauthorized: false }
 });
 
-/* ---------------- MEMORY ---------------- */
+const USER_AGENT =
+  process.env.HEXORA_USER_AGENT ||
+  "HEXORA-Crawler/2.0 (+https://hexora.example)";
+
+const TIMEOUT = Number(process.env.CRAWL_TIMEOUT_MS || 20000);
+const MAX_HTML = Number(process.env.CRAWL_MAX_HTML_BYTES || 5000000);
+const MAX_CONTENT = Number(process.env.CRAWL_MAX_CONTENT || 50000);
+const MAX_LINKS = Number(process.env.CRAWL_MAX_LINKS || 500);
+const MAX_IMAGES = Number(process.env.CRAWL_MAX_IMAGES || 50);
+const MAX_VIDEOS = Number(process.env.CRAWL_MAX_VIDEOS || 30);
+
+const BATCH_SIZE = Number(process.env.CRAWL_BATCH_SIZE || 5);
+const SUCCESS_RECRAWL_HOURS =
+  Number(process.env.CRAWL_SUCCESS_RECRAWL_HOURS || 168);
+const ERROR_RETRY_MINUTES =
+  Number(process.env.CRAWL_ERROR_RETRY_MINUTES || 60);
 
 const robotsCache = new Map();
-const domainLastRequest = new Map();
-const domainLocks = new Map();
+const domainLastFetch = new Map();
 
-/* ---------------- BLOCKED FILE TYPES ---------------- */
-
-const BLOCKED_EXTENSIONS = new Set([
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-  ".svg",
-  ".ico",
-  ".bmp",
-  ".tiff",
-  ".mp3",
-  ".wav",
-  ".ogg",
-  ".m4a",
-  ".mp4",
-  ".webm",
-  ".avi",
-  ".mov",
-  ".mkv",
-  ".zip",
-  ".rar",
-  ".7z",
-  ".gz",
-  ".tar",
-  ".apk",
-  ".exe",
-  ".dmg",
-  ".iso",
-  ".bin",
-]);
-
-/* =========================================================
-   BASIC HELPERS
-   ========================================================= */
+const BLOCKED_EXTENSIONS =
+  /\.(jpg|jpeg|png|gif|webp|svg|ico|pdf|zip|rar|7z|mp3|wav|mp4|avi|mov|mkv|exe|dmg|iso|apk)$/i;
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sha256(value) {
-  return crypto
-    .createHash("sha256")
-    .update(String(value || ""), "utf8")
-    .digest("hex");
-}
-
-function cleanText(value) {
+function clean(value, max = 10000) {
   return String(value || "")
     .replace(/\s+/g, " ")
-    .replace(/\u00a0/g, " ")
-    .trim();
+    .trim()
+    .slice(0, max);
+}
+
+function hash(value) {
+  return crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex");
 }
 
 function domainOf(url) {
@@ -186,184 +67,97 @@ function domainOf(url) {
   }
 }
 
-function isSitemapUrl(url) {
+function normalizeUrl(raw, base = null) {
   try {
-    const path = new URL(url).pathname.toLowerCase();
+    const u = base
+      ? new URL(raw, base)
+      : new URL(raw);
 
-    return (
-      path.endsWith(".xml") ||
-      path.endsWith(".xml.gz") ||
-      path.includes("sitemap")
-    );
-  } catch {
-    return false;
-  }
-}
+    if (!["http:", "https:"].includes(u.protocol)) return null;
 
-/* =========================================================
-   SSRF / PRIVATE NETWORK PROTECTION
-   ========================================================= */
+    u.hash = "";
 
-function isPrivateIPv4(ip) {
-  const p = ip.split(".").map(Number);
-
-  if (
-    p.length !== 4 ||
-    p.some(
-      (x) => !Number.isInteger(x) || x < 0 || x > 255
-    )
-  ) {
-    return false;
-  }
-
-  return (
-    p[0] === 10 ||
-    p[0] === 127 ||
-    (p[0] === 169 && p[1] === 254) ||
-    (p[0] === 192 && p[1] === 168) ||
-    (p[0] === 172 && p[1] >= 16 && p[1] <= 31)
-  );
-}
-
-function isPrivateIPv6(ip) {
-  const value = String(ip || "").toLowerCase();
-
-  return (
-    value === "::1" ||
-    value === "::" ||
-    value.startsWith("fc") ||
-    value.startsWith("fd") ||
-    value.startsWith("fe80:")
-  );
-}
-
-async function assertPublicHost(hostname) {
-  const host = String(hostname || "")
-    .toLowerCase()
-    .replace(/\.$/, "");
-
-  if (
-    !host ||
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local") ||
-    host.endsWith(".internal")
-  ) {
-    throw new Error("Blocked private/local hostname");
-  }
-
-  const records = await dns.lookup(host, {
-    all: true,
-    verbatim: true,
-  });
-
-  if (!records.length) {
-    throw new Error("DNS lookup returned no address");
-  }
-
-  for (const record of records) {
-    if (
-      record.family === 4 &&
-      isPrivateIPv4(record.address)
-    ) {
-      throw new Error("Blocked private IPv4 address");
-    }
+    u.hostname = u.hostname.toLowerCase();
 
     if (
-      record.family === 6 &&
-      isPrivateIPv6(record.address)
+      (u.protocol === "https:" && u.port === "443") ||
+      (u.protocol === "http:" && u.port === "80")
     ) {
-      throw new Error("Blocked private IPv6 address");
-    }
-  }
-}
-
-/* =========================================================
-   URL NORMALIZATION
-   ========================================================= */
-
-function normalizeUrl(input, baseUrl = null) {
-  try {
-    const url = new URL(
-      String(input || ""),
-      baseUrl || undefined
-    );
-
-    if (!/^https?:$/.test(url.protocol)) {
-      return null;
+      u.port = "";
     }
 
-    url.hash = "";
-    url.username = "";
-    url.password = "";
-
-    const removeParams = [
+    const remove = [
       "utm_source",
       "utm_medium",
       "utm_campaign",
       "utm_term",
       "utm_content",
       "gclid",
-      "fbclid",
-      "msclkid",
-      "mc_cid",
-      "mc_eid",
+      "fbclid"
     ];
 
-    for (const key of removeParams) {
-      url.searchParams.delete(key);
+    for (const key of remove) {
+      u.searchParams.delete(key);
     }
 
-    if (
-      url.pathname.length > 2048 ||
-      url.toString().length > 8192
-    ) {
-      return null;
-    }
-
-    return url.toString();
+    return u.toString();
   } catch {
     return null;
   }
 }
 
-function isValidCrawlUrl(url) {
+function validUrl(url) {
+  if (!url) return false;
+
   try {
     const u = new URL(url);
 
-    if (!/^https?:$/.test(u.protocol)) {
+    if (!["http:", "https:"].includes(u.protocol)) {
       return false;
     }
 
-    if (
-      !u.hostname ||
-      u.hostname.length < 3 ||
-      u.hostname.length > 253
-    ) {
+    if (BLOCKED_EXTENSIONS.test(u.pathname)) {
       return false;
     }
 
-    const pathname = u.pathname.toLowerCase();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    for (const ext of BLOCKED_EXTENSIONS) {
-      if (pathname.endsWith(ext)) {
-        return false;
-      }
-    }
+async function safePublicHost(hostname) {
+  try {
+    const records = await dns.lookup(hostname, {
+      all: true,
+      verbatim: true
+    });
 
-    const blockedPaths = [
-      "/login",
-      "/signin",
-      "/sign-in",
-      "/signup",
-      "/sign-up",
-      "/register",
-      "/logout",
-      "/wp-login.php",
-    ];
+    for (const record of records) {
+      const ip = record.address;
 
-    for (const part of blockedPaths) {
-      if (pathname.includes(part)) {
+      if (
+        ip === "127.0.0.1" ||
+        ip === "::1" ||
+        ip.startsWith("10.") ||
+        ip.startsWith("192.168.") ||
+        ip.startsWith("172.16.") ||
+        ip.startsWith("172.17.") ||
+        ip.startsWith("172.18.") ||
+        ip.startsWith("172.19.") ||
+        ip.startsWith("172.20.") ||
+        ip.startsWith("172.21.") ||
+        ip.startsWith("172.22.") ||
+        ip.startsWith("172.23.") ||
+        ip.startsWith("172.24.") ||
+        ip.startsWith("172.25.") ||
+        ip.startsWith("172.26.") ||
+        ip.startsWith("172.27.") ||
+        ip.startsWith("172.28.") ||
+        ip.startsWith("172.29.") ||
+        ip.startsWith("172.30.") ||
+        ip.startsWith("172.31.")
+      ) {
         return false;
       }
     }
@@ -374,629 +168,721 @@ function isValidCrawlUrl(url) {
   }
 }
 
-/* =========================================================
-   LANGUAGE DETECTION
-   ========================================================= */
-
-function detectLanguage(text) {
-  const value = String(text || "");
-
-  const counts = {
-    as: (value.match(/[\u0980-\u09FF]/g) || []).length,
-    hi: (value.match(/[\u0900-\u097F]/g) || []).length,
-    ar: (value.match(/[\u0600-\u06FF]/g) || []).length,
-    zh: (value.match(/[\u4E00-\u9FFF]/g) || []).length,
-    en: (value.match(/[A-Za-z]/g) || []).length,
-  };
-
-  const total = Object.values(counts).reduce(
-    (a, b) => a + b,
-    0
-  );
-
-  if (!total) {
-    return "unknown";
-  }
-
-  const best = Object.entries(counts).sort(
-    (a, b) => b[1] - a[1]
-  )[0];
-
-  if (best[1] / total >= 0.2) {
-    return best[0];
-  }
-
-  return "unknown";
-}
-
-/* =========================================================
-   QUALITY SCORE
-   ========================================================= */
-
-function calculateQuality({
-  title,
-  description,
-  content,
-  wordCount,
-  links,
-}) {
-  let score = 0;
-
-  if (title) score += 20;
-  if (description) score += 15;
-
-  if (wordCount >= 50) score += 10;
-  if (wordCount >= 200) score += 10;
-  if (wordCount >= 500) score += 10;
-  if (wordCount >= 1000) score += 10;
-
-  if (content.length >= 1000) score += 10;
-  if (content.length >= 5000) score += 5;
-
-  if (links > 0) score += 5;
-
-  return Math.min(100, score);
-}
-
-/* =========================================================
-   ROBOTS.TXT
-   ========================================================= */
-
-function parseRobots(text) {
-  const groups = [];
-  const sitemaps = [];
-
-  let current = null;
-
-  for (const rawLine of String(text || "").split(/\r?\n/)) {
-    const line = rawLine.split("#")[0].trim();
-
-    if (!line) {
-      continue;
-    }
-
-    const index = line.indexOf(":");
-
-    if (index < 0) {
-      continue;
-    }
-
-    const key = line
-      .slice(0, index)
-      .trim()
-      .toLowerCase();
-
-    const value = line
-      .slice(index + 1)
-      .trim();
-
-    if (key === "user-agent") {
-      current = {
-        agents: [value.toLowerCase()],
-        rules: [],
-      };
-
-      groups.push(current);
-      continue;
-    }
-
-    if (!current) {
-      continue;
-    }
-
-    if (key === "allow") {
-      current.rules.push({
-        type: "allow",
-        path: value,
-      });
-    }
-
-    if (key === "disallow") {
-      if (value) {
-        current.rules.push({
-          type: "disallow",
-          path: value,
-        });
-      }
-    }
-
-    if (key === "sitemap") {
-      const sitemap = normalizeUrl(value);
-
-      if (sitemap) {
-        sitemaps.push(sitemap);
-      }
-    }
-  }
-
-  return {
-    groups,
-    sitemaps: [...new Set(sitemaps)],
-  };
-}
-
-function robotsRuleMatches(pathname, rulePath) {
-  if (!rulePath) {
-    return false;
-  }
-
-  let pattern = String(rulePath);
-
-  const endMatch = pattern.endsWith("$");
-
-  if (endMatch) {
-    pattern = pattern.slice(0, -1);
-  }
-
-  const escaped = pattern.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&"
-  );
-
-  const regex = new RegExp(
-    "^" +
-      escaped.replace(/\\\*/g, ".*") +
-      (endMatch ? "$" : "")
-  );
-
-  return regex.test(pathname);
-}
-
-function getRobotsRules(robots) {
-  if (!robots || !Array.isArray(robots.groups)) {
-    return [];
-  }
-
-  const exact = [];
-  const generic = [];
-
-  for (const group of robots.groups) {
-    for (const agent of group.agents || []) {
-      if (
-        agent === "hexora-bot" ||
-        agent.includes("hexora")
-      ) {
-        exact.push(...group.rules);
-      } else if (agent === "*") {
-        generic.push(...group.rules);
-      }
-    }
-  }
-
-  return exact.length ? exact : generic;
-}
-
-function robotsAllowed(url, robots) {
-  if (!robots) {
-    return true;
-  }
-
-  const rules = getRobotsRules(robots);
-
-  if (!rules.length) {
-    return true;
-  }
-
-  const pathname = new URL(url).pathname || "/";
-
-  let best = null;
-
-  for (const rule of rules) {
-    if (!robotsRuleMatches(pathname, rule.path)) {
-      continue;
-    }
-
-    if (
-      !best ||
-      rule.path.length > best.path.length ||
-      (
-        rule.path.length === best.path.length &&
-        rule.type === "allow"
-      )
-    ) {
-      best = rule;
-    }
-  }
-
-  if (!best) {
-    return true;
-  }
-
-  return best.type === "allow";
-}
-
-async function fetchRobots(domain) {
-  const cached = robotsCache.get(domain);
-
-  if (
-    cached &&
-    Date.now() - cached.timestamp <
-      15 * 60 * 1000
-  ) {
-    return cached;
-  }
-
-  const result = {
-    groups: [],
-    sitemaps: [],
-    timestamp: Date.now(),
-  };
-
-  try {
-    const robotsUrl = `https://${domain}/robots.txt`;
-
-    await assertPublicHost(domain);
-
-    const response = await fetchWithRedirects(
-      robotsUrl,
-      {
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "text/plain,*/*",
-        },
-      },
-      10000,
-      2
-    );
-
-    if (response.ok) {
-      const text = await response.text();
-
-      const parsed = parseRobots(text);
-
-      result.groups = parsed.groups;
-      result.sitemaps = parsed.sitemaps;
-    }
-  } catch (error) {
-    console.log(
-      `[HEXORA] robots.txt unavailable for ${domain}:`,
-      error?.message || error
-    );
-  }
-
-  robotsCache.set(domain, result);
-
-  return result;
-}
-
-/* =========================================================
-   DOMAIN RATE LIMIT
-   ========================================================= */
-
-async function respectDomainDelay(url) {
+async function domainDelay(url) {
   const domain = domainOf(url);
+  const delay = Number(
+    process.env.CRAWL_DOMAIN_DELAY_MS || 1000
+  );
 
-  const last =
-    domainLastRequest.get(domain) || 0;
-
-  const wait =
-    DOMAIN_DELAY -
-    (Date.now() - last);
+  const last = domainLastFetch.get(domain) || 0;
+  const wait = delay - (Date.now() - last);
 
   if (wait > 0) {
     await sleep(wait);
   }
 
-  domainLastRequest.set(
-    domain,
-    Date.now()
-  );
+  domainLastFetch.set(domain, Date.now());
 }
 
-/* =========================================================
-   FETCH WITH REDIRECTS
-   ========================================================= */
+async function fetchText(url, options = {}) {
+  await domainDelay(url);
 
-async function fetchWithRedirects(
-  startUrl,
-  options = {},
-  timeoutMs = REQUEST_TIMEOUT,
-  maxRedirects = MAX_REDIRECTS
-) {
-  let current = normalizeUrl(startUrl);
-
-  if (!current) {
-    throw new Error("Invalid URL");
-  }
-
-  for (
-    let redirect = 0;
-    redirect <= maxRedirects;
-    redirect++
-  ) {
-    const parsed = new URL(current);
-
-    await assertPublicHost(parsed.hostname);
-
-    await respectDomainDelay(current);
-
-    const controller =
-      new AbortController();
-
-    const timer = setTimeout(
-      () => controller.abort(),
-      timeoutMs
-    );
-
-    try {
-      const response = await fetch(
-        current,
-        {
-          ...options,
-          redirect: "manual",
-          signal: controller.signal,
-        }
-      );
-
-      if (
-        response.status >= 300 &&
-        response.status < 400
-      ) {
-        const location =
-          response.headers.get("location");
-
-        if (!location) {
-          return Object.defineProperty(
-            response,
-            "hexoraFinalUrl",
-            {
-              value: current,
-            }
-          );
-        }
-
-        const next = normalizeUrl(
-          location,
-          current
-        );
-
-        if (!next) {
-          throw new Error(
-            "Invalid redirect URL"
-          );
-        }
-
-        current = next;
-
-        continue;
-      }
-
-      return Object.defineProperty(
-        response,
-        "hexoraFinalUrl",
-        {
-          value: current,
-        }
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  throw new Error("Too many redirects");
-}
-
-/* =========================================================
-   LIMITED RESPONSE READER
-   ========================================================= */
-
-async function readLimitedText(
-  response,
-  maxBytes
-) {
-  const length = Number(
-    response.headers.get(
-      "content-length"
-    ) || 0
-  );
-
-  if (length > maxBytes) {
-    throw new Error(
-      "Response exceeds crawler size limit"
-    );
-  }
-
-  if (!response.body) {
-    return "";
-  }
-
-  const reader =
-    response.body.getReader();
-
-  const chunks = [];
-
-  let total = 0;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
 
   try {
-    while (true) {
-      const { done, value } =
-        await reader.read();
-
-      if (done) {
-        break;
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "user-agent": USER_AGENT,
+        "accept":
+          options.accept ||
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
       }
+    });
 
-      total += value.byteLength;
-
-      if (total > maxBytes) {
-        await reader.cancel();
-
-        throw new Error(
-          "Response exceeds crawler size limit"
-        );
-      }
-
-      chunks.push(
-        Buffer.from(value)
-      );
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
-  } finally {
-    reader.releaseLock();
-  }
 
-  return Buffer.concat(chunks)
-    .toString("utf8");
+    const type =
+      response.headers.get("content-type") || "";
+
+    const text = await response.text();
+
+    if (Buffer.byteLength(text, "utf8") > MAX_HTML) {
+      throw new Error("HTML_TOO_LARGE");
+    }
+
+    return {
+      text,
+      contentType: type,
+      status: response.status,
+      finalUrl: response.url || url
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/* =========================================================
-   HTML FETCH
-   ========================================================= */
+async function fetchWithRetry(url) {
+  let lastError;
 
-async function fetchHtml(url) {
-  let lastError = null;
+  const retries =
+    Number(process.env.CRAWL_MAX_RETRIES || 3);
 
-  for (
-    let attempt = 1;
-    attempt <= MAX_RETRIES;
-    attempt++
-  ) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const response =
-        await fetchWithRedirects(
-          url,
-          {
-            method: "GET",
-            headers: {
-              "User-Agent": USER_AGENT,
-              Accept:
-                "text/html,application/xhtml+xml;q=0.95,*/*;q=0.2",
-              "Accept-Language":
-                "en-US,en;q=0.8,as;q=0.7,hi;q=0.6",
-            },
-          }
-        );
-
-      const finalUrl =
-        normalizeUrl(
-          response.hexoraFinalUrl || url
-        ) || url;
-
-      const contentType =
-        response.headers.get(
-          "content-type"
-        ) || "";
-
-      if (!response.ok) {
-        throw new Error(
-          `HTTP ${response.status}`
-        );
-      }
-
-      const html =
-        await readLimitedText(
-          response,
-          MAX_HTML_BYTES
-        );
-
-      return {
-        ok: true,
-        status: response.status,
-        finalUrl,
-        html,
-        contentType,
-      };
+      return await fetchText(url);
     } catch (error) {
       lastError = error;
 
-      if (attempt < MAX_RETRIES) {
-        await sleep(
-          Math.min(
-            15000,
-            1000 * 2 ** (attempt - 1)
-          )
-        );
+      if (attempt < retries) {
+        await sleep(1000 * Math.pow(2, attempt - 1));
       }
     }
   }
 
-  return {
-    ok: false,
-    status: 0,
-    finalUrl: url,
-    error:
-      lastError?.message ||
-      "Fetch failed",
-  };
+  throw lastError;
 }
 
-/* =========================================================
-   SITEMAP PARSER
-   ========================================================= */
+async function getRobots(origin) {
+  const cached = robotsCache.get(origin);
 
-function extractSitemapUrls(xml) {
-  const $ = cheerio.load(
-    String(xml || ""),
-    {
-      xmlMode: true,
-    }
-  );
+  if (cached && cached.expires > Date.now()) {
+    return cached;
+  }
 
-  const urls = [];
+  const robotsUrl = `${origin}/robots.txt`;
 
-  $("loc").each((_, element) => {
-    const value = cleanText(
-      $(element).text()
+  let result = {
+    allowed: true,
+    sitemaps: [],
+    expires: Date.now() + 6 * 60 * 60 * 1000
+  };
+
+  try {
+    const response = await fetchText(
+      robotsUrl,
+      {
+        accept: "text/plain,*/*;q=0.8"
+      }
     );
 
-    const normalized =
-      normalizeUrl(value);
+    const lines = response.text.split(/\r?\n/);
 
-    if (
-      normalized &&
-      isValidCrawlUrl(normalized)
-    ) {
-      urls.push(normalized);
+    let active = false;
+
+    for (const raw of lines) {
+      const line = raw
+        .replace(/#.*/, "")
+        .trim();
+
+      if (!line) continue;
+
+      const [key, ...rest] =
+        line.split(":");
+
+      const value =
+        rest.join(":").trim();
+
+      const lower =
+        key.toLowerCase();
+
+      if (lower === "user-agent") {
+        active =
+          value === "*" ||
+          value.toLowerCase()
+            .includes("hexora");
+      }
+
+      if (
+        active &&
+        lower === "disallow" &&
+        value
+      ) {
+        if (value === "/") {
+          result.allowed = false;
+        }
+      }
+
+      if (lower === "sitemap") {
+        const sitemap =
+          normalizeUrl(value, origin);
+
+        if (sitemap) {
+          result.sitemaps.push(sitemap);
+        }
+      }
+    }
+  } catch {
+    // robots unavailable = do not crash crawler
+  }
+
+  robotsCache.set(origin, result);
+
+  return result;
+}
+
+async function robotsAllowed(url, robots) {
+  if (!robots?.allowed) return false;
+
+  // Basic robots support.
+  // Full path-rule support can be added later.
+  return true;
+}
+
+function detectLanguage(text) {
+  const sample = text.slice(0, 10000);
+
+  if (/[\u0980-\u09FF]/.test(sample)) {
+    return "bn";
+  }
+
+  if (/[\u0C00-\u0C7F]/.test(sample)) {
+    return "or";
+  }
+
+  if (/[\u0900-\u097F]/.test(sample)) {
+    return "hi";
+  }
+
+  if (/[\u0A80-\u0AFF]/.test(sample)) {
+    return "gu";
+  }
+
+  if (/[\u0B80-\u0BFF]/.test(sample)) {
+    return "ta";
+  }
+
+  return "en";
+}
+
+function extractPage(html, finalUrl) {
+  const $ = cheerio.load(html);
+
+  $("script,style,noscript,template,svg").remove();
+
+  const title = clean(
+    $("title").first().text(),
+    1000
+  );
+
+  const description = clean(
+    $('meta[name="description"]')
+      .attr("content") ||
+    $('meta[property="og:description"]')
+      .attr("content") ||
+    "",
+    3000
+  );
+
+  const canonical =
+    normalizeUrl(
+      $('link[rel="canonical"]')
+        .attr("href"),
+      finalUrl
+    ) || finalUrl;
+
+  const publishedAt =
+    $('meta[property="article:published_time"]')
+      .attr("content") ||
+    $('meta[name="date"]')
+      .attr("content") ||
+    null;
+
+  const text = clean(
+    $("body").text(),
+    MAX_CONTENT
+  );
+
+  const contentHash = hash(text);
+
+  const words =
+    text.split(/\s+/).filter(Boolean);
+
+  const images = [];
+
+  $("img").each((_, el) => {
+    if (images.length >= MAX_IMAGES) return;
+
+    const src =
+      $(el).attr("src") ||
+      $(el).attr("data-src");
+
+    const imageUrl =
+      normalizeUrl(src, finalUrl);
+
+    if (!imageUrl) return;
+
+    images.push({
+      url: imageUrl,
+      alt: clean($(el).attr("alt"), 500)
+    });
+  });
+
+  const videos = [];
+
+  $("video, source").each((_, el) => {
+    if (videos.length >= MAX_VIDEOS) return;
+
+    const src = $(el).attr("src");
+
+    const videoUrl =
+      normalizeUrl(src, finalUrl);
+
+    if (videoUrl) {
+      videos.push({
+        url: videoUrl
+      });
     }
   });
 
-  return [
-    ...new Set(urls),
-  ];
-}
+  const links = new Set();
 
-async function processSitemap(
-  sitemapUrl
-) {
-  const fetched =
-    await fetchHtml(sitemapUrl);
+  $("a[href]").each((_, el) => {
+    if (links.size >= MAX_LINKS) return;
 
-  if (!fetched.ok) {
-    return {
-      ok: false,
-      error: fetched.error,
-    };
-  }
-
-  const urls =
-    extractSitemapUrls(
-      fetched.html
-    );
-
-  let inserted = 0;
-
-  for (const url of urls.slice(0, MAX_SITEMAP_URLS)) {
-    const result =
-      await pool.query(
-        `
-        INSERT INTO crawl_queue
-          (url,status,priority,discovered_from)
-        VALUES
-          ($1,'pending',35,$2)
-        ON CONFLICT (url) DO NOTHING
-        `,
-        [
-          url,
-          sitemapUrl,
-        ]
+    const url =
+      normalizeUrl(
+        $(el).attr("href"),
+        finalUrl
       );
 
-    inserted +=
-      result.rowCount || 0;
-  }
+    if (url && validUrl(url)) {
+      links.add(url);
+    }
+  });
+
+  const qualityScore =
+    Math.min(
+      100,
+      Math.round(
+        Math.min(words.length / 10, 60) +
+        (title ? 15 : 0) +
+        (description ? 15 : 0) +
+        (images.length ? 5 : 0) +
+        (canonical ? 5 : 0)
+      )
+    );
 
   return {
-    ok: true,
-    total: urls.length,
-    inserted,
+    url: finalUrl,
+    canonicalUrl: canonical,
+    title,
+    description,
+    content: text,
+    contentHash,
+    wordCount: words.length,
+    language: detectLanguage(text),
+    publishedAt,
+    images,
+    videos,
+    links: [...links],
+    qualityScore
   };
+}
+
+async function queueUrl(
+  client,
+  url,
+  discoveredFrom = null,
+  priority = 0
+) {
+  const normalized =
+    normalizeUrl(url);
+
+  if (!normalized || !validUrl(normalized)) {
+    return false;
+  }
+
+  await client.query(
+    `
+    INSERT INTO crawl_queue
+      (url, status, priority, discovered_from, created_at)
+    VALUES
+      ($1, 'queued', $2, $3, NOW())
+    ON CONFLICT (url)
+    DO NOTHING
+    `,
+    [
+      normalized,
+      priority,
+      discoveredFrom
+    ]
+  );
+
+  return true;
+}
+
+async function ensureSeeds(client) {
+  const raw =
+    process.env.CRAWL_SEEDS || "";
+
+  const seeds = raw
+    .split(/[\n,]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  for (const seed of seeds) {
+    await queueUrl(
+      client,
+      seed,
+      null,
+      100
+    );
+  }
+}
+
+async function recoverJobs(client) {
+  await client.query(
+    `
+    UPDATE crawl_queue
+    SET
+      status = 'queued',
+      locked_at = NULL,
+      next_crawl_at = NOW()
+    WHERE
+      status = 'processing'
+      AND locked_at < NOW() - INTERVAL '30 minutes'
+    `
+  );
+}
+
+async function claimJobs(client) {
+  const result =
+    await client.query(
+      `
+      SELECT *
+      FROM crawl_queue
+      WHERE
+        status IN ('queued','failed')
+        AND COALESCE(next_crawl_at, NOW()) <= NOW()
+        AND COALESCE(attempts, 0) <
+            $1
+      ORDER BY
+        priority DESC,
+        created_at ASC
+      LIMIT $2
+      FOR UPDATE SKIP LOCKED
+      `,
+      [
+        Number(
+          process.env.CRAWL_MAX_ATTEMPTS || 4
+        ),
+        BATCH_SIZE
+      ]
+    );
+
+  const jobs = result.rows;
+
+  for (const job of jobs) {
+    await client.query(
+      `
+      UPDATE crawl_queue
+      SET
+        status = 'processing',
+        locked_at = NOW(),
+        attempts = COALESCE(attempts,0) + 1
+      WHERE id = $1
+      `,
+      [job.id]
+    );
+  }
+
+  return jobs;
+}
+
+async function savePage(
+  client,
+  page,
+  html
+) {
+  const stored =
+    await putHtml({
+      url: page.url,
+      html,
+      contentHash: page.contentHash,
+      metadata: {
+        title: page.title,
+        language: page.language
+      }
+    });
+
+  const r2Key =
+    typeof stored === "string"
+      ? stored
+      : stored?.key ||
+        stored?.r2Key ||
+        stored?.Key ||
+        null;
+
+  await client.query(
+    `
+    INSERT INTO pages (
+      url,
+      canonical_url,
+      title,
+      description,
+      excerpt,
+      content,
+      content_hash,
+      word_count,
+      language,
+      published_at,
+      last_crawled_at,
+      crawl_status,
+      quality_score,
+      image_items,
+      video_items,
+      r2_key,
+      updated_at
+    )
+    VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,
+      $10,NOW(),'success',$11,$12,$13,$14,NOW()
+    )
+    ON CONFLICT (url)
+    DO UPDATE SET
+      canonical_url = EXCLUDED.canonical_url,
+      title = EXCLUDED.title,
+      description = EXCLUDED.description,
+      excerpt = EXCLUDED.excerpt,
+      content = EXCLUDED.content,
+      content_hash = EXCLUDED.content_hash,
+      word_count = EXCLUDED.word_count,
+      language = EXCLUDED.language,
+      published_at = EXCLUDED.published_at,
+      last_crawled_at = NOW(),
+      crawl_status = 'success',
+      quality_score = EXCLUDED.quality_score,
+      image_items = EXCLUDED.image_items,
+      video_items = EXCLUDED.video_items,
+      r2_key = EXCLUDED.r2_key,
+      updated_at = NOW()
+    `,
+    [
+      page.url,
+      page.canonicalUrl,
+      page.title,
+      page.description,
+      page.content.slice(0, 3000),
+      page.content,
+      page.contentHash,
+      page.wordCount,
+      page.language,
+      page.publishedAt,
+      page.qualityScore,
+      JSON.stringify(page.images),
+      JSON.stringify(page.videos),
+      r2Key
+    ]
+  );
+
+  for (const link of page.links) {
+    await queueUrl(
+      client,
+      link,
+      page.url,
+      Math.max(
+        0,
+        page.qualityScore
+      )
+    );
+  }
+}
+
+async function markSuccess(
+  client,
+  jobId
+) {
+  await client.query(
+    `
+    UPDATE crawl_queue
+    SET
+      status = 'done',
+      locked_at = NULL,
+      next_crawl_at =
+        NOW() +
+        ($2 || ' hours')::interval,
+      last_crawled_at = NOW(),
+      last_error = NULL
+    WHERE id = $1
+    `,
+    [
+      jobId,
+      SUCCESS_RECRAWL_HOURS
+    ]
+  );
+}
+
+async function markFailure(
+  client,
+  job,
+  error
+) {
+  const attempts =
+    Number(job.attempts || 1);
+
+  const maxAttempts =
+    Number(
+      process.env.CRAWL_MAX_ATTEMPTS || 4
+    );
+
+  const permanent =
+    /HTTP 404|HTTP 410|HTML_TOO_LARGE/i
+      .test(error.message || "");
+
+  const status =
+    permanent || attempts >= maxAttempts
+      ? "dead"
+      : "failed";
+
+  await client.query(
+    `
+    UPDATE crawl_queue
+    SET
+      status = $2,
+      locked_at = NULL,
+      last_error = $3,
+      next_crawl_at =
+        CASE
+          WHEN $2 = 'failed'
+          THEN NOW() +
+               ($4 || ' minutes')::interval
+          ELSE NULL
+        END
+    WHERE id = $1
+    `,
+    [
+      job.id,
+      status,
+      clean(error.message, 2000),
+      ERROR_RETRY_MINUTES
+    ]
+  );
+}
+
+async function crawlJob(client, job) {
+  const url =
+    normalizeUrl(job.url);
+
+  if (!url) {
+    throw new Error("INVALID_URL");
+  }
+
+  const host =
+    new URL(url).hostname;
+
+  if (
+    !(await safePublicHost(host))
+  ) {
+    throw new Error(
+      "PRIVATE_OR_INVALID_HOST"
+    );
+  }
+
+  const origin =
+    new URL(url).origin;
+
+  const robots =
+    await getRobots(origin);
+
+  if (!(await robotsAllowed(url, robots))) {
+    throw new Error(
+      "ROBOTS_DISALLOWED"
+    );
+  }
+
+  const response =
+    await fetchWithRetry(url);
+
+  if (
+    !response.contentType
+      .toLowerCase()
+      .includes("html")
+  ) {
+    throw new Error(
+      "NOT_HTML"
+    );
+  }
+
+  const page =
+    extractPage(
+      response.text,
+      response.finalUrl
+    );
+
+  await savePage(
+    client,
+    page,
+    response.text
+  );
+}
+
+export async function runCrawlCycle() {
+  const client =
+    await pool.connect();
+
+  let completed = 0;
+
+  try {
+    await recoverJobs(client);
+
+    await ensureSeeds(client);
+
+    await client.query(
+      "BEGIN"
+    );
+
+    const jobs =
+      await claimJobs(client);
+
+    await client.query(
+      "COMMIT"
+    );
+
+    for (const job of jobs) {
+      try {
+        await crawlJob(
+          client,
+          job
+        );
+
+        await markSuccess(
+          client,
+          job.id
+        );
+
+        completed++;
+
+        console.log(
+          `[HEXORA] indexed: ${job.url}`
+        );
+      } catch (error) {
+        console.error(
+          `[HEXORA] failed: ${job.url}`,
+          error.message
+        );
+
+        await markFailure(
+          client,
+          job,
+          error
+        );
+      }
+    }
+
+    return {
+      jobs: jobs.length,
+      completed
+    };
+  } finally {
+    client.release();
+  }
+}
+
+export async function shutdownCrawler() {
+  await pool.end();
 }
