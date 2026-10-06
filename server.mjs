@@ -337,6 +337,7 @@ async function searchDatabase(
         p.image_items,
         p.video_items,
 
+        /* FULL TEXT RELEVANCE */
         ts_rank_cd(
           p.search_vector,
           websearch_to_tsquery(
@@ -346,6 +347,7 @@ async function searchDatabase(
           32
         ) AS fts_rank,
 
+        /* TITLE / URL / DOMAIN SIMILARITY */
         similarity(
           COALESCE(p.title, ''),
           $2
@@ -361,6 +363,7 @@ async function searchDatabase(
           $2
         ) AS domain_sim,
 
+        /* EXACT TITLE */
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) =
                lower(trim($2))
@@ -368,6 +371,7 @@ async function searchDatabase(
           ELSE 0
         END AS exact_title,
 
+        /* TITLE STARTS WITH QUERY */
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) LIKE
                lower(trim($2)) || '%'
@@ -375,6 +379,7 @@ async function searchDatabase(
           ELSE 0
         END AS title_starts,
 
+        /* TITLE CONTAINS COMPLETE QUERY PHRASE */
         CASE
           WHEN lower(trim(COALESCE(p.title, ''))) LIKE
                '%' || lower(trim($2)) || '%'
@@ -382,6 +387,7 @@ async function searchDatabase(
           ELSE 0
         END AS title_contains,
 
+        /* EXACT DOMAIN */
         CASE
           WHEN lower(trim(COALESCE(p.domain, ''))) =
                lower(trim($2))
@@ -389,6 +395,7 @@ async function searchDatabase(
           ELSE 0
         END AS exact_domain,
 
+        /* DOMAIN CONTAINS QUERY */
         CASE
           WHEN lower(COALESCE(p.domain, '')) LIKE
                '%' || lower(trim($2)) || '%'
@@ -396,6 +403,7 @@ async function searchDatabase(
           ELSE 0
         END AS domain_contains,
 
+        /* URL CONTAINS QUERY */
         CASE
           WHEN lower(COALESCE(p.url, '')) LIKE
                '%' || lower(trim($2)) || '%'
@@ -403,6 +411,7 @@ async function searchDatabase(
           ELSE 0
         END AS url_contains,
 
+        /* EXACT QUERY PHRASE IN TITLE */
         CASE
           WHEN lower(COALESCE(p.title, '')) LIKE
                '%' || lower(trim($2)) || '%'
@@ -410,6 +419,64 @@ async function searchDatabase(
           ELSE 0
         END AS title_exact_phrase,
 
+        /*
+         * TITLE WORD COVERAGE
+         *
+         * How many individual query words
+         * appear in the title.
+         */
+        (
+          SELECT COUNT(*)::double precision
+          FROM unnest($3::text[]) AS w
+          WHERE lower(COALESCE(p.title, ''))
+                ILIKE '%' || w || '%'
+        ) AS title_word_matches,
+
+        /*
+         * DESCRIPTION WORD COVERAGE
+         */
+        (
+          SELECT COUNT(*)::double precision
+          FROM unnest($3::text[]) AS w
+          WHERE lower(
+            COALESCE(p.description, '') || ' ' ||
+            COALESCE(p.excerpt, '')
+          ) ILIKE '%' || w || '%'
+        ) AS description_word_matches,
+
+        /*
+         * CONTENT WORD COVERAGE
+         */
+        (
+          SELECT COUNT(*)::double precision
+          FROM unnest($3::text[]) AS w
+          WHERE lower(COALESCE(p.content, ''))
+                ILIKE '%' || w || '%'
+        ) AS content_word_matches,
+
+        /*
+         * QUERY WORD COVERAGE RATIO
+         */
+        (
+          SELECT
+            CASE
+              WHEN cardinality($3::text[]) = 0
+              THEN 0
+              ELSE
+                COUNT(*)::double precision /
+                cardinality($3::text[])::double precision
+            END
+          FROM unnest($3::text[]) AS w
+          WHERE
+            lower(COALESCE(p.title, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.description, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.excerpt, '')) ILIKE '%' || w || '%'
+            OR lower(COALESCE(p.content, '')) ILIKE '%' || w || '%'
+        ) AS word_coverage,
+
+        /*
+         * NEWS FRESHNESS
+         */
         CASE
           WHEN $6 = 'news'
            AND p.published_at IS NOT NULL
@@ -457,14 +524,24 @@ async function searchDatabase(
           )
         )
 
+      /*
+       * Candidate pre-order.
+       *
+       * Title relevance is intentionally placed
+       * before authority so a random high-authority
+       * page containing a word does not dominate
+       * a genuinely relevant page.
+       */
       ORDER BY
         exact_title DESC,
         title_starts DESC,
         title_contains DESC,
-        exact_domain DESC,
-        domain_contains DESC,
+        title_word_matches DESC,
+        word_coverage DESC,
         fts_rank DESC,
         title_sim DESC,
+        exact_domain DESC,
+        domain_contains DESC,
         authority_score DESC NULLS LAST
 
       LIMIT ${SEARCH_CANDIDATE_LIMIT}
@@ -474,31 +551,92 @@ async function searchDatabase(
       *,
 
       (
-        /* EXACT TITLE */
-        (exact_title * 500.0)
+        /* =========================
+           TITLE RELEVANCE
+           ========================= */
 
-        /* TITLE */
-        + (title_starts * 240.0)
-        + (title_contains * 150.0)
-        + (title_exact_phrase * 100.0)
-        + (title_sim * 160.0)
+        /* Exact title */
+        (exact_title * 900.0)
 
-        /* DOMAIN */
-        + (exact_domain * 420.0)
-        + (domain_contains * 180.0)
-        + (domain_sim * 90.0)
+        /* Title starts with query */
+        + (title_starts * 420.0)
 
-        /* URL */
-        + (url_contains * 90.0)
-        + (url_sim * 55.0)
+        /* Complete phrase in title */
+        + (title_exact_phrase * 280.0)
 
-        /* FULL TEXT */
-        + LEAST(
-            180.0,
-            fts_rank * 100.0
+        /* Title contains query */
+        + (title_contains * 220.0)
+
+        /* Every individual query word in title */
+        + (
+            CASE
+              WHEN cardinality($3::text[]) > 0
+              THEN
+                (
+                  title_word_matches /
+                  cardinality($3::text[])::double precision
+                ) * 520.0
+              ELSE 0
+            END
           )
 
-        /* AUTHORITY */
+        /* =========================
+           TEXT RELEVANCE
+           ========================= */
+
+        /* Full-text search */
+        + LEAST(
+            220.0,
+            fts_rank * 120.0
+          )
+
+        /* Overall word coverage */
+        + (word_coverage * 180.0)
+
+        /* Description / excerpt relevance */
+        + (
+            CASE
+              WHEN cardinality($3::text[]) > 0
+              THEN
+                (
+                  description_word_matches /
+                  cardinality($3::text[])::double precision
+                ) * 70.0
+              ELSE 0
+            END
+          )
+
+        /* Content relevance */
+        + (
+            CASE
+              WHEN cardinality($3::text[]) > 0
+              THEN
+                (
+                  content_word_matches /
+                  cardinality($3::text[])::double precision
+                ) * 35.0
+              ELSE 0
+            END
+          )
+
+        /* PostgreSQL trigram title similarity */
+        + (title_sim * 220.0)
+
+        /* =========================
+           DOMAIN / URL
+           ========================= */
+
+        + (exact_domain * 500.0)
+        + (domain_contains * 180.0)
+        + (domain_sim * 100.0)
+
+        + (url_contains * 100.0)
+        + (url_sim * 55.0)
+
+        /* =========================
+           AUTHORITY / QUALITY
+           ========================= */
+
         + LEAST(
             80.0,
             GREATEST(
@@ -510,7 +648,6 @@ async function searchDatabase(
             )
           )
 
-        /* QUALITY */
         + LEAST(
             50.0,
             GREATEST(
@@ -522,7 +659,6 @@ async function searchDatabase(
             )
           )
 
-        /* POPULARITY */
         + LEAST(
             30.0,
             GREATEST(
@@ -534,7 +670,6 @@ async function searchDatabase(
             )
           )
 
-        /* INBOUND LINKS */
         + LEAST(
             25.0,
             GREATEST(
@@ -546,7 +681,10 @@ async function searchDatabase(
             )
           )
 
-        /* NEWS FRESHNESS */
+        /* =========================
+           FRESHNESS
+           ========================= */
+
         + CASE
             WHEN $6 = 'news'
             THEN LEAST(
@@ -559,7 +697,10 @@ async function searchDatabase(
             ELSE 0
           END
 
-        /* NAVIGATIONAL */
+        /* =========================
+           INTENT
+           ========================= */
+
         + CASE
             WHEN $6 = 'navigational'
              AND (
@@ -571,7 +712,6 @@ async function searchDatabase(
             ELSE 0
           END
 
-        /* TRANSACTIONAL */
         + CASE
             WHEN $6 = 'transactional'
              AND (
@@ -583,23 +723,45 @@ async function searchDatabase(
             ELSE 0
           END
 
-        /* INFORMATIONAL */
         + CASE
             WHEN $6 = 'informational'
-             AND title_contains = 1
-            THEN 45.0
+             AND (
+               title_contains = 1
+               OR title_word_matches > 0
+             )
+            THEN 60.0
             ELSE 0
           END
+
+        /*
+         * Small penalty:
+         *
+         * If query words are found only in the
+         * body but not title/description, prevent
+         * those pages from outranking strong title
+         * matches.
+         */
+        - CASE
+            WHEN title_word_matches = 0
+             AND description_word_matches = 0
+             AND content_word_matches > 0
+            THEN 90.0
+            ELSE 0
+          END
+
       ) AS score
 
     FROM candidate
 
     ORDER BY
       score DESC,
+
+      /* Strong tie breakers */
       exact_title DESC,
-      exact_domain DESC,
-      title_starts DESC,
+      title_word_matches DESC,
       title_contains DESC,
+      word_coverage DESC,
+      exact_domain DESC,
       fts_rank DESC,
       title_sim DESC,
       authority_score DESC NULLS LAST,
