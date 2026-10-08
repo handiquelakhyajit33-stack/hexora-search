@@ -24,6 +24,10 @@ const MAX_LIMIT = 50;
  */
 const SEARCH_CANDIDATE_LIMIT = 10000;
 
+/* =========================================================
+   DATABASE
+========================================================= */
+
 const pool = new Pool({
   connectionString: DATABASE_URL,
   max: DB_POOL_MAX,
@@ -32,6 +36,13 @@ const pool = new Pool({
   ssl: DATABASE_URL.includes("localhost")
     ? false
     : { rejectUnauthorized: false }
+});
+
+pool.on("error", (error) => {
+  console.error(
+    "[HEXORA] PostgreSQL pool error:",
+    error?.message || error
+  );
 });
 
 /* =========================================================
@@ -185,6 +196,94 @@ function resultFromRow(row) {
 }
 
 /* =========================================================
+   SEARCH DEMAND
+   =========================================================
+   Every user search is recorded.
+
+   IMPORTANT:
+   This function NEVER throws into the search request.
+   If search_queries has a problem, actual search still works.
+========================================================= */
+
+async function recordSearchDemand(query) {
+  const normalized = normalizeQuery(query)
+    .toLocaleLowerCase();
+
+  if (!normalized || normalized.length < 2) {
+    return;
+  }
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO search_queries (
+        query,
+        normalized_query,
+        search_count,
+        crawl_priority,
+        first_searched_at,
+        last_searched_at,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        1,
+        1,
+        NOW(),
+        NOW(),
+        'pending',
+        NOW(),
+        NOW()
+      )
+
+      ON CONFLICT (normalized_query)
+
+      DO UPDATE SET
+        query =
+          EXCLUDED.query,
+
+        search_count =
+          search_queries.search_count + 1,
+
+        crawl_priority =
+          LEAST(
+            search_queries.crawl_priority + 1,
+            100000
+          ),
+
+        last_searched_at =
+          NOW(),
+
+        status =
+          CASE
+            WHEN search_queries.status = 'done'
+            THEN 'pending'
+            ELSE search_queries.status
+          END,
+
+        updated_at =
+          NOW()
+      `,
+      [
+        query,
+        normalized
+      ]
+    );
+  } catch (error) {
+    /*
+     * DO NOT BREAK SEARCH.
+     */
+    console.error(
+      "[HEXORA] Search demand log failed:",
+      error?.message || error
+    );
+  }
+}
+
+/* =========================================================
    SEARCH
 ========================================================= */
 
@@ -194,17 +293,6 @@ async function searchDatabase(query, mode, page, limit) {
 
   const offset = (page - 1) * limit;
   const intent = detectIntent(query);
-
-  /*
-   * PostgreSQL parameters:
-   *
-   * $1 = query
-   * $2 = mode
-   * $3 = query words
-   * $4 = intent
-   * $5 = candidate limit
-   * $6 = offset
-   */
 
   const dataSql = `
     WITH params AS (
@@ -221,12 +309,6 @@ async function searchDatabase(query, mode, page, limit) {
     candidate AS (
       SELECT
         p.*,
-
-        /*
-         * ===================================================
-         * TITLE SIGNALS
-         * ===================================================
-         */
 
         CASE
           WHEN lower(trim(coalesce(p.title, ''))) = params.q
@@ -248,12 +330,6 @@ async function searchDatabase(query, mode, page, limit) {
           ELSE 0
         END AS title_phrase,
 
-        /*
-         * ===================================================
-         * DESCRIPTION / EXCERPT
-         * ===================================================
-         */
-
         CASE
           WHEN lower(coalesce(p.description, ''))
             LIKE '%' || params.q || '%'
@@ -268,12 +344,6 @@ async function searchDatabase(query, mode, page, limit) {
           ELSE 0
         END AS excerpt_phrase,
 
-        /*
-         * ===================================================
-         * URL
-         * ===================================================
-         */
-
         CASE
           WHEN lower(coalesce(p.url, ''))
             LIKE '%' || params.q || '%'
@@ -287,24 +357,12 @@ async function searchDatabase(query, mode, page, limit) {
           ELSE 0
         END AS exact_domain,
 
-        /*
-         * ===================================================
-         * TITLE WORD MATCH
-         * ===================================================
-         */
-
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS w(word)
           WHERE lower(coalesce(p.title, ''))
             LIKE '%' || lower(w.word) || '%'
         ) AS title_word_matches,
-
-        /*
-         * ===================================================
-         * DESCRIPTION WORD MATCH
-         * ===================================================
-         */
 
         (
           SELECT count(*)
@@ -313,12 +371,6 @@ async function searchDatabase(query, mode, page, limit) {
             LIKE '%' || lower(w.word) || '%'
         ) AS description_word_matches,
 
-        /*
-         * ===================================================
-         * EXCERPT WORD MATCH
-         * ===================================================
-         */
-
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS w(word)
@@ -326,24 +378,12 @@ async function searchDatabase(query, mode, page, limit) {
             LIKE '%' || lower(w.word) || '%'
         ) AS excerpt_word_matches,
 
-        /*
-         * ===================================================
-         * CONTENT WORD MATCH
-         * ===================================================
-         */
-
         (
           SELECT count(*)
           FROM unnest($3::text[]) AS w(word)
           WHERE lower(coalesce(p.content, ''))
             LIKE '%' || lower(w.word) || '%'
         ) AS content_word_matches,
-
-        /*
-         * ===================================================
-         * FULL TEXT
-         * ===================================================
-         */
 
         ts_rank_cd(
           coalesce(
@@ -354,33 +394,15 @@ async function searchDatabase(query, mode, page, limit) {
           32
         ) AS fts_rank,
 
-        /*
-         * ===================================================
-         * TRIGRAM TITLE SIMILARITY
-         * ===================================================
-         */
-
         similarity(
           lower(coalesce(p.title, '')),
           params.q
         ) AS title_similarity,
 
-        /*
-         * ===================================================
-         * DOMAIN SIMILARITY
-         * ===================================================
-         */
-
         similarity(
           lower(coalesce(p.domain, '')),
           params.q
         ) AS domain_similarity,
-
-        /*
-         * ===================================================
-         * FRESHNESS
-         * ===================================================
-         */
 
         CASE
           WHEN p.published_at IS NULL THEN 0.0
@@ -408,12 +430,6 @@ async function searchDatabase(query, mode, page, limit) {
 
       WHERE
         (
-          /*
-           * -------------------------------------------------
-           * STRONG TITLE MATCHES
-           * -------------------------------------------------
-           */
-
           lower(trim(coalesce(p.title, ''))) = params.q
 
           OR lower(coalesce(p.title, ''))
@@ -421,12 +437,6 @@ async function searchDatabase(query, mode, page, limit) {
 
           OR lower(coalesce(p.title, ''))
              LIKE '%' || params.q || '%'
-
-          /*
-           * -------------------------------------------------
-           * MULTI-WORD FTS
-           * -------------------------------------------------
-           */
 
           OR (
             array_length($3::text[], 1) > 1
@@ -436,32 +446,14 @@ async function searchDatabase(query, mode, page, limit) {
             ) @@ params.tsq
           )
 
-          /*
-           * -------------------------------------------------
-           * DESCRIPTION / EXCERPT PHRASE
-           * -------------------------------------------------
-           */
-
           OR lower(coalesce(p.description, ''))
              LIKE '%' || params.q || '%'
 
           OR lower(coalesce(p.excerpt, ''))
              LIKE '%' || params.q || '%'
 
-          /*
-           * -------------------------------------------------
-           * URL PHRASE
-           * -------------------------------------------------
-           */
-
           OR lower(coalesce(p.url, ''))
              LIKE '%' || params.q || '%'
-
-          /*
-           * -------------------------------------------------
-           * WORD MATCH IN TITLE
-           * -------------------------------------------------
-           */
 
           OR EXISTS (
             SELECT 1
@@ -469,12 +461,6 @@ async function searchDatabase(query, mode, page, limit) {
             WHERE lower(coalesce(p.title, ''))
               LIKE '%' || lower(w.word) || '%'
           )
-
-          /*
-           * -------------------------------------------------
-           * MULTI-WORD DESCRIPTION MATCH
-           * -------------------------------------------------
-           */
 
           OR (
             array_length($3::text[], 1) > 1
@@ -486,12 +472,6 @@ async function searchDatabase(query, mode, page, limit) {
             ) >= 2
           )
 
-          /*
-           * -------------------------------------------------
-           * MULTI-WORD EXCERPT MATCH
-           * -------------------------------------------------
-           */
-
           OR (
             array_length($3::text[], 1) > 1
             AND (
@@ -502,18 +482,6 @@ async function searchDatabase(query, mode, page, limit) {
             ) >= 2
           )
 
-          /*
-           * -------------------------------------------------
-           * CONTENT-ONLY MATCH
-           *
-           * Only allow content matching for multi-word
-           * searches when at least 50% of query words match.
-           *
-           * This is the important fix for:
-           * India -> Tamil Nadu / random pages
-           * -------------------------------------------------
-           */
-
           OR (
             array_length($3::text[], 1) > 1
 
@@ -523,7 +491,9 @@ async function searchDatabase(query, mode, page, limit) {
               WHERE lower(coalesce(p.content, ''))
                 LIKE '%' || lower(w.word) || '%'
             )::numeric
+
             >=
+
             GREATEST(
               CEIL(
                 array_length($3::text[], 1) * 0.5
@@ -542,35 +512,17 @@ async function searchDatabase(query, mode, page, limit) {
       SELECT
         candidate.*,
 
-        /*
-         * ===================================================
-         * TITLE COVERAGE
-         * ===================================================
-         */
-
         LEAST(
           title_word_matches::numeric /
           ${wordCount}::numeric,
           1
         ) AS title_coverage,
 
-        /*
-         * ===================================================
-         * DESCRIPTION COVERAGE
-         * ===================================================
-         */
-
         LEAST(
           description_word_matches::numeric /
           ${wordCount}::numeric,
           1
         ) AS description_coverage,
-
-        /*
-         * ===================================================
-         * CONTENT COVERAGE
-         * ===================================================
-         */
 
         LEAST(
           content_word_matches::numeric /
@@ -585,44 +537,23 @@ async function searchDatabase(query, mode, page, limit) {
       SELECT
         scored.*,
 
-        /*
-         * ===================================================
-         * FINAL RELEVANCE SCORE
-         * ===================================================
-         */
-
         (
-          /*
-           * EXACT TITLE
-           */
           exact_title * 10000000
 
           +
 
-          /*
-           * TITLE START
-           */
           title_starts * 1500000
 
           +
 
-          /*
-           * TITLE PHRASE
-           */
           title_phrase * 800000
 
           +
 
-          /*
-           * TITLE COVERAGE
-           */
           title_coverage * 700000
 
           +
 
-          /*
-           * TITLE WORDS
-           */
           LEAST(
             title_word_matches,
             ${wordCount}
@@ -630,16 +561,10 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * TITLE SIMILARITY
-           */
           title_similarity * 150000
 
           +
 
-          /*
-           * FULL TEXT
-           */
           LEAST(
             fts_rank * 100000,
             500000
@@ -647,51 +572,30 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * DESCRIPTION PHRASE
-           */
           description_phrase * 50000
 
           +
 
-          /*
-           * DESCRIPTION COVERAGE
-           */
           description_coverage * 50000
 
           +
 
-          /*
-           * EXCERPT PHRASE
-           */
           excerpt_phrase * 25000
 
           +
 
-          /*
-           * URL
-           */
           url_phrase * 15000
 
           +
 
-          /*
-           * EXACT DOMAIN
-           */
           exact_domain * 100000
 
           +
 
-          /*
-           * DOMAIN SIMILARITY
-           */
           domain_similarity * 10000
 
           +
 
-          /*
-           * AUTHORITY
-           */
           LEAST(
             GREATEST(
               coalesce(authority_score, 0),
@@ -702,9 +606,6 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * QUALITY
-           */
           LEAST(
             GREATEST(
               coalesce(quality_score, 0),
@@ -715,9 +616,6 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * POPULARITY
-           */
           LEAST(
             GREATEST(
               coalesce(popularity_score, 0),
@@ -728,9 +626,6 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * INBOUND LINKS
-           */
           LEAST(
             GREATEST(
               coalesce(inbound_links, 0),
@@ -741,29 +636,16 @@ async function searchDatabase(query, mode, page, limit) {
 
           +
 
-          /*
-           * FRESHNESS
-           */
           freshness * 5000
 
           +
 
-          /*
-           * SMALL CONTENT SUPPORT
-           */
           LEAST(
             content_word_matches,
             ${wordCount}
           ) * 300
 
           -
-
-          /*
-           * =================================================
-           * STRONG PENALTY:
-           * content-only result
-           * =================================================
-           */
 
           CASE
             WHEN
@@ -779,12 +661,6 @@ async function searchDatabase(query, mode, page, limit) {
           END
 
           -
-
-          /*
-           * =================================================
-           * TITLE-IRRELEVANT LONG ARTICLE PENALTY
-           * =================================================
-           */
 
           CASE
             WHEN
@@ -803,13 +679,6 @@ async function searchDatabase(query, mode, page, limit) {
 
     SELECT *
     FROM ranked
-
-    /*
-     * =======================================================
-     * IMPORTANT:
-     * SCORE FIRST
-     * =======================================================
-     */
 
     ORDER BY
       final_score DESC,
@@ -840,12 +709,6 @@ async function searchDatabase(query, mode, page, limit) {
     OFFSET $6
   `;
 
-  /*
-   * =======================================================
-   * COUNT
-   * =======================================================
-   */
-
   const countSql = `
     SELECT COUNT(*)::int AS count
 
@@ -853,10 +716,6 @@ async function searchDatabase(query, mode, page, limit) {
 
     WHERE
       (
-        /*
-         * Exact / title
-         */
-
         lower(trim(coalesce(p.title, '')))
           = lower(trim($1::text))
 
@@ -864,10 +723,6 @@ async function searchDatabase(query, mode, page, limit) {
 
         lower(coalesce(p.title, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
-
-        /*
-         * Description / excerpt
-         */
 
         OR
 
@@ -879,18 +734,10 @@ async function searchDatabase(query, mode, page, limit) {
         lower(coalesce(p.excerpt, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
 
-        /*
-         * URL
-         */
-
         OR
 
         lower(coalesce(p.url, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
-
-        /*
-         * FTS
-         */
 
         OR
 
@@ -903,20 +750,12 @@ async function searchDatabase(query, mode, page, limit) {
           $1::text
         )
 
-        /*
-         * Title word
-         */
-
         OR EXISTS (
           SELECT 1
           FROM unnest($2::text[]) AS w(word)
           WHERE lower(coalesce(p.title, ''))
             LIKE '%' || lower(w.word) || '%'
         )
-
-        /*
-         * Multi-word description
-         */
 
         OR (
           array_length($2::text[], 1) > 1
@@ -928,10 +767,6 @@ async function searchDatabase(query, mode, page, limit) {
               LIKE '%' || lower(w.word) || '%'
           ) >= 2
         )
-
-        /*
-         * Multi-word content
-         */
 
         OR (
           array_length($2::text[], 1) > 1
@@ -947,12 +782,6 @@ async function searchDatabase(query, mode, page, limit) {
 
       ${modeCondition(mode)}
   `;
-
-  /*
-   * =======================================================
-   * SUGGESTIONS
-   * =======================================================
-   */
 
   const suggestionSql = `
     SELECT
@@ -1007,9 +836,7 @@ async function searchDatabase(query, mode, page, limit) {
   ]);
 
   /*
-   * =======================================================
    * DOMAIN DIVERSIFICATION
-   * =======================================================
    */
 
   const rows = dataResult.rows || [];
@@ -1027,7 +854,7 @@ async function searchDatabase(query, mode, page, limit) {
   const domainCount = new Map();
 
   /*
-   * Exact title results are always first.
+   * Exact title results first.
    */
 
   for (const row of exact) {
@@ -1459,9 +1286,9 @@ const server =
         const pathname =
           requestUrl.pathname;
 
-        /*
-         * HEALTH
-         */
+        /* =================================================
+           HEALTH
+        ================================================= */
 
         if (
           pathname === "/health" ||
@@ -1479,9 +1306,9 @@ const server =
           return;
         }
 
-        /*
-         * SEARCH
-         */
+        /* =================================================
+           SEARCH
+        ================================================= */
 
         if (
           pathname === "/search" ||
@@ -1533,6 +1360,12 @@ const server =
             return;
           }
 
+          /*
+           * ===============================================
+           * ACTUAL SEARCH
+           * ===============================================
+           */
+
           const data =
             await searchDatabase(
               query,
@@ -1540,6 +1373,26 @@ const server =
               page,
               limit
             );
+
+          /*
+           * ===============================================
+           * DEMAND TRACKING
+           *
+           * IMPORTANT:
+           * Do NOT await.
+           *
+           * Search response goes to user immediately.
+           * If tracking fails, search still works.
+           * ===============================================
+           */
+
+          recordSearchDemand(query)
+            .catch((error) => {
+              console.error(
+                "[HEXORA] Demand tracking error:",
+                error?.message || error
+              );
+            });
 
           sendJson(
             res,
@@ -1553,9 +1406,9 @@ const server =
           return;
         }
 
-        /*
-         * NEWS
-         */
+        /* =================================================
+           NEWS
+        ================================================= */
 
         if (
           pathname === "/news" ||
@@ -1586,9 +1439,9 @@ const server =
           return;
         }
 
-        /*
-         * IMAGES
-         */
+        /* =================================================
+           IMAGES
+        ================================================= */
 
         if (
           pathname === "/images" ||
@@ -1629,9 +1482,9 @@ const server =
           return;
         }
 
-        /*
-         * VIDEOS
-         */
+        /* =================================================
+           VIDEOS
+        ================================================= */
 
         if (
           pathname === "/videos" ||
@@ -1672,9 +1525,9 @@ const server =
           return;
         }
 
-        /*
-         * MAPS
-         */
+        /* =================================================
+           MAPS
+        ================================================= */
 
         if (
           pathname === "/maps" ||
@@ -1692,9 +1545,9 @@ const server =
           return;
         }
 
-        /*
-         * STATIC FRONTEND
-         */
+        /* =================================================
+           STATIC FRONTEND
+        ================================================= */
 
         if (req.method === "GET") {
           if (
@@ -1715,7 +1568,7 @@ const server =
 
       } catch (error) {
         console.error(
-          "SERVER ERROR:",
+          "[HEXORA] SERVER ERROR:",
           error
         );
 
@@ -1727,7 +1580,8 @@ const server =
             error:
               "Internal server error",
             message:
-              error.message
+              error?.message ||
+              "Unknown error"
           }
         );
       }
@@ -1744,6 +1598,10 @@ server.listen(
   () => {
     console.log(
       `HEXORA server running on port ${PORT}`
+    );
+
+    console.log(
+      "[HEXORA] Search-demand tracking enabled"
     );
   }
 );
