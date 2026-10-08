@@ -20,24 +20,22 @@
   --cyan:#00dfff;
   --cyan2:#35f4ff;
   --blue:#0879ff;
+  --green:#28ef9d;
+  --red:#ff5c7c;
   --shadow:0 25px 80px rgba(0,0,0,.48);
   --max:1500px;
 }
 
 *{box-sizing:border-box}
 
-html{
+html,body{
   width:100%;
   min-height:100%;
+  margin:0;
   background:var(--bg);
 }
 
 body{
-  margin:0;
-  width:100%;
-  min-height:100vh;
-  min-height:100dvh;
-  background:var(--bg);
   color:var(--text);
   font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,
   "Segoe UI",Roboto,Arial,sans-serif;
@@ -45,14 +43,13 @@ body{
   -webkit-text-size-adjust:100%;
 }
 
-button,input{font:inherit}
+button,input,select,textarea{font:inherit}
 button{
   cursor:pointer;
   -webkit-tap-highlight-color:transparent;
 }
-button:focus,input:focus{outline:none}
+button:focus,input:focus,textarea:focus,select:focus{outline:none}
 a{text-decoration:none;color:inherit}
-img{max-width:100%}
 
 .app{
   width:100%;
@@ -73,11 +70,7 @@ img{max-width:100%}
   width:252px;
   padding:22px 16px 18px;
   border-right:1px solid rgba(0,216,255,.12);
-  background:linear-gradient(
-    180deg,
-    rgba(2,10,17,.97),
-    rgba(2,11,19,.93)
-  );
+  background:linear-gradient(180deg,rgba(2,10,17,.97),rgba(2,11,19,.93));
   backdrop-filter:blur(22px);
   -webkit-backdrop-filter:blur(22px);
   display:flex;
@@ -151,12 +144,7 @@ img{max-width:100%}
 .side-btn.active{
   color:#fff;
   border-color:rgba(0,221,255,.16);
-  background:
-    linear-gradient(
-      90deg,
-      rgba(0,126,255,.27),
-      rgba(0,218,255,.07)
-    );
+  background:linear-gradient(90deg,rgba(0,126,255,.27),rgba(0,218,255,.07));
   box-shadow:inset 3px 0 0 var(--cyan);
 }
 
@@ -168,13 +156,8 @@ img{max-width:100%}
   border-radius:18px;
   padding:15px;
   background:
-    radial-gradient(
-      circle at 70% 0%,
-      rgba(0,219,255,.18),
-      transparent 45%
-    ),
+    radial-gradient(circle at 70% 0%,rgba(0,219,255,.18),transparent 45%),
     rgba(2,22,36,.82);
-  box-shadow:0 0 35px rgba(0,183,255,.07);
 }
 
 .ai-orb{
@@ -185,14 +168,7 @@ img{max-width:100%}
   place-items:center;
   margin-bottom:12px;
   font-size:24px;
-  background:
-    radial-gradient(
-      circle,
-      #63f8ff 0 8%,
-      #0087ff 30%,
-      #062c51 68%,
-      transparent 69%
-    );
+  background:radial-gradient(circle,#63f8ff 0 8%,#0087ff 30%,#062c51 68%,transparent 69%);
   box-shadow:0 0 28px rgba(0,222,255,.45);
 }
 
@@ -255,7 +231,6 @@ img{max-width:100%}
   border-radius:50%;
   background:#28ef9d;
   box-shadow:0 0 12px #28ef9d;
-  flex:none;
 }
 
 .top-actions{
@@ -312,22 +287,12 @@ img{max-width:100%}
   height:460px;
   border-radius:50%;
   background:
-    radial-gradient(
-      ellipse at 48% 46%,
-      rgba(12,44,70,.96) 0 45%,
-      rgba(4,19,34,.92) 62%,
-      transparent 69%
-    ),
-    radial-gradient(
-      ellipse at 50% 52%,
-      rgba(0,220,255,.18),
-      transparent 62%
-    );
+    radial-gradient(ellipse at 48% 46%,rgba(12,44,70,.96) 0 45%,rgba(4,19,34,.92) 62%,transparent 69%),
+    radial-gradient(ellipse at 50% 52%,rgba(0,220,255,.18),transparent 62%);
   box-shadow:
     0 -35px 90px rgba(0,188,255,.18),
     inset 0 25px 45px rgba(0,221,255,.10),
     inset 0 -55px 90px rgba(0,0,0,.85);
-  opacity:.98;
 }
 
 .earth-glow:before{
@@ -336,31 +301,11 @@ img{max-width:100%}
   inset:3% 2%;
   border-radius:50%;
   background:
-    radial-gradient(
-      ellipse at 40% 37%,
-      rgba(0,181,255,.25),
-      transparent 18%
-    ),
-    radial-gradient(
-      ellipse at 63% 43%,
-      rgba(0,226,255,.19),
-      transparent 20%
-    ),
-    radial-gradient(
-      ellipse at 29% 57%,
-      rgba(24,111,66,.27),
-      transparent 17%
-    ),
-    radial-gradient(
-      ellipse at 58% 63%,
-      rgba(25,119,76,.22),
-      transparent 18%
-    ),
-    radial-gradient(
-      ellipse at 76% 55%,
-      rgba(17,106,69,.22),
-      transparent 14%
-    );
+    radial-gradient(ellipse at 40% 37%,rgba(0,181,255,.25),transparent 18%),
+    radial-gradient(ellipse at 63% 43%,rgba(0,226,255,.19),transparent 20%),
+    radial-gradient(ellipse at 29% 57%,rgba(24,111,66,.27),transparent 17%),
+    radial-gradient(ellipse at 58% 63%,rgba(25,119,76,.22),transparent 18%),
+    radial-gradient(ellipse at 76% 55%,rgba(17,106,69,.22),transparent 14%);
   filter:blur(5px);
 }
 
@@ -370,9 +315,7 @@ img{max-width:100%}
   inset:-7%;
   border-radius:50%;
   border:2px solid rgba(0,229,255,.55);
-  box-shadow:
-    0 0 35px rgba(0,217,255,.30),
-    0 0 100px rgba(0,143,255,.18);
+  box-shadow:0 0 35px rgba(0,217,255,.30),0 0 100px rgba(0,143,255,.18);
 }
 
 .hero-content{
@@ -402,18 +345,10 @@ img{max-width:100%}
   line-height:.88;
   font-weight:1000;
   letter-spacing:-.07em;
-  background:
-    linear-gradient(
-      115deg,
-      #fff 20%,
-      #d9faff 44%,
-      #00dfff 67%,
-      #8afaff
-    );
+  background:linear-gradient(115deg,#fff 20%,#d9faff 44%,#00dfff 67%,#8afaff);
   -webkit-background-clip:text;
   background-clip:text;
   color:transparent;
-  filter:drop-shadow(0 0 26px rgba(0,218,255,.15));
 }
 
 .hero-tag{
@@ -434,9 +369,7 @@ img{max-width:100%}
   border:1px solid rgba(0,220,255,.43);
   border-radius:18px;
   background:rgba(2,12,20,.82);
-  box-shadow:
-    0 12px 45px rgba(0,0,0,.42),
-    0 0 30px rgba(0,210,255,.08);
+  box-shadow:0 12px 45px rgba(0,0,0,.42),0 0 30px rgba(0,210,255,.08);
 }
 
 .search-icon{
@@ -466,7 +399,6 @@ img{max-width:100%}
   color:#00131a;
   background:linear-gradient(135deg,#00dfff,#50f5ff);
   font-weight:900;
-  box-shadow:0 0 22px rgba(0,224,255,.18);
   flex:none;
 }
 
@@ -484,7 +416,6 @@ img{max-width:100%}
   color:#8fa5b8;
   padding:4px 0;
   font-size:12px;
-  white-space:nowrap;
 }
 
 .mode:hover,
@@ -509,12 +440,7 @@ img{max-width:100%}
   min-height:82px;
   border:1px solid rgba(45,173,255,.13);
   border-radius:16px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(8,31,50,.82),
-      rgba(4,15,26,.82)
-    );
+  background:linear-gradient(145deg,rgba(8,31,50,.82),rgba(4,15,26,.82));
   padding:15px;
   transition:.2s ease;
   color:#fff;
@@ -524,7 +450,6 @@ img{max-width:100%}
 .quick-card:hover{
   transform:translateY(-3px);
   border-color:rgba(0,224,255,.35);
-  box-shadow:0 15px 35px rgba(0,0,0,.2);
 }
 
 .quick-card .q-ico{
@@ -544,9 +469,7 @@ img{max-width:100%}
   font-size:10px;
 }
 
-.section{
-  margin-top:28px;
-}
+.section{margin-top:28px}
 
 .section-head{
   display:flex;
@@ -599,7 +522,6 @@ img{max-width:100%}
 .news-card h3{
   margin:12px 0 8px;
   font-size:14px;
-  line-height:1.4;
 }
 
 .news-card p{
@@ -634,9 +556,7 @@ img{max-width:100%}
   line-height:1.55;
 }
 
-.map-panel{
-  padding:18px;
-}
+.map-panel{padding:18px}
 
 .map-panel-head{
   display:flex;
@@ -651,24 +571,13 @@ img{max-width:100%}
   font-weight:850;
 }
 
-.panel-title i{
-  font-style:normal;
-  margin-right:6px;
-}
-
 .map-card{
   min-height:360px;
   border-radius:16px;
   border:1px solid rgba(0,219,255,.18);
   overflow:hidden;
   position:relative;
-  background:
-    radial-gradient(
-      circle at 50% 50%,
-      rgba(0,197,255,.15),
-      transparent 36%
-    ),
-    #020a12;
+  background:#020a12;
 }
 
 #mapPreview{
@@ -676,22 +585,9 @@ img{max-width:100%}
   inset:0;
   opacity:.72;
   background:
-    radial-gradient(
-      circle at 45% 45%,
-      rgba(0,218,255,.2),
-      transparent 20%
-    ),
-    radial-gradient(
-      ellipse at 55% 52%,
-      #0a3b52 0 17%,
-      #052133 18% 32%,
-      transparent 33%
-    ),
-    linear-gradient(
-      145deg,
-      #03121e,
-      #061c2b
-    );
+    radial-gradient(circle at 45% 45%,rgba(0,218,255,.2),transparent 20%),
+    radial-gradient(ellipse at 55% 52%,#0a3b52 0 17%,#052133 18% 32%,transparent 33%),
+    linear-gradient(145deg,#03121e,#061c2b);
 }
 
 .map-cover{
@@ -700,17 +596,10 @@ img{max-width:100%}
   display:flex;
   align-items:flex-end;
   padding:28px;
-  background:
-    linear-gradient(
-      180deg,
-      transparent 20%,
-      rgba(1,7,12,.92) 100%
-    );
+  background:linear-gradient(180deg,transparent 20%,rgba(1,7,12,.92) 100%);
 }
 
-.map-cover-content{
-  max-width:590px;
-}
+.map-cover-content{max-width:590px}
 
 .map-cover h2{
   margin:0;
@@ -730,8 +619,7 @@ img{max-width:100%}
   gap:8px;
 }
 
-.primary,
-.secondary{
+.primary,.secondary{
   border-radius:11px;
   padding:10px 14px;
   font-size:11px;
@@ -750,11 +638,6 @@ img{max-width:100%}
   color:#d4e8f4;
 }
 
-.secondary:hover{
-  border-color:rgba(0,218,255,.5);
-  color:#fff;
-}
-
 footer{
   color:#52697b;
   font-size:10px;
@@ -762,7 +645,7 @@ footer{
   padding:18px 0 0;
 }
 
-/* ================= SEARCH ================= */
+/* SEARCH */
 
 #searchView{
   display:none;
@@ -770,9 +653,7 @@ footer{
   min-height:calc(100vh - 72px);
 }
 
-#searchView.active{
-  display:block;
-}
+#searchView.active{display:block}
 
 .results-toolbar{
   display:flex;
@@ -825,7 +706,7 @@ footer{
   margin-top:9px;
 }
 
-/* ================= MAP ================= */
+/* MAP */
 
 #mapView{
   display:none;
@@ -835,9 +716,7 @@ footer{
   background:#02070b;
 }
 
-#mapView.active{
-  display:block;
-}
+#mapView.active{display:block}
 
 #hexoraMap{
   position:absolute;
@@ -863,7 +742,6 @@ footer{
   background:rgba(2,11,19,.88);
   backdrop-filter:blur(18px);
   pointer-events:auto;
-  box-shadow:0 12px 35px rgba(0,0,0,.32);
 }
 
 .map-search input{
@@ -871,15 +749,12 @@ footer{
   min-width:0;
   height:42px;
   border:0;
-  outline:0;
   color:#fff;
   background:transparent;
   padding:0 10px;
 }
 
-.map-search input::placeholder{
-  color:#70879a;
-}
+.map-search input::placeholder{color:#70879a}
 
 .map-search button{
   border:0;
@@ -921,7 +796,6 @@ footer{
   font-size:9px;
   letter-spacing:.2em;
   font-weight:900;
-  text-shadow:0 0 12px #00dfff;
 }
 
 #mapInfo{
@@ -935,7 +809,6 @@ footer{
   border-radius:10px;
   padding:8px 11px;
   font-size:10px;
-  backdrop-filter:blur(14px);
 }
 
 .hexora-location-marker{
@@ -944,21 +817,328 @@ footer{
   border-radius:50%;
   background:#00dfff;
   border:3px solid #fff;
-  box-shadow:
-    0 0 0 6px rgba(0,223,255,.2),
-    0 0 25px rgba(0,223,255,.85);
+  box-shadow:0 0 0 6px rgba(0,223,255,.2),0 0 25px rgba(0,223,255,.85);
 }
 
-/* ================= RESPONSIVE ================= */
+/* ================= ADS ================= */
+
+#adsView{
+  display:none;
+  padding:28px;
+  min-height:calc(100vh - 72px);
+}
+
+#adsView.active{display:block}
+
+.ads-shell{
+  width:min(1150px,100%);
+  margin:auto;
+}
+
+.ads-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:20px;
+  margin-bottom:22px;
+}
+
+.ads-title{
+  font-size:32px;
+  font-weight:950;
+}
+
+.ads-subtitle{
+  margin-top:7px;
+  color:#7f96a9;
+  font-size:12px;
+  line-height:1.6;
+}
+
+.ads-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  padding:8px 11px;
+  border-radius:999px;
+  border:1px solid rgba(0,223,255,.18);
+  background:rgba(0,223,255,.06);
+  color:#72edff;
+  font-size:10px;
+  font-weight:800;
+}
+
+.ads-grid{
+  display:grid;
+  grid-template-columns:1.25fr .75fr;
+  gap:14px;
+}
+
+.ads-card{
+  border:1px solid rgba(0,218,255,.13);
+  border-radius:18px;
+  background:linear-gradient(145deg,rgba(7,25,42,.86),rgba(3,13,23,.86));
+  padding:20px;
+}
+
+.ads-card h3{
+  margin:0 0 5px;
+  font-size:15px;
+}
+
+.ads-card p{
+  margin:0 0 17px;
+  color:#7890a3;
+  font-size:11px;
+  line-height:1.55;
+}
+
+.balance-card{
+  position:relative;
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 85% 15%,rgba(0,222,255,.22),transparent 35%),
+    linear-gradient(135deg,rgba(4,35,53,.95),rgba(3,14,25,.95));
+}
+
+.balance-label{
+  color:#87a1b5;
+  font-size:11px;
+}
+
+.balance-value{
+  margin-top:8px;
+  font-size:34px;
+  font-weight:950;
+  color:#fff;
+}
+
+.balance-provider{
+  margin-top:5px;
+  color:#5fdfff;
+  font-size:10px;
+}
+
+.form-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+
+.ad-field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+
+.ad-field.full{grid-column:1/-1}
+
+.ad-field label{
+  color:#8ea5b8;
+  font-size:10px;
+  font-weight:700;
+}
+
+.ad-field input,
+.ad-field textarea,
+.ad-field select{
+  width:100%;
+  border:1px solid rgba(0,219,255,.13);
+  border-radius:10px;
+  padding:11px 12px;
+  color:#fff;
+  background:rgba(1,10,18,.72);
+}
+
+.ad-field textarea{
+  min-height:82px;
+  resize:vertical;
+}
+
+.amount-row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.amount-btn{
+  border:1px solid rgba(0,219,255,.16);
+  background:rgba(0,17,29,.75);
+  color:#ccebf4;
+  border-radius:10px;
+  padding:9px 12px;
+  font-size:11px;
+}
+
+.amount-btn:hover,
+.amount-btn.active{
+  border-color:#00dfff;
+  color:#00eaff;
+  background:rgba(0,219,255,.08);
+}
+
+.pay-btn{
+  width:100%;
+  margin-top:14px;
+  border:0;
+  border-radius:12px;
+  padding:13px;
+  background:linear-gradient(135deg,#00dfff,#4df5ff);
+  color:#001319;
+  font-weight:950;
+}
+
+.pay-btn:disabled{
+  opacity:.5;
+  cursor:not-allowed;
+}
+
+.ads-status{
+  display:none;
+  margin-top:12px;
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid rgba(0,219,255,.15);
+  background:rgba(0,219,255,.05);
+  color:#9bdff0;
+  font-size:10px;
+  line-height:1.5;
+}
+
+.ads-status.show{display:block}
+
+.ads-status.error{
+  color:#ff9caf;
+  border-color:rgba(255,92,124,.22);
+  background:rgba(255,92,124,.05);
+}
+
+.ads-status.success{
+  color:#78f4bc;
+  border-color:rgba(40,239,157,.22);
+  background:rgba(40,239,157,.05);
+}
+
+.campaign-section{
+  margin-top:14px;
+}
+
+.campaign-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:10px;
+}
+
+.campaign-table th,
+.campaign-table td{
+  padding:10px 8px;
+  text-align:left;
+  border-bottom:1px solid rgba(255,255,255,.05);
+}
+
+.campaign-table th{
+  color:#7590a4;
+  font-weight:700;
+}
+
+.campaign-table td{
+  color:#cfe2ec;
+}
+
+.ads-note{
+  margin-top:12px;
+  color:#5f7689;
+  font-size:9px;
+  line-height:1.6;
+}
+
+/* PAYMENT MODAL */
+
+.payment-overlay{
+  position:fixed;
+  inset:0;
+  z-index:3000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(0,4,8,.76);
+  backdrop-filter:blur(12px);
+}
+
+.payment-overlay.open{display:flex}
+
+.payment-box{
+  width:min(460px,100%);
+  border:1px solid rgba(0,223,255,.24);
+  border-radius:20px;
+  background:linear-gradient(145deg,#071a2b,#020a12);
+  box-shadow:0 30px 100px rgba(0,0,0,.7);
+  padding:22px;
+}
+
+.payment-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:15px;
+  margin-bottom:15px;
+}
+
+.payment-head h3{
+  margin:0;
+  font-size:17px;
+}
+
+.close-payment{
+  width:34px;
+  height:34px;
+  border-radius:10px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.04);
+  color:#bcd0dd;
+}
+
+.payment-amount{
+  padding:13px;
+  border-radius:12px;
+  background:rgba(0,219,255,.06);
+  border:1px solid rgba(0,219,255,.12);
+  margin-bottom:14px;
+}
+
+.payment-amount span{
+  display:block;
+  color:#7f98ab;
+  font-size:10px;
+}
+
+.payment-amount b{
+  display:block;
+  margin-top:3px;
+  font-size:24px;
+}
+
+#paypalButtons{
+  min-height:45px;
+}
+
+.payment-help{
+  margin-top:12px;
+  color:#60798c;
+  font-size:9px;
+  line-height:1.6;
+}
+
+/* RESPONSIVE */
 
 @media(max-width:1100px){
-  .quick-grid{
-    grid-template-columns:repeat(3,1fr);
-  }
+  .quick-grid{grid-template-columns:repeat(3,1fr)}
+  .tools-grid{grid-template-columns:repeat(2,1fr)}
+}
 
-  .tools-grid{
-    grid-template-columns:repeat(2,1fr);
-  }
+@media(max-width:900px){
+  .ads-grid{grid-template-columns:1fr}
 }
 
 @media(max-width:800px){
@@ -989,9 +1169,7 @@ footer{
     padding:12px 8px;
   }
 
-  .side-btn .ico{
-    width:auto;
-  }
+  .side-btn .ico{width:auto}
 
   .main{
     margin-left:72px;
@@ -1002,9 +1180,7 @@ footer{
     inset:72px 0 0 72px;
   }
 
-  .topbar{
-    padding:0 15px;
-  }
+  .topbar{padding:0 15px}
 
   .hero{
     min-height:510px;
@@ -1016,53 +1192,34 @@ footer{
     width:calc(100% - 24px);
   }
 
-  .quick-grid{
-    grid-template-columns:repeat(2,1fr);
-  }
-
-  .news-grid{
-    grid-template-columns:1fr;
-  }
+  .quick-grid{grid-template-columns:repeat(2,1fr)}
+  .news-grid{grid-template-columns:1fr}
 
   .news-card{
     border-right:0;
     border-bottom:1px solid rgba(255,255,255,.06);
   }
 
-  .news-card:last-child{
-    border-bottom:0;
-  }
+  .news-card:last-child{border-bottom:0}
 
-  .map-card{
-    min-height:330px;
-  }
+  .map-card{min-height:330px}
 
-  #searchView{
-    padding:20px 14px;
-  }
+  #searchView,#adsView{padding:20px 14px}
 }
 
 @media(max-width:520px){
-  .top-status{
-    display:none;
-  }
+  .top-status{display:none}
 
-  .hero-title{
-    font-size:58px;
-  }
+  .hero-title{font-size:58px}
 
   .hero-tag{
     font-size:10px;
     letter-spacing:.16em;
   }
 
-  .search-box{
-    border-radius:15px;
-  }
+  .search-box{border-radius:15px}
 
-  .search-btn{
-    padding:0 15px;
-  }
+  .search-btn{padding:0 15px}
 
   .search-icon{
     width:35px;
@@ -1079,26 +1236,18 @@ footer{
     padding:12px;
   }
 
-  .tools-grid{
-    grid-template-columns:1fr;
-  }
+  .tools-grid{grid-template-columns:1fr}
 
-  .map-cover{
-    padding:18px;
-  }
+  .map-cover{padding:18px}
 
-  .map-cover h2{
-    font-size:24px;
-  }
+  .map-cover h2{font-size:24px}
 
   .map-tools{
     max-height:145px;
     overflow:auto;
   }
 
-  .map-tool{
-    padding:8px 9px;
-  }
+  .map-tool{padding:8px 9px}
 
   #mapView{
     inset:60px 0 0 72px;
@@ -1108,6 +1257,14 @@ footer{
     top:10px;
     left:10px;
     right:10px;
+  }
+
+  .form-grid{grid-template-columns:1fr}
+
+  .ad-field.full{grid-column:auto}
+
+  .ads-header{
+    flex-direction:column;
   }
 }
 </style>
@@ -1123,685 +1280,880 @@ footer{
 
 <div class="app">
 
-  <aside class="sidebar">
+<aside class="sidebar">
 
-    <div class="brand">
+  <div class="brand">
+    <div class="brand-logo">H</div>
+    <div>
+      <span class="brand-name">HEXORA</span>
+      <span class="brand-sub">SEARCH BEYOND LIMITS</span>
+    </div>
+  </div>
 
-      <div class="brand-logo">
-        H
-      </div>
+  <nav class="side-nav">
 
-      <div>
-        <span class="brand-name">HEXORA</span>
-        <span class="brand-sub">SEARCH BEYOND LIMITS</span>
-      </div>
+    <button class="side-btn active" data-home>
+      <span class="ico">⌂</span>
+      <span>Home</span>
+    </button>
+
+    <button class="side-btn" data-mode="web">
+      <span class="ico">⌕</span>
+      <span>Web Search</span>
+    </button>
+
+    <button class="side-btn" data-mode="news">
+      <span class="ico">▤</span>
+      <span>News</span>
+    </button>
+
+    <button class="side-btn" data-mode="maps">
+      <span class="ico">⌖</span>
+      <span>Maps</span>
+    </button>
+
+    <button class="side-btn" data-mode="images">
+      <span class="ico">▧</span>
+      <span>Images</span>
+    </button>
+
+    <button class="side-btn" data-mode="ai">
+      <span class="ico">✦</span>
+      <span>HEXORA AI</span>
+    </button>
+
+    <button class="side-btn" id="adsNavBtn">
+      <span class="ico">💰</span>
+      <span>Advertise</span>
+    </button>
+
+  </nav>
+
+  <div class="ai-card">
+
+    <div class="ai-orb">✦</div>
+
+    <b>HEXORA AI</b>
+
+    <p>
+      Ask questions, explore ideas
+      and search beyond limits.
+    </p>
+
+    <button class="ai-open" id="aiOpenBtn">
+      Open AI
+    </button>
+
+  </div>
+
+</aside>
+
+
+<main class="main">
+
+<header class="topbar">
+
+  <div class="top-status">
+    <span class="dot"></span>
+    HEXORA Engine Online
+  </div>
+
+  <div class="top-actions">
+
+    <button class="icon-btn" id="settingsBtn">
+      ⚙
+    </button>
+
+    <button class="icon-btn" id="helpBtn">
+      ?
+    </button>
+
+    <button class="signin" id="signInBtn">
+      Sign in
+    </button>
+
+  </div>
+
+</header>
+
+
+<!-- HOME -->
+
+<section id="homeView">
+
+<div class="hero">
+
+  <div class="stars"></div>
+  <div class="earth-glow"></div>
+
+  <div class="hero-content">
+
+    <div class="kicker">
+      ✦ INDEPENDENT SEARCH ENGINE
+    </div>
+
+    <h1 class="hero-title">HEXORA</h1>
+
+    <div class="hero-tag">
+      SEARCH BEYOND LIMITS
+    </div>
+
+    <form
+      class="search-box"
+      id="searchForm"
+      autocomplete="off"
+    >
+
+      <div class="search-icon">⌕</div>
+
+      <input
+        id="searchInput"
+        type="search"
+        placeholder="Search the web..."
+        autocomplete="off"
+      >
+
+      <button class="search-btn" type="submit">
+        Search
+      </button>
+
+    </form>
+
+    <div class="search-modes">
+
+      <button class="mode active" data-search-mode="web">
+        Web
+      </button>
+
+      <button class="mode" data-search-mode="news">
+        News
+      </button>
+
+      <button class="mode" data-search-mode="images">
+        Images
+      </button>
+
+      <button class="mode" data-search-mode="maps">
+        Maps
+      </button>
 
     </div>
 
+  </div>
+
+</div>
+
+
+<div class="content">
+
+<div class="quick-grid">
+
+  <button class="quick-card" data-query="latest technology news">
+    <div class="q-ico">⚡</div>
+    <b>Technology</b>
+    <span>Latest technology</span>
+  </button>
+
+  <button class="quick-card" data-query="world news">
+    <div class="q-ico">🌎</div>
+    <b>World</b>
+    <span>Global information</span>
+  </button>
+
+  <button class="quick-card" data-query="science">
+    <div class="q-ico">🔬</div>
+    <b>Science</b>
+    <span>Explore science</span>
+  </button>
+
+  <button class="quick-card" data-query="programming">
+    <div class="q-ico">💻</div>
+    <b>Programming</b>
+    <span>Developer resources</span>
+  </button>
+
+  <button class="quick-card" data-query="India">
+    <div class="q-ico">🇮🇳</div>
+    <b>India</b>
+    <span>Indian web</span>
+  </button>
+
+  <button class="quick-card" data-query="Assam">
+    <div class="q-ico">🌿</div>
+    <b>Assam</b>
+    <span>Assam information</span>
+  </button>
+
+</div>
+
+
+<section class="section">
+
+<div class="section-head">
+  <div>
+    <div class="section-title">Explore</div>
+    <div class="section-sub">Discover information with HEXORA</div>
+  </div>
+</div>
+
+<div class="panel">
+
+<div class="news-grid">
+
+<article class="news-card">
+  <span class="tag">SEARCH</span>
+  <h3>Search the web</h3>
+  <p>
+    Search HEXORA's own indexed
+    web pages and discover
+    relevant information.
+  </p>
+</article>
 
-    <nav class="side-nav">
+<article class="news-card">
+  <span class="tag">MAPS</span>
+  <h3>Explore the world</h3>
+  <p>
+    Open HEXORA Earth and
+    search real-world locations.
+  </p>
+</article>
 
-      <button class="side-btn active" data-home>
-        <span class="ico">⌂</span>
-        <span>Home</span>
-      </button>
+<article class="news-card">
+  <span class="tag">AI</span>
+  <h3>Ask HEXORA AI</h3>
+  <p>
+    Explore questions and
+    ideas with the HEXORA AI
+    interface.
+  </p>
+</article>
 
-      <button class="side-btn" data-mode="web">
-        <span class="ico">⌕</span>
-        <span>Web Search</span>
-      </button>
+</div>
+</div>
 
-      <button class="side-btn" data-mode="news">
-        <span class="ico">▤</span>
-        <span>News</span>
-      </button>
+</section>
 
-      <button class="side-btn" data-mode="maps">
-        <span class="ico">⌖</span>
-        <span>Maps</span>
-      </button>
 
-      <button class="side-btn" data-mode="images">
-        <span class="ico">▧</span>
-        <span>Images</span>
-      </button>
+<section class="section">
 
-      <button class="side-btn" data-mode="ai">
-        <span class="ico">✦</span>
-        <span>HEXORA AI</span>
-      </button>
+<div class="section-head">
+  <div>
+    <div class="section-title">HEXORA Tools</div>
+    <div class="section-sub">Search and explore</div>
+  </div>
+</div>
 
-    </nav>
+<div class="tools-grid">
 
+<div class="tool-card">
+  <h3>🔎 Web Search</h3>
+  <p>
+    Search indexed web pages
+    using the HEXORA search engine.
+  </p>
+</div>
 
-    <div class="ai-card">
+<div class="tool-card">
+  <h3>🌍 HEXORA Earth</h3>
+  <p>
+    Explore real-world map data,
+    places and locations.
+  </p>
+</div>
 
-      <div class="ai-orb">
-        ✦
-      </div>
+<div class="tool-card">
+  <h3>📰 News</h3>
+  <p>
+    Search news and information
+    from indexed sources.
+  </p>
+</div>
 
-      <b>HEXORA AI</b>
+<div class="tool-card">
+  <h3>✦ HEXORA AI</h3>
+  <p>
+    Ask questions and explore
+    ideas using HEXORA AI.
+  </p>
+</div>
 
-      <p>
-        Ask questions, explore ideas
-        and search beyond limits.
-      </p>
+</div>
 
-      <button class="ai-open">
-        Open AI
-      </button>
+</section>
 
-    </div>
 
-  </aside>
+<section class="section">
 
+<div class="panel map-panel">
 
-  <main class="main">
+<div class="map-panel-head">
 
-    <header class="topbar">
+<div>
 
-      <div class="top-status">
+<div class="panel-title">
+  🌍 Explore the world with HEXORA Maps
+</div>
 
-        <span class="dot"></span>
+<div style="color:#71879b;font-size:11px;margin-top:5px">
+  3D Earth · Satellite · Real Terrain · Live Location
+</div>
 
-        HEXORA Engine Online
+</div>
 
-      </div>
+</div>
 
 
-      <div class="top-actions">
+<div class="map-card">
 
-        <button class="icon-btn">
-          ⚙
-        </button>
+<div id="mapPreview"></div>
 
-        <button class="icon-btn">
-          ?
-        </button>
+<div class="map-cover">
 
-        <button class="signin">
-          Sign in
-        </button>
+<div class="map-cover-content">
 
-      </div>
+<h2>HEXORA Earth</h2>
 
-    </header>
+<p>
+Interactive real-world map experience.
+Open the full map to search places,
+use your location and switch map views.
+</p>
 
+<div class="map-actions">
 
-    <section id="homeView">
+<button class="primary" id="openMapBtn">
+  Open Maps →
+</button>
 
-      <div class="hero">
+<button class="secondary" id="homeSatelliteBtn">
+  Satellite
+</button>
 
-        <div class="stars"></div>
+<button class="secondary" id="home3dBtn">
+  3D
+</button>
 
-        <div class="earth-glow"></div>
+</div>
 
+</div>
+</div>
 
-        <div class="hero-content">
+</div>
 
-          <div class="kicker">
-            ✦ INDEPENDENT SEARCH ENGINE
-          </div>
+</div>
 
+</section>
 
-          <h1 class="hero-title">
-            HEXORA
-          </h1>
 
+<footer>
+  HEXORA © 2026 · Search Beyond Limits
+</footer>
 
-          <div class="hero-tag">
-            SEARCH BEYOND LIMITS
-          </div>
+</div>
 
+</section>
 
-          <form
-            class="search-box"
-            id="searchForm"
-            autocomplete="off"
-          >
 
-            <div class="search-icon">
-              ⌕
-            </div>
+<!-- SEARCH -->
 
-            <input
-              id="searchInput"
-              type="search"
-              placeholder="Search the web..."
-              autocomplete="off"
-            >
+<section id="searchView">
 
-            <button
-              class="search-btn"
-              type="submit"
-            >
-              Search
-            </button>
+<div class="results-toolbar">
 
-          </form>
+<div id="resultMeta">
+  HEXORA Search
+</div>
 
+<button class="secondary" data-home>
+  ← Home
+</button>
 
-          <div class="search-modes">
+</div>
 
-            <button class="mode active" data-search-mode="web">
-              Web
-            </button>
+<div id="results"></div>
 
-            <button class="mode" data-search-mode="news">
-              News
-            </button>
+</section>
 
-            <button class="mode" data-search-mode="images">
-              Images
-            </button>
 
-            <button class="mode" data-search-mode="maps">
-              Maps
-            </button>
+<!-- ADS -->
 
-          </div>
+<section id="adsView">
 
-        </div>
+<div class="ads-shell">
 
-      </div>
+<div class="ads-header">
 
+<div>
 
-      <div class="content">
+<div class="ads-title">
+  Advertise on HEXORA
+</div>
 
+<div class="ads-subtitle">
+  Reach people searching the web with HEXORA.
+  Add advertising balance through PayPal and
+  use it for sponsored search campaigns.
+</div>
 
-        <div class="quick-grid">
+</div>
 
-          <button class="quick-card" data-query="latest technology news">
+<div class="ads-badge">
+  ● HEXORA Ads
+</div>
 
-            <div class="q-ico">⚡</div>
+</div>
 
-            <b>Technology</b>
 
-            <span>
-              Latest technology
-            </span>
+<div class="ads-grid">
 
-          </button>
 
+<!-- ACCOUNT -->
 
-          <button class="quick-card" data-query="world news">
+<div class="ads-card">
 
-            <div class="q-ico">🌎</div>
+<h3>Advertiser account</h3>
 
-            <b>World</b>
+<p>
+Create your advertiser profile first.
+Your advertising balance will be linked
+to this account.
+</p>
 
-            <span>
-              Global information
-            </span>
+<div class="form-grid">
 
-          </button>
+<div class="ad-field">
+<label>Business / Name</label>
+<input
+  id="advertiserName"
+  type="text"
+  placeholder="Your name or business"
+>
+</div>
 
+<div class="ad-field">
+<label>Email</label>
+<input
+  id="advertiserEmail"
+  type="email"
+  placeholder="you@example.com"
+>
+</div>
 
-          <button class="quick-card" data-query="science">
+<div class="ad-field">
+<label>Company</label>
+<input
+  id="advertiserCompany"
+  type="text"
+  placeholder="Company name"
+>
+</div>
 
-            <div class="q-ico">🔬</div>
+<div class="ad-field">
+<label>Website</label>
+<input
+  id="advertiserWebsite"
+  type="url"
+  placeholder="https://example.com"
+>
+</div>
 
-            <b>Science</b>
+</div>
 
-            <span>
-              Explore science
-            </span>
+<button class="pay-btn" id="createAdvertiserBtn">
+  Create Advertiser Account
+</button>
 
-          </button>
+<div class="ads-status" id="advertiserStatus"></div>
 
+</div>
 
-          <button class="quick-card" data-query="programming">
 
-            <div class="q-ico">💻</div>
+<!-- BALANCE -->
 
-            <b>Programming</b>
+<div class="ads-card balance-card">
 
-            <span>
-              Developer resources
-            </span>
+<div class="balance-label">
+  Advertising balance
+</div>
 
-          </button>
+<div class="balance-value" id="adsBalance">
+  ₹0.00
+</div>
 
+<div class="balance-provider">
+  PayPal secured payments
+</div>
 
-          <button class="quick-card" data-query="India">
+<div style="height:18px"></div>
 
-            <div class="q-ico">🇮🇳</div>
+<div class="balance-label">
+  Advertiser ID
+</div>
 
-            <b>India</b>
+<div
+  id="advertiserIdDisplay"
+  style="margin-top:5px;color:#d8f7ff;font-size:13px;font-weight:800"
+>
+  Not created
+</div>
 
-            <span>
-              Indian web
-            </span>
+<button
+  class="pay-btn"
+  id="addBalanceBtn"
+  disabled
+>
+  Add Advertising Balance
+</button>
 
-          </button>
+<div class="ads-status" id="paymentStatus"></div>
 
+</div>
 
-          <button class="quick-card" data-query="Assam">
 
-            <div class="q-ico">🌿</div>
+<!-- CAMPAIGN -->
 
-            <b>Assam</b>
+<div class="ads-card">
 
-            <span>
-              Assam information
-            </span>
+<h3>Create campaign</h3>
 
-          </button>
+<p>
+After adding balance, create a campaign
+and define your sponsored advertisement.
+</p>
 
-        </div>
+<div class="form-grid">
 
+<div class="ad-field full">
+<label>Campaign name</label>
+<input
+  id="campaignName"
+  type="text"
+  placeholder="Example: My Business Campaign"
+>
+</div>
 
-        <section class="section">
+<div class="ad-field">
+<label>Daily budget</label>
+<input
+  id="dailyBudget"
+  type="number"
+  min="0"
+  step="0.01"
+  value="10"
+>
+</div>
 
-          <div class="section-head">
+<div class="ad-field">
+<label>Total budget</label>
+<input
+  id="totalBudget"
+  type="number"
+  min="0"
+  step="0.01"
+  value="100"
+>
+</div>
 
-            <div>
+</div>
 
-              <div class="section-title">
-                Explore
-              </div>
+<button class="pay-btn" id="createCampaignBtn" disabled>
+  Create Campaign
+</button>
 
-              <div class="section-sub">
-                Discover information with HEXORA
-              </div>
+<div class="ads-status" id="campaignStatus"></div>
 
-            </div>
+</div>
 
-          </div>
 
+<!-- AD -->
 
-          <div class="panel">
+<div class="ads-card">
 
-            <div class="news-grid">
+<h3>Create sponsored ad</h3>
 
-              <article class="news-card">
+<p>
+Your advertisement can appear when the
+search query matches its keywords.
+</p>
 
-                <span class="tag">
-                  SEARCH
-                </span>
+<div class="form-grid">
 
-                <h3>
-                  Search the web
-                </h3>
+<div class="ad-field full">
+<label>Ad title</label>
+<input
+  id="adTitle"
+  type="text"
+  maxlength="120"
+  placeholder="Your advertisement title"
+>
+</div>
 
-                <p>
-                  Search HEXORA's own indexed
-                  web pages and discover
-                  relevant information.
-                </p>
+<div class="ad-field full">
+<label>Description</label>
+<textarea
+  id="adDescription"
+  maxlength="500"
+  placeholder="Describe your product or service"
+></textarea>
+</div>
 
-              </article>
+<div class="ad-field full">
+<label>Destination URL</label>
+<input
+  id="adDestination"
+  type="url"
+  placeholder="https://yourwebsite.com"
+>
+</div>
 
+<div class="ad-field full">
+<label>Keywords</label>
+<input
+  id="adKeywords"
+  type="text"
+  placeholder="technology, software, business"
+>
+</div>
 
-              <article class="news-card">
+<div class="ad-field">
+<label>Bid per click</label>
+<input
+  id="adBid"
+  type="number"
+  min="0.01"
+  step="0.01"
+  value="0.10"
+>
+</div>
 
-                <span class="tag">
-                  MAPS
-                </span>
+</div>
 
-                <h3>
-                  Explore the world
-                </h3>
+<button class="pay-btn" id="createAdBtn" disabled>
+  Submit Advertisement
+</button>
 
-                <p>
-                  Open HEXORA Earth and
-                  search real-world locations.
-                </p>
+<div class="ads-status" id="adStatus"></div>
 
-              </article>
+</div>
 
 
-              <article class="news-card">
+<!-- DASHBOARD -->
 
-                <span class="tag">
-                  AI
-                </span>
+<div class="ads-card campaign-section" style="grid-column:1/-1">
 
-                <h3>
-                  Ask HEXORA AI
-                </h3>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
 
-                <p>
-                  Explore questions and
-                  ideas with the HEXORA AI
-                  interface.
-                </p>
+<div>
+<h3 style="margin:0">
+  Advertising dashboard
+</h3>
 
-              </article>
+<p style="margin:4px 0 0">
+  Campaigns and sponsored ads connected to your account.
+</p>
+</div>
 
-            </div>
+<button
+  class="secondary"
+  id="refreshAdsBtn"
+>
+  ↻ Refresh
+</button>
 
-          </div>
+</div>
 
-        </section>
+<div style="overflow:auto">
 
+<table class="campaign-table">
 
-        <section class="section">
+<thead>
+<tr>
+<th>ID</th>
+<th>Campaign</th>
+<th>Status</th>
+<th>Budget</th>
+<th>Spent</th>
+</tr>
+</thead>
 
-          <div class="section-head">
+<tbody id="campaignRows">
 
-            <div>
+<tr>
+<td colspan="5" style="color:#61798b">
+No advertiser account loaded.
+</td>
+</tr>
 
-              <div class="section-title">
-                HEXORA Tools
-              </div>
+</tbody>
 
-              <div class="section-sub">
-                Search and explore
-              </div>
+</table>
 
-            </div>
+</div>
 
-          </div>
+<div class="ads-note">
+HEXORA Ads uses PayPal for payment processing.
+Payments must be successfully captured before
+advertising balance is credited.
+</div>
 
+</div>
 
-          <div class="tools-grid">
+</div>
 
-            <div class="tool-card">
+</div>
 
-              <h3>
-                🔎 Web Search
-              </h3>
+</section>
 
-              <p>
-                Search indexed web pages
-                using the HEXORA search engine.
-              </p>
 
-            </div>
+<!-- MAP -->
 
+<section id="mapView">
 
-            <div class="tool-card">
+<div id="hexoraMap"></div>
 
-              <h3>
-                🌍 HEXORA Earth
-              </h3>
+<div class="map-ui">
 
-              <p>
-                Explore real-world map data,
-                places and locations.
-              </p>
+<form class="map-search" id="mapSearchForm" autocomplete="off">
 
-            </div>
+<input
+  id="mapSearchInput"
+  type="search"
+  placeholder="Search a real place..."
+  autocomplete="off"
+>
 
+<button id="mapSearchBtn" type="submit">
+  Search
+</button>
 
-            <div class="tool-card">
+</form>
 
-              <h3>
-                📰 News
-              </h3>
 
-              <p>
-                Search news and information
-                from indexed sources.
-              </p>
+<div class="map-tools">
 
-            </div>
+<button class="map-tool" id="earthMapBtn">
+  🌍 Earth
+</button>
 
+<button class="map-tool" id="satelliteMapBtn">
+  🛰 Satellite
+</button>
 
-            <div class="tool-card">
+<button class="map-tool" id="streetMapBtn">
+  🗺 Street
+</button>
 
-              <h3>
-                ✦ HEXORA AI
-              </h3>
+<button class="map-tool" id="terrain3dMapBtn">
+  🏔 3D Terrain
+</button>
 
-              <p>
-                Ask questions and explore
-                ideas using HEXORA AI.
-              </p>
+<button class="map-tool" id="high3dMapBtn">
+  ⛰ High 3D
+</button>
 
-            </div>
+<button class="map-tool" id="locateBtn">
+  📍 My Location
+</button>
 
-          </div>
+<button class="map-tool" id="resetMapBtn">
+  ↺ Reset
+</button>
 
-        </section>
+<button class="map-tool" id="fullscreenMapBtn">
+  ⛶ Fullscreen
+</button>
 
+<button class="map-tool" data-home>
+  ✕ Close
+</button>
 
-        <section class="section">
+</div>
 
-          <div class="panel map-panel">
+<div class="map-label">
+  HEXORA EARTH
+</div>
 
-            <div class="map-panel-head">
+<div id="mapInfo"></div>
 
-              <div>
+</div>
 
-                <div class="panel-title">
+</section>
 
-                  <i>🌍</i>
+</main>
+</div>
 
-                  Explore the world with
-                  HEXORA Maps
 
-                </div>
+<!-- PAYMENT MODAL -->
 
+<div class="payment-overlay" id="paymentOverlay">
 
-                <div
-                  style="
-                  color:#71879b;
-                  font-size:11px;
-                  margin-top:5px
-                  "
-                >
+<div class="payment-box">
 
-                  3D Earth · Satellite · Real Terrain · Live Location
+<div class="payment-head">
 
-                </div>
+<h3>
+  Add HEXORA Ads Balance
+</h3>
 
-              </div>
+<button
+  class="close-payment"
+  id="closePaymentBtn"
+>
+  ×
+</button>
 
-            </div>
+</div>
 
+<div class="payment-amount">
 
-            <div class="map-card">
+<span>
+  Amount
+</span>
 
-              <div id="mapPreview"></div>
+<b id="paymentAmountDisplay">
+  ₹0.00
+</b>
 
+</div>
 
-              <div class="map-cover">
+<div class="amount-row">
 
-                <div class="map-cover-content">
+<button class="amount-btn" data-amount="5">
+  ₹5
+</button>
 
-                  <h2>
-                    HEXORA Earth
-                  </h2>
+<button class="amount-btn" data-amount="10">
+  ₹10
+</button>
 
-                  <p>
+<button class="amount-btn" data-amount="25">
+  ₹25
+</button>
 
-                    Interactive real-world map
-                    experience. Open the full map
-                    to search places, use your
-                    location and switch map views.
+<button class="amount-btn" data-amount="50">
+  ₹50
+</button>
 
-                  </p>
+<button class="amount-btn" data-amount="100">
+  ₹100
+</button>
 
+</div>
 
-                  <div class="map-actions">
+<div
+  id="paypalButtons"
+  style="margin-top:16px"
+></div>
 
-                    <button
-                      class="primary"
-                      id="openMapBtn"
-                    >
-                      Open Maps →
-                    </button>
+<div class="payment-help">
+  PayPal Sandbox is currently connected to HEXORA.
+  For live customer payments, the Railway PayPal
+  credentials must later be switched from Sandbox
+  to Live.
+</div>
 
-
-                    <button
-                      class="secondary"
-                      id="satelliteMapBtn"
-                    >
-                      Satellite
-                    </button>
-
-
-                    <button
-                      class="secondary"
-                      id="3dMapBtn"
-                    >
-                      3D
-                    </button>
-
-                  </div>
-
-                </div>
-
-              </div>
-
-            </div>
-
-          </div>
-
-        </section>
-
-
-        <footer>
-          HEXORA © 2026 · Search Beyond Limits
-        </footer>
-
-      </div>
-
-    </section>
-
-
-    <section id="searchView">
-
-      <div class="results-toolbar">
-
-        <div id="resultMeta">
-          HEXORA Search
-        </div>
-
-        <button
-          class="secondary"
-          data-home
-        >
-          ← Home
-        </button>
-
-      </div>
-
-
-      <div id="results"></div>
-
-    </section>
-
-
-    <section id="mapView">
-
-      <div id="hexoraMap"></div>
-
-
-      <div class="map-ui">
-
-        <form
-          class="map-search"
-          autocomplete="off"
-        >
-
-          <input
-            id="mapSearchInput"
-            type="search"
-            placeholder="Search a real place..."
-            autocomplete="off"
-          >
-
-          <button
-            id="mapSearchBtn"
-            type="submit"
-          >
-            Search
-          </button>
-
-        </form>
-
-
-        <div class="map-tools">
-
-          <button
-            class="map-tool"
-            id="earthMapBtn"
-          >
-            🌍 Earth
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="satelliteMapBtn"
-          >
-            🛰 Satellite
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="streetMapBtn"
-          >
-            🗺 Street
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="3dMapBtn"
-          >
-            🏔 3D Terrain
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="high3dMapBtn"
-          >
-            ⛰ High 3D
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="locateBtn"
-          >
-            📍 My Location
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="resetMapBtn"
-          >
-            ↺ Reset
-          </button>
-
-
-          <button
-            class="map-tool"
-            id="fullscreenMapBtn"
-          >
-            ⛶ Fullscreen
-          </button>
-
-
-          <button
-            class="map-tool"
-            data-home
-          >
-            ✕ Close
-          </button>
-
-        </div>
-
-
-        <div class="map-label">
-          HEXORA EARTH
-        </div>
-
-
-        <div id="mapInfo"></div>
-
-      </div>
-
-    </section>
-
-  </main>
+</div>
 
 </div>
 
@@ -1810,22 +2162,18 @@ footer{
 
 <script src="https://unpkg.com/maplibre-gl@6.11.2/dist/maplibre-gl.js"></script>
 
-<script>
 
+<script>
 (function(){
 
   let map = null;
   let marker = null;
   let mode = "earth";
 
-  const HOME = [
-    78.9629,
-    20.5937
-  ];
+  const HOME = [78.9629,20.5937];
 
   const view = () =>
     document.getElementById("mapView");
-
 
   const info = (message) => {
 
@@ -1835,19 +2183,13 @@ footer{
     if(!element) return;
 
     element.textContent = message;
-
     element.style.display = "block";
 
-    clearTimeout(
-      window.__hexoraInfo
-    );
+    clearTimeout(window.__hexoraInfo);
 
     window.__hexoraInfo =
       setTimeout(() => {
-
-        element.style.display =
-          "none";
-
+        element.style.display = "none";
       },3500);
 
   };
@@ -1855,55 +2197,34 @@ footer{
 
   function mapStyle(type){
 
-    const satellite =
-      type === "satellite";
+    const satellite = type === "satellite";
 
     return {
 
       version:8,
 
       sources:{
-
         base:{
-
           type:"raster",
-
           tiles:[
-
             satellite
-
               ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-
               : "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-
           ],
-
           tileSize:256,
-
           attribution:
-
             satellite
-
               ? "Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
-
               : "© OpenStreetMap contributors"
-
         }
-
       },
 
       layers:[
-
         {
-
           id:"base",
-
           type:"raster",
-
           source:"base"
-
         }
-
       ]
 
     };
@@ -1914,102 +2235,51 @@ footer{
   function initMap(){
 
     if(map){
-
       map.resize();
-
       return;
-
     }
-
 
     const container =
-      document.getElementById(
-        "hexoraMap"
-      );
+      document.getElementById("hexoraMap");
 
-
-    if(
-      !container ||
-      !window.maplibregl
-    ){
-
-      console.error(
-        "HEXORA map could not start"
-      );
-
+    if(!container || !window.maplibregl){
+      console.error("HEXORA map could not start");
       return;
-
     }
 
+    map = new maplibregl.Map({
 
-    map =
-      new maplibregl.Map({
+      container,
+      style:mapStyle("earth"),
+      center:HOME,
+      zoom:4,
+      pitch:0,
+      bearing:0,
+      maxPitch:85,
+      attributionControl:true
 
-        container:
-
-          container,
-
-        style:
-
-          mapStyle("earth"),
-
-        center:
-
-          HOME,
-
-        zoom:4,
-
-        pitch:0,
-
-        bearing:0,
-
-        maxPitch:85,
-
-        attributionControl:true
-
-      });
-
+    });
 
     map.addControl(
-
       new maplibregl.NavigationControl({
-
         visualizePitch:true
-
       }),
-
       "bottom-right"
-
     );
 
+    map.on("load",() => {
 
-    map.on(
-      "load",
-      () => {
+      try{
+        map.setProjection({type:"globe"});
+      }catch(e){}
 
-        map.setProjection({
-          type:"globe"
-        });
+      info("HEXORA Earth · Real OpenStreetMap data");
 
-        info(
-          "HEXORA Earth · Real OpenStreetMap data"
-        );
+    });
 
-      }
-    );
-
-
-    map.on(
-      "error",
-      event => {
-
-        console.warn(
-          "HEXORA MAP",
-          event.error
-        );
-
-      }
-    );
+    map.on("error",event => {
+      console.warn("HEXORA MAP",event.error);
+    });
 
   }
 
@@ -2020,24 +2290,13 @@ footer{
 
     if(!mapView) return;
 
-    mapView.classList.add(
-      "active"
-    );
+    mapView.classList.add("active");
 
     initMap();
 
-    setTimeout(
-      () => {
-
-        if(map){
-
-          map.resize();
-
-        }
-
-      },
-      250
-    );
+    setTimeout(() => {
+      if(map) map.resize();
+    },250);
 
   }
 
@@ -2048,24 +2307,17 @@ footer{
 
     mode = "satellite";
 
-    map.setStyle(
-      mapStyle("satellite")
-    );
+    map.setStyle(mapStyle("satellite"));
 
-    map.once(
-      "style.load",
-      () => {
+    map.once("style.load",() => {
 
-        map.setProjection({
-          type:"mercator"
-        });
+      try{
+        map.setProjection({type:"mercator"});
+      }catch(e){}
 
-        info(
-          "🛰 HEXORA Satellite · Real imagery"
-        );
+      info("🛰 HEXORA Satellite · Real imagery");
 
-      }
-    );
+    });
 
   }
 
@@ -2076,38 +2328,25 @@ footer{
 
     mode = "earth";
 
-    map.setStyle(
-      mapStyle("earth")
-    );
+    map.setStyle(mapStyle("earth"));
 
-    map.once(
-      "style.load",
-      () => {
+    map.once("style.load",() => {
 
-        map.setProjection({
-          type:"globe"
-        });
+      try{
+        map.setProjection({type:"globe"});
+      }catch(e){}
 
-        map.flyTo({
+      map.flyTo({
+        center:HOME,
+        zoom:3.5,
+        pitch:0,
+        bearing:0,
+        duration:1300
+      });
 
-          center:HOME,
+      info("🌍 HEXORA Earth");
 
-          zoom:3.5,
-
-          pitch:0,
-
-          bearing:0,
-
-          duration:1300
-
-        });
-
-        info(
-          "🌍 HEXORA Earth"
-        );
-
-      }
-    );
+    });
 
   }
 
@@ -2118,36 +2357,24 @@ footer{
 
     mode = "street";
 
-    map.setStyle(
-      mapStyle("earth")
-    );
+    map.setStyle(mapStyle("earth"));
 
-    map.once(
-      "style.load",
-      () => {
+    map.once("style.load",() => {
 
-        map.setProjection({
-          type:"mercator"
-        });
+      try{
+        map.setProjection({type:"mercator"});
+      }catch(e){}
 
-        map.flyTo({
+      map.flyTo({
+        center:HOME,
+        zoom:5,
+        pitch:0,
+        duration:1300
+      });
 
-          center:HOME,
+      info("🗺 HEXORA Street");
 
-          zoom:5,
-
-          pitch:0,
-
-          duration:1300
-
-        });
-
-        info(
-          "🗺 HEXORA Street"
-        );
-
-      }
-    );
+    });
 
   }
 
@@ -2158,23 +2385,17 @@ footer{
 
     mode = "3d";
 
-    map.setProjection({
-      type:"mercator"
-    });
+    try{
+      map.setProjection({type:"mercator"});
+    }catch(e){}
 
     map.easeTo({
-
       pitch:65,
-
       zoom:6,
-
       duration:1200
-
     });
 
-    info(
-      "🏔 HEXORA 3D view"
-    );
+    info("🏔 HEXORA 3D view");
 
   }
 
@@ -2185,23 +2406,17 @@ footer{
 
     mode = "high3d";
 
-    map.setProjection({
-      type:"mercator"
-    });
+    try{
+      map.setProjection({type:"mercator"});
+    }catch(e){}
 
     map.easeTo({
-
       pitch:80,
-
       zoom:7,
-
       duration:1400
-
     });
 
-    info(
-      "⛰ HEXORA High 3D view"
-    );
+    info("⛰ HEXORA High 3D view");
 
   }
 
@@ -2212,182 +2427,97 @@ footer{
 
     mode = "earth";
 
-    map.setStyle(
-      mapStyle("earth")
-    );
+    map.setStyle(mapStyle("earth"));
 
-    map.once(
-      "style.load",
-      () => {
+    map.once("style.load",() => {
 
-        map.setProjection({
-          type:"globe"
-        });
+      try{
+        map.setProjection({type:"globe"});
+      }catch(e){}
 
-        map.flyTo({
+      map.flyTo({
+        center:HOME,
+        zoom:3.5,
+        pitch:0,
+        bearing:0,
+        duration:1500
+      });
 
-          center:HOME,
+      info("HEXORA Earth reset");
 
-          zoom:3.5,
-
-          pitch:0,
-
-          bearing:0,
-
-          duration:1500
-
-        });
-
-        info(
-          "HEXORA Earth reset"
-        );
-
-      }
-    );
+    });
 
   }
 
 
   async function searchPlace(query){
 
-    query =
-      String(query || "")
-      .trim();
-
+    query = String(query || "").trim();
 
     if(!query){
-
-      info(
-        "Enter a place name"
-      );
-
+      info("Enter a place name");
       return;
-
     }
-
 
     if(!map) return;
 
-
-    info(
-      "Searching real place data..."
-    );
-
+    info("Searching real place data...");
 
     try{
 
       const response =
         await fetch(
-
           "https://nominatim.openstreetmap.org/search" +
-
           "?format=jsonv2" +
-
           "&limit=1" +
-
           "&q=" +
-
           encodeURIComponent(query),
-
           {
-
             headers:{
-
-              "Accept":
-                "application/json"
-
+              "Accept":"application/json"
             }
-
           }
-
         );
-
 
       if(!response.ok){
-
-        throw new Error(
-          "Search failed"
-        );
-
+        throw new Error("Search failed");
       }
 
-
-      const places =
-        await response.json();
-
+      const places = await response.json();
 
       if(!places.length){
-
-        info(
-          "Place not found"
-        );
-
+        info("Place not found");
         return;
-
       }
 
+      const place = places[0];
 
-      const place =
-        places[0];
-
-
-      const lng =
-        Number(place.lon);
-
-
-      const lat =
-        Number(place.lat);
-
+      const lng = Number(place.lon);
+      const lat = Number(place.lat);
 
       map.flyTo({
-
-        center:[
-          lng,
-          lat
-        ],
-
+        center:[lng,lat],
         zoom:14,
-
         pitch:
           mode === "3d" ||
           mode === "high3d"
             ? 60
             : 0,
-
         duration:1600
-
       });
 
-
       new maplibregl.Popup()
-
-        .setLngLat([
-          lng,
-          lat
-        ])
-
-        .setText(
-          place.display_name
-        )
-
+        .setLngLat([lng,lat])
+        .setText(place.display_name)
         .addTo(map);
 
-
-      info(
-        "Found: " +
-        place.display_name
-      );
-
+      info("Found: " + place.display_name);
 
     }catch(error){
 
-      console.warn(
-        error
-      );
+      console.warn(error);
 
-      info(
-        "Map search temporarily unavailable"
-      );
+      info("Map search temporarily unavailable");
 
     }
 
@@ -2396,23 +2526,12 @@ footer{
 
   function locate(){
 
-    if(
-      !navigator.geolocation
-    ){
-
-      info(
-        "Location is not supported"
-      );
-
+    if(!navigator.geolocation){
+      info("Location is not supported");
       return;
-
     }
 
-
-    info(
-      "Requesting your location..."
-    );
-
+    info("Requesting your location...");
 
     navigator.geolocation.getCurrentPosition(
 
@@ -2420,102 +2539,51 @@ footer{
 
         if(!map) return;
 
+        const lng = position.coords.longitude;
+        const lat = position.coords.latitude;
 
-        const lng =
-          position.coords.longitude;
-
-
-        const lat =
-          position.coords.latitude;
-
-
-        map.setProjection({
-          type:"mercator"
-        });
-
+        try{
+          map.setProjection({type:"mercator"});
+        }catch(e){}
 
         map.flyTo({
-
-          center:[
-            lng,
-            lat
-          ],
-
+          center:[lng,lat],
           zoom:15,
-
           pitch:45,
-
           duration:1600
-
         });
 
-
         if(marker){
-
           marker.remove();
-
         }
 
-
         const element =
-          document.createElement(
-            "div"
-          );
-
+          document.createElement("div");
 
         element.className =
           "hexora-location-marker";
 
-
         marker =
-          new maplibregl.Marker({
+          new maplibregl.Marker({element})
+            .setLngLat([lng,lat])
+            .setPopup(
+              new maplibregl.Popup()
+                .setText("Your current location")
+            )
+            .addTo(map);
 
-            element
-
-          })
-
-          .setLngLat([
-            lng,
-            lat
-          ])
-
-          .setPopup(
-
-            new maplibregl.Popup()
-
-              .setText(
-                "Your current location"
-              )
-
-          )
-
-          .addTo(map);
-
-
-        info(
-          "Your location found"
-        );
+        info("Your location found");
 
       },
-
 
       () => {
-
-        info(
-          "Location permission was not granted"
-        );
-
+        info("Location permission was not granted");
       },
 
-
       {
-
         enableHighAccuracy:true,
-
         timeout:10000,
-
         maximumAge:30000
-
       }
 
     );
@@ -2525,50 +2593,27 @@ footer{
 
   function fullscreenMap(){
 
-    const mapView =
-      view();
-
+    const mapView = view();
 
     if(!mapView) return;
 
+    if(!document.fullscreenElement){
 
-    if(
-      !document.fullscreenElement
-    ){
-
-      if(
-        mapView.requestFullscreen
-      ){
-
+      if(mapView.requestFullscreen){
         mapView.requestFullscreen();
-
       }
 
     }else{
 
-      if(
-        document.exitFullscreen
-      ){
-
+      if(document.exitFullscreen){
         document.exitFullscreen();
-
       }
 
     }
 
-
-    setTimeout(
-      () => {
-
-        if(map){
-
-          map.resize();
-
-        }
-
-      },
-      400
-    );
+    setTimeout(() => {
+      if(map) map.resize();
+    },400);
 
   }
 
@@ -2576,193 +2621,82 @@ footer{
   function bindMap(){
 
     document
-      .getElementById(
-        "openMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        openMap
-      );
+      .getElementById("openMapBtn")
+      ?.addEventListener("click",openMap);
 
+    document
+      .getElementById("homeSatelliteBtn")
+      ?.addEventListener("click",() => {
+        openMap();
+        setTimeout(satellite,300);
+      });
 
-    const mapView =
-      view();
+    document
+      .getElementById("home3dBtn")
+      ?.addEventListener("click",() => {
+        openMap();
+        setTimeout(threeD,500);
+      });
 
+    const mapView = view();
 
     if(!mapView) return;
 
+    mapView
+      .querySelector("#earthMapBtn")
+      ?.addEventListener("click",earth);
 
     mapView
-      .querySelector(
-        "#earthMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        earth
-      );
-
+      .querySelector("#satelliteMapBtn")
+      ?.addEventListener("click",satellite);
 
     mapView
-      .querySelector(
-        "#satelliteMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        satellite
-      );
-
+      .querySelector("#streetMapBtn")
+      ?.addEventListener("click",street);
 
     mapView
-      .querySelector(
-        "#streetMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        street
-      );
-
+      .querySelector("#terrain3dMapBtn")
+      ?.addEventListener("click",threeD);
 
     mapView
-      .querySelector(
-        "#3dMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        threeD
-      );
-
+      .querySelector("#high3dMapBtn")
+      ?.addEventListener("click",high3D);
 
     mapView
-      .querySelector(
-        "#high3dMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        high3D
-      );
-
+      .querySelector("#locateBtn")
+      ?.addEventListener("click",locate);
 
     mapView
-      .querySelector(
-        "#locateBtn"
-      )
-      ?.addEventListener(
-        "click",
-        locate
-      );
-
+      .querySelector("#resetMapBtn")
+      ?.addEventListener("click",resetMap);
 
     mapView
-      .querySelector(
-        "#resetMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        resetMap
-      );
-
+      .querySelector("#fullscreenMapBtn")
+      ?.addEventListener("click",fullscreenMap);
 
     mapView
-      .querySelector(
-        "#fullscreenMapBtn"
-      )
-      ?.addEventListener(
-        "click",
-        fullscreenMap
-      );
+      .querySelector("[data-home]")
+      ?.addEventListener("click",() => {
+        mapView.classList.remove("active");
+      });
 
+    document
+      .getElementById("mapSearchForm")
+      ?.addEventListener("submit",event => {
 
-    mapView
-      .querySelector(
-        "[data-home]"
-      )
-      ?.addEventListener(
-        "click",
-        () => {
+        event.preventDefault();
 
-          mapView.classList.remove(
-            "active"
-          );
+        const input =
+          document.getElementById("mapSearchInput");
 
-        }
-      );
+        searchPlace(input?.value || "");
 
-
-    mapView
-      .querySelector(
-        ".map-search"
-      )
-      ?.addEventListener(
-        "submit",
-        event => {
-
-          event.preventDefault();
-
-
-          const input =
-            mapView.querySelector(
-              "#mapSearchInput"
-            );
-
-
-          searchPlace(
-            input?.value || ""
-          );
-
-        }
-      );
-
-
-    new MutationObserver(
-      () => {
-
-        if(
-          mapView.classList.contains(
-            "active"
-          )
-        ){
-
-          initMap();
-
-          setTimeout(
-            () => {
-
-              if(map){
-
-                map.resize();
-
-              }
-
-            },
-            100
-          );
-
-        }
-
-      }
-    ).observe(
-
-      mapView,
-
-      {
-
-        attributes:true,
-
-        attributeFilter:[
-          "class"
-        ]
-
-      }
-
-    );
+      });
 
   }
 
 
-  if(
-    document.readyState ===
-    "loading"
-  ){
+  if(document.readyState === "loading"){
 
     document.addEventListener(
       "DOMContentLoaded",
@@ -2781,39 +2715,1131 @@ footer{
     open:openMap,
 
     close:() => {
-
-      view()
-        ?.classList.remove(
-          "active"
-        );
-
+      view()?.classList.remove("active");
     },
 
     earth,
-
     street,
-
     satellite,
-
     terrain:threeD,
-
     high3d:high3D,
-
     locate,
-
     reset:resetMap,
-
     search:searchPlace
 
   };
 
 })();
-
 </script>
 
 
+<!-- PAYPAL + ADS ENGINE -->
+
+<script>
+(function(){
+
+  const state = {
+    advertiserId:
+      localStorage.getItem("hexora_advertiser_id") || "",
+
+    advertiser:
+      null,
+
+    campaignId:
+      localStorage.getItem("hexora_campaign_id") || "",
+
+    paypalClientId:"",
+    paypalLoaded:false,
+    paymentAmount:10
+  };
+
+
+  const $ = id =>
+    document.getElementById(id);
+
+
+  function status(id,message,type=""){
+
+    const el = $(id);
+
+    if(!el) return;
+
+    el.textContent = message;
+
+    el.className =
+      "ads-status show" +
+      (type ? " " + type : "");
+
+  }
+
+
+  function money(value){
+
+    const number =
+      Number(value || 0);
+
+    return "₹" +
+      number.toFixed(2);
+
+  }
+
+
+  function setAdsButtons(){
+
+    const account =
+      Boolean(state.advertiserId);
+
+    const balance =
+      Number(
+        state.advertiser?.balance || 0
+      );
+
+    if($("addBalanceBtn")){
+      $("addBalanceBtn").disabled = !account;
+    }
+
+    if($("createCampaignBtn")){
+      $("createCampaignBtn").disabled = !account;
+    }
+
+    if($("createAdBtn")){
+      $("createAdBtn").disabled =
+        !account || !state.campaignId;
+    }
+
+    if($("advertiserIdDisplay")){
+      $("advertiserIdDisplay").textContent =
+        state.advertiserId || "Not created";
+    }
+
+    if($("adsBalance")){
+      $("adsBalance").textContent =
+        money(balance);
+    }
+
+  }
+
+
+  async function api(url,options={}){
+
+    const response =
+      await fetch(url,{
+        ...options,
+        headers:{
+          "Content-Type":"application/json",
+          ...(options.headers || {})
+        }
+      });
+
+    let data = null;
+
+    try{
+      data = await response.json();
+    }catch(e){
+      data = {};
+    }
+
+    if(!response.ok){
+
+      throw new Error(
+        data?.error ||
+        data?.message ||
+        "HEXORA request failed"
+      );
+
+    }
+
+    return data;
+
+  }
+
+
+  async function createAdvertiser(){
+
+    const name =
+      $("advertiserName")?.value.trim();
+
+    const email =
+      $("advertiserEmail")?.value.trim();
+
+    const companyName =
+      $("advertiserCompany")?.value.trim();
+
+    const website =
+      $("advertiserWebsite")?.value.trim();
+
+    if(!name || !email){
+
+      status(
+        "advertiserStatus",
+        "Name and email are required.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    const button =
+      $("createAdvertiserBtn");
+
+    button.disabled = true;
+    button.textContent = "Creating...";
+
+    try{
+
+      const data =
+        await api(
+          "/api/ads/advertisers",
+          {
+            method:"POST",
+            body:JSON.stringify({
+              name,
+              email,
+              company_name:companyName,
+              website
+            })
+          }
+        );
+
+      const advertiser =
+        data?.advertiser ||
+        data?.data ||
+        data;
+
+      const id =
+        advertiser?.id ||
+        data?.advertiser_id ||
+        data?.id;
+
+      if(!id){
+        throw new Error(
+          "Advertiser was created but no advertiser ID was returned."
+        );
+      }
+
+      state.advertiserId =
+        String(id);
+
+      state.advertiser =
+        advertiser;
+
+      localStorage.setItem(
+        "hexora_advertiser_id",
+        state.advertiserId
+      );
+
+      status(
+        "advertiserStatus",
+        "Advertiser account ready. ID: " +
+        state.advertiserId,
+        "success"
+      );
+
+      await refreshDashboard();
+
+    }catch(error){
+
+      status(
+        "advertiserStatus",
+        error.message,
+        "error"
+      );
+
+    }finally{
+
+      button.disabled = false;
+      button.textContent =
+        "Create Advertiser Account";
+
+      setAdsButtons();
+
+    }
+
+  }
+
+
+  async function loadPayPal(){
+
+    if(state.paypalLoaded){
+      return true;
+    }
+
+    if(!state.paypalClientId){
+
+      const config =
+        await api(
+          "/api/ads/paypal/config"
+        );
+
+      state.paypalClientId =
+        config?.clientId ||
+        config?.client_id ||
+        config?.paypalClientId ||
+        "";
+
+    }
+
+    if(!state.paypalClientId){
+
+      throw new Error(
+        "PayPal is not configured on HEXORA server."
+      );
+
+    }
+
+    return new Promise((resolve,reject) => {
+
+      if(window.paypal){
+
+        state.paypalLoaded = true;
+        resolve(true);
+        return;
+
+      }
+
+      const script =
+        document.createElement("script");
+
+      script.src =
+        "https://www.paypal.com/sdk/js?client-id=" +
+        encodeURIComponent(
+          state.paypalClientId
+        ) +
+        "&currency=USD&intent=capture";
+
+      script.async = true;
+
+      script.onload = () => {
+
+        if(!window.paypal){
+
+          reject(
+            new Error(
+              "PayPal SDK failed to initialize."
+            )
+          );
+
+          return;
+
+        }
+
+        state.paypalLoaded = true;
+        resolve(true);
+
+      };
+
+      script.onerror = () => {
+
+        reject(
+          new Error(
+            "Could not load PayPal."
+          )
+        );
+
+      };
+
+      document.head.appendChild(script);
+
+    });
+
+  }
+
+
+  function openPayment(){
+
+    if(!state.advertiserId){
+
+      status(
+        "paymentStatus",
+        "Create advertiser account first.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    const overlay =
+      $("paymentOverlay");
+
+    if(!overlay) return;
+
+    overlay.classList.add("open");
+
+    $("paymentAmountDisplay").textContent =
+      money(state.paymentAmount);
+
+    renderPayPal();
+
+  }
+
+
+  function closePayment(){
+
+    $("paymentOverlay")
+      ?.classList.remove("open");
+
+    const buttons =
+      $("paypalButtons");
+
+    if(buttons){
+      buttons.innerHTML = "";
+    }
+
+  }
+
+
+  async function createPayPalOrder(amount){
+
+    const data =
+      await api(
+        "/api/ads/paypal/order",
+        {
+          method:"POST",
+          body:JSON.stringify({
+
+            advertiser_id:
+              state.advertiserId,
+
+            amount:
+              Number(amount)
+
+          })
+        }
+      );
+
+    return data;
+
+  }
+
+
+  async function capturePayPalOrder(orderId){
+
+    const data =
+      await api(
+        "/api/ads/paypal/capture",
+        {
+          method:"POST",
+          body:JSON.stringify({
+
+            advertiser_id:
+              state.advertiserId,
+
+            order_id:
+              orderId
+
+          })
+        }
+      );
+
+    return data;
+
+  }
+
+
+  async function renderPayPal(){
+
+    const container =
+      $("paypalButtons");
+
+    if(!container) return;
+
+    container.innerHTML =
+      "<div style='color:#7790a3;font-size:10px;text-align:center;padding:10px'>Loading PayPal...</div>";
+
+    try{
+
+      await loadPayPal();
+
+      container.innerHTML = "";
+
+      window.paypal.Buttons({
+
+        style:{
+          layout:"vertical",
+          shape:"rect",
+          label:"paypal",
+          height:45
+        },
+
+        createOrder:async () => {
+
+          const amount =
+            Number(
+              state.paymentAmount
+            );
+
+          if(!amount || amount <= 0){
+
+            throw new Error(
+              "Enter a valid amount."
+            );
+
+          }
+
+          const data =
+            await createPayPalOrder(
+              amount
+            );
+
+          return (
+            data?.orderID ||
+            data?.orderId ||
+            data?.id
+          );
+
+        },
+
+        onApprove:async data => {
+
+          status(
+            "paymentStatus",
+            "PayPal payment approved. Capturing payment..."
+          );
+
+          try{
+
+            await capturePayPalOrder(
+              data.orderID
+            );
+
+            status(
+              "paymentStatus",
+              "Payment captured successfully. Advertising balance is being updated.",
+              "success"
+            );
+
+            closePayment();
+
+            await refreshDashboard();
+
+            setTimeout(() => {
+
+              status(
+                "paymentStatus",
+                "Balance refreshed successfully.",
+                "success"
+              );
+
+            },300);
+
+          }catch(error){
+
+            status(
+              "paymentStatus",
+              error.message,
+              "error"
+            );
+
+          }
+
+        },
+
+        onCancel:() => {
+
+          status(
+            "paymentStatus",
+            "PayPal payment cancelled.",
+            "error"
+          );
+
+        },
+
+        onError:error => {
+
+          console.error(
+            "PayPal error",
+            error
+          );
+
+          status(
+            "paymentStatus",
+            "PayPal payment could not be completed.",
+            "error"
+          );
+
+        }
+
+      }).render("#paypalButtons");
+
+    }catch(error){
+
+      container.innerHTML = "";
+
+      status(
+        "paymentStatus",
+        error.message,
+        "error"
+      );
+
+    }
+
+  }
+
+
+  async function createCampaign(){
+
+    if(!state.advertiserId) return;
+
+    const name =
+      $("campaignName")?.value.trim();
+
+    const dailyBudget =
+      Number(
+        $("dailyBudget")?.value || 0
+      );
+
+    const totalBudget =
+      Number(
+        $("totalBudget")?.value || 0
+      );
+
+    if(!name){
+
+      status(
+        "campaignStatus",
+        "Campaign name is required.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    if(totalBudget <= 0){
+
+      status(
+        "campaignStatus",
+        "Total budget must be greater than zero.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    const button =
+      $("createCampaignBtn");
+
+    button.disabled = true;
+    button.textContent = "Creating...";
+
+    try{
+
+      const data =
+        await api(
+          "/api/ads/campaigns",
+          {
+            method:"POST",
+            body:JSON.stringify({
+
+              advertiser_id:
+                state.advertiserId,
+
+              name,
+
+              daily_budget:
+                dailyBudget,
+
+              total_budget:
+                totalBudget
+
+            })
+          }
+        );
+
+      const campaign =
+        data?.campaign ||
+        data?.data ||
+        data;
+
+      const id =
+        campaign?.id ||
+        data?.campaign_id ||
+        data?.id;
+
+      if(id){
+
+        state.campaignId =
+          String(id);
+
+        localStorage.setItem(
+          "hexora_campaign_id",
+          state.campaignId
+        );
+
+      }
+
+      status(
+        "campaignStatus",
+        "Campaign created successfully.",
+        "success"
+      );
+
+      await refreshDashboard();
+
+    }catch(error){
+
+      status(
+        "campaignStatus",
+        error.message,
+        "error"
+      );
+
+    }finally{
+
+      button.disabled = false;
+      button.textContent =
+        "Create Campaign";
+
+      setAdsButtons();
+
+    }
+
+  }
+
+
+  async function createAd(){
+
+    if(!state.advertiserId){
+      return;
+    }
+
+    if(!state.campaignId){
+
+      status(
+        "adStatus",
+        "Create a campaign first.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    const title =
+      $("adTitle")?.value.trim();
+
+    const description =
+      $("adDescription")?.value.trim();
+
+    const destinationUrl =
+      $("adDestination")?.value.trim();
+
+    const keywordsText =
+      $("adKeywords")?.value.trim();
+
+    const bid =
+      Number(
+        $("adBid")?.value || 0.10
+      );
+
+    if(!title ||
+       !description ||
+       !destinationUrl){
+
+      status(
+        "adStatus",
+        "Title, description and destination URL are required.",
+        "error"
+      );
+
+      return;
+
+    }
+
+    if(!/^https?:\/\//i.test(destinationUrl)){
+
+      status(
+        "adStatus",
+        "Destination URL must start with http:// or https://",
+        "error"
+      );
+
+      return;
+
+    }
+
+    const keywords =
+      keywordsText
+        .split(",")
+        .map(x => x.trim())
+        .filter(Boolean);
+
+    const button =
+      $("createAdBtn");
+
+    button.disabled = true;
+    button.textContent =
+      "Submitting...";
+
+    try{
+
+      await api(
+        "/api/ads",
+        {
+          method:"POST",
+          body:JSON.stringify({
+
+            campaign_id:
+              state.campaignId,
+
+            title,
+
+            description,
+
+            destination_url:
+              destinationUrl,
+
+            keywords,
+
+            bid_per_click:
+              bid
+
+          })
+        }
+      );
+
+      status(
+        "adStatus",
+        "Advertisement submitted successfully for approval.",
+        "success"
+      );
+
+      await refreshDashboard();
+
+    }catch(error){
+
+      status(
+        "adStatus",
+        error.message,
+        "error"
+      );
+
+    }finally{
+
+      button.disabled = false;
+      button.textContent =
+        "Submit Advertisement";
+
+      setAdsButtons();
+
+    }
+
+  }
+
+
+  async function refreshDashboard(){
+
+    if(!state.advertiserId){
+
+      setAdsButtons();
+      return;
+
+    }
+
+    try{
+
+      const data =
+        await api(
+          "/api/ads/dashboard?advertiser_id=" +
+          encodeURIComponent(
+            state.advertiserId
+          )
+        );
+
+      const advertiser =
+        data?.advertiser ||
+        data?.account ||
+        data?.data?.advertiser ||
+        null;
+
+      if(advertiser){
+
+        state.advertiser =
+          advertiser;
+
+      }
+
+      const campaigns =
+        data?.campaigns ||
+        data?.data?.campaigns ||
+        [];
+
+      if(campaigns.length){
+
+        const first =
+          campaigns[0];
+
+        if(first?.id){
+
+          state.campaignId =
+            String(first.id);
+
+          localStorage.setItem(
+            "hexora_campaign_id",
+            state.campaignId
+          );
+
+        }
+
+      }
+
+      renderCampaigns(campaigns);
+
+      setAdsButtons();
+
+    }catch(error){
+
+      console.warn(
+        "HEXORA Ads dashboard",
+        error
+      );
+
+      setAdsButtons();
+
+    }
+
+  }
+
+
+  function renderCampaigns(campaigns){
+
+    const tbody =
+      $("campaignRows");
+
+    if(!tbody) return;
+
+    if(!Array.isArray(campaigns) ||
+       !campaigns.length){
+
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="5" style="color:#61798b">
+            No campaigns yet.
+          </td>
+        </tr>
+      `;
+
+      return;
+
+    }
+
+    tbody.innerHTML =
+      campaigns.map(campaign => `
+
+        <tr>
+
+          <td>
+            ${escapeHtml(campaign.id ?? "")}
+          </td>
+
+          <td>
+            ${escapeHtml(campaign.name ?? "")}
+          </td>
+
+          <td>
+            ${escapeHtml(campaign.status ?? "")}
+          </td>
+
+          <td>
+            ${money(campaign.total_budget)}
+          </td>
+
+          <td>
+            ${money(campaign.spent)}
+          </td>
+
+        </tr>
+
+      `).join("");
+
+  }
+
+
+  function escapeHtml(value){
+
+    return String(value ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+
+  }
+
+
+  function openAds(){
+
+    document
+      .getElementById("homeView")
+      ?.style.setProperty(
+        "display",
+        "none"
+      );
+
+    document
+      .getElementById("searchView")
+      ?.classList.remove("active");
+
+    document
+      .getElementById("mapView")
+      ?.classList.remove("active");
+
+    document
+      .getElementById("adsView")
+      ?.classList.add("active");
+
+    document
+      .querySelectorAll(".side-btn")
+      .forEach(button => {
+        button.classList.remove("active");
+      });
+
+    $("adsNavBtn")
+      ?.classList.add("active");
+
+    window.scrollTo({
+      top:0,
+      behavior:"smooth"
+    });
+
+    refreshDashboard();
+
+  }
+
+
+  function bindAds(){
+
+    $("adsNavBtn")
+      ?.addEventListener(
+        "click",
+        openAds
+      );
+
+    $("createAdvertiserBtn")
+      ?.addEventListener(
+        "click",
+        createAdvertiser
+      );
+
+    $("addBalanceBtn")
+      ?.addEventListener(
+        "click",
+        openPayment
+      );
+
+    $("closePaymentBtn")
+      ?.addEventListener(
+        "click",
+        closePayment
+      );
+
+    $("createCampaignBtn")
+      ?.addEventListener(
+        "click",
+        createCampaign
+      );
+
+    $("createAdBtn")
+      ?.addEventListener(
+        "click",
+        createAd
+      );
+
+    $("refreshAdsBtn")
+      ?.addEventListener(
+        "click",
+        refreshDashboard
+      );
+
+    document
+      .querySelectorAll(".amount-btn")
+      .forEach(button => {
+
+        button.addEventListener(
+          "click",
+          () => {
+
+            document
+              .querySelectorAll(".amount-btn")
+              .forEach(x =>
+                x.classList.remove("active")
+              );
+
+            button.classList.add("active");
+
+            state.paymentAmount =
+              Number(
+                button.dataset.amount
+              );
+
+            $("paymentAmountDisplay")
+              .textContent =
+              money(
+                state.paymentAmount
+              );
+
+            renderPayPal();
+
+          }
+        );
+
+      });
+
+    $("paymentOverlay")
+      ?.addEventListener(
+        "click",
+        event => {
+
+          if(
+            event.target ===
+            $("paymentOverlay")
+          ){
+            closePayment();
+          }
+
+        }
+      );
+
+
+    if(state.advertiserId){
+
+      refreshDashboard();
+
+    }
+
+  }
+
+
+  if(document.readyState === "loading"){
+
+    document.addEventListener(
+      "DOMContentLoaded",
+      bindAds
+    );
+
+  }else{
+
+    bindAds();
+
+  }
+
+
+  window.HEXORA_ADS = {
+    open:openAds,
+    refresh:refreshDashboard
+  };
+
+})();
+</script>
+
+
+<!-- EXISTING HEXORA MAIN ENGINE -->
+
 <script
-  src="/main.js?v=20260928-4"
+  src="/main.js?v=20261008-ads"
   defer
 ></script>
 
