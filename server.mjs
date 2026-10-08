@@ -116,12 +116,6 @@ function detectIntent(query) {
   return "web";
 }
 
-/*
- * Current Neon schema does not have is_news/content_type.
- *
- * For now news mode uses published_at / recent crawl data
- * instead of requiring a news-specific column.
- */
 function modeCondition(mode) {
   if (mode === "news") {
     return `
@@ -313,17 +307,11 @@ async function searchDatabase(
 
   const intent = detectIntent(query);
 
-  /*
-   * Main ranking query.
-   *
-   * IMPORTANT:
-   * Only columns that actually exist in the
-   * current Neon pages table are used.
-   */
   const sql = `
     WITH params AS (
       SELECT
         lower(trim($1::text)) AS q,
+        $2::text AS mode_param,
         websearch_to_tsquery(
           'simple',
           $1::text
@@ -557,24 +545,12 @@ async function searchDatabase(
 
         CASE
 
-          /*
-           * TIER 4
-           * Exact title.
-           */
           WHEN exact_title = 1
           THEN 4
 
-          /*
-           * TIER 3
-           * Query begins the title.
-           */
           WHEN title_starts = 1
           THEN 3
 
-          /*
-           * TIER 3
-           * Most query words are in title.
-           */
           WHEN title_word_matches >=
             GREATEST(
               1,
@@ -587,14 +563,6 @@ async function searchDatabase(
             )
           THEN 3
 
-          /*
-           * TIER 2
-           *
-           * Normal title match.
-           *
-           * Secondary parenthetical matches
-           * are not treated as strong matches.
-           */
           WHEN title_contains = 1
             AND NOT (
               lower(
@@ -615,10 +583,6 @@ async function searchDatabase(
           WHEN title_word_matches > 0
           THEN 2
 
-          /*
-           * TIER 1
-           * Description / excerpt / FTS.
-           */
           WHEN
             description_phrase = 1
             OR description_word_matches > 0
@@ -626,10 +590,6 @@ async function searchDatabase(
             OR fts_rank > 0
           THEN 1
 
-          /*
-           * TIER 0
-           * Weak/body/reference matches.
-           */
           ELSE 0
 
         END AS relevance_tier
@@ -765,9 +725,6 @@ async function searchDatabase(
             50
           )
 
-          /*
-           * Body/reference-only penalty.
-           */
           +
 
           CASE
@@ -779,12 +736,6 @@ async function searchDatabase(
             ELSE 0
           END
 
-          /*
-           * Secondary title match penalty.
-           *
-           * Example:
-           * "Punjabi (India) translation..."
-           */
           +
 
           CASE
@@ -797,9 +748,6 @@ async function searchDatabase(
             ELSE 0
           END
 
-          /*
-           * Long title / weak focus penalty.
-           */
           +
 
           CASE
@@ -860,9 +808,6 @@ async function searchDatabase(
     OFFSET $6
   `;
 
-  /*
-   * Count query.
-   */
   const countSql = `
     WITH params AS (
       SELECT
@@ -953,9 +898,6 @@ async function searchDatabase(
       countResult.rows[0]?.total || 0
     );
 
-    /*
-     * Suggestion candidates.
-     */
     const candidateSql = `
       SELECT
         p.id,
@@ -1011,11 +953,6 @@ async function searchDatabase(
         ]
       );
 
-    /*
-     * Domain diversification.
-     *
-     * Maximum 3 results per domain.
-     */
     const diversified = [];
     const domainCounts = new Map();
 
@@ -1071,12 +1008,6 @@ async function searchDatabase(
 }
 
 async function getNews(limit = 20) {
-  /*
-   * No is_news/content_type column exists.
-   *
-   * Use pages having published_at as the current
-   * news candidate source.
-   */
   const sql = `
     SELECT *
     FROM pages
@@ -1507,9 +1438,6 @@ const server =
         const pathname =
           requestUrl.pathname;
 
-        /*
-         * HEALTH
-         */
         if (
           pathname === "/health" ||
           pathname === "/api/health"
@@ -1526,9 +1454,6 @@ const server =
           );
         }
 
-        /*
-         * SEARCH
-         */
         if (
           pathname === "/search" ||
           pathname === "/api/search"
@@ -1761,9 +1686,6 @@ const server =
           );
         }
 
-        /*
-         * NEWS
-         */
         if (
           pathname === "/news" ||
           pathname === "/api/news"
@@ -1797,9 +1719,6 @@ const server =
           );
         }
 
-        /*
-         * IMAGES
-         */
         if (
           pathname === "/images" ||
           pathname === "/api/images"
@@ -1843,9 +1762,6 @@ const server =
           );
         }
 
-        /*
-         * VIDEOS
-         */
         if (
           pathname === "/videos" ||
           pathname === "/api/videos"
@@ -1889,9 +1805,6 @@ const server =
           );
         }
 
-        /*
-         * MAPS
-         */
         if (
           pathname === "/maps" ||
           pathname === "/api/maps"
@@ -1945,9 +1858,6 @@ const server =
           );
         }
 
-        /*
-         * STATIC FRONTEND
-         */
         return await serveStatic(
           req,
           res,
