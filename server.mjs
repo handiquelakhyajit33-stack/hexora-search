@@ -19,7 +19,10 @@ const MAX_PAGE = 10000;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 
-const SEARCH_CANDIDATE_LIMIT = 5000;
+/*
+ * Search deeply, then rank.
+ */
+const SEARCH_CANDIDATE_LIMIT = 10000;
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -174,54 +177,34 @@ function resultFromRow(row) {
     language: row.language,
     date: row.date,
     published_at: row.published_at,
-    score: Number(row.final_score || row.score || 0),
+    score: Number(row.final_score || 0),
     image: row.image || null,
     image_items: row.image_items || [],
     video_items: row.video_items || []
   };
 }
 
-function buildSuggestions(rows) {
-  const seen = new Set();
-  const output = [];
-
-  for (const row of rows || []) {
-    const title = String(row.title || "").trim();
-
-    if (!title) continue;
-
-    const key = title.toLocaleLowerCase();
-
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    output.push(title);
-
-    if (output.length >= 5) break;
-  }
-
-  return output;
-}
-
 /* =========================================================
-   SEARCH ENGINE
+   SEARCH
 ========================================================= */
 
 async function searchDatabase(query, mode, page, limit) {
   const queryWords = wordsOf(query);
-  const queryWordCount = Math.max(queryWords.length, 1);
+  const wordCount = Math.max(queryWords.length, 1);
 
   const offset = (page - 1) * limit;
   const intent = detectIntent(query);
 
   /*
-    $1 = query
-    $2 = mode
-    $3 = query words
-    $4 = intent
-    $5 = candidate limit
-    $6 = offset
-  */
+   * PostgreSQL parameters:
+   *
+   * $1 = query
+   * $2 = mode
+   * $3 = query words
+   * $4 = intent
+   * $5 = candidate limit
+   * $6 = offset
+   */
 
   const dataSql = `
     WITH params AS (
@@ -229,61 +212,21 @@ async function searchDatabase(query, mode, page, limit) {
         lower(trim($1::text)) AS q,
         $2::text AS mode_param,
         $4::text AS intent_param,
-
         websearch_to_tsquery(
           'simple',
           $1::text
         ) AS tsq
     ),
 
-    base AS (
+    candidate AS (
       SELECT
         p.*,
 
         /*
-          =====================================================
-          FULL TEXT SCORE
-          =====================================================
-        */
-
-        ts_rank_cd(
-          COALESCE(p.search_vector, ''::tsvector),
-          params.tsq,
-          32
-        ) AS fts_rank,
-
-        /*
-          =====================================================
-          TITLE SIMILARITY
-          =====================================================
-        */
-
-        similarity(
-          lower(coalesce(p.title, '')),
-          params.q
-        ) AS title_similarity,
-
-        /*
-          =====================================================
-          DOMAIN / URL SIMILARITY
-          =====================================================
-        */
-
-        similarity(
-          lower(coalesce(p.domain, '')),
-          params.q
-        ) AS domain_similarity,
-
-        similarity(
-          lower(coalesce(p.url, '')),
-          params.q
-        ) AS url_similarity,
-
-        /*
-          =====================================================
-          EXACT TITLE
-          =====================================================
-        */
+         * ===================================================
+         * TITLE SIGNALS
+         * ===================================================
+         */
 
         CASE
           WHEN lower(trim(coalesce(p.title, ''))) = params.q
@@ -291,24 +234,12 @@ async function searchDatabase(query, mode, page, limit) {
           ELSE 0
         END AS exact_title,
 
-        /*
-          =====================================================
-          TITLE STARTS WITH QUERY
-          =====================================================
-        */
-
         CASE
           WHEN lower(trim(coalesce(p.title, '')))
             LIKE params.q || '%'
           THEN 1
           ELSE 0
         END AS title_starts,
-
-        /*
-          =====================================================
-          TITLE PHRASE
-          =====================================================
-        */
 
         CASE
           WHEN lower(coalesce(p.title, ''))
@@ -318,10 +249,10 @@ async function searchDatabase(query, mode, page, limit) {
         END AS title_phrase,
 
         /*
-          =====================================================
-          DESCRIPTION PHRASE
-          =====================================================
-        */
+         * ===================================================
+         * DESCRIPTION / EXCERPT
+         * ===================================================
+         */
 
         CASE
           WHEN lower(coalesce(p.description, ''))
@@ -329,12 +260,6 @@ async function searchDatabase(query, mode, page, limit) {
           THEN 1
           ELSE 0
         END AS description_phrase,
-
-        /*
-          =====================================================
-          EXCERPT PHRASE
-          =====================================================
-        */
 
         CASE
           WHEN lower(coalesce(p.excerpt, ''))
@@ -344,10 +269,10 @@ async function searchDatabase(query, mode, page, limit) {
         END AS excerpt_phrase,
 
         /*
-          =====================================================
-          URL PHRASE
-          =====================================================
-        */
+         * ===================================================
+         * URL
+         * ===================================================
+         */
 
         CASE
           WHEN lower(coalesce(p.url, ''))
@@ -356,68 +281,6 @@ async function searchDatabase(query, mode, page, limit) {
           ELSE 0
         END AS url_phrase,
 
-        /*
-          =====================================================
-          TITLE WORD COVERAGE
-          =====================================================
-        */
-
-        (
-          SELECT count(*)
-          FROM unnest($3::text[]) AS qw(word)
-          WHERE
-            lower(coalesce(p.title, ''))
-              LIKE '%' || lower(qw.word) || '%'
-        ) AS title_word_matches,
-
-        /*
-          =====================================================
-          DESCRIPTION WORD COVERAGE
-          =====================================================
-        */
-
-        (
-          SELECT count(*)
-          FROM unnest($3::text[]) AS qw(word)
-          WHERE
-            lower(coalesce(p.description, ''))
-              LIKE '%' || lower(qw.word) || '%'
-        ) AS description_word_matches,
-
-        /*
-          =====================================================
-          EXCERPT WORD COVERAGE
-          =====================================================
-        */
-
-        (
-          SELECT count(*)
-          FROM unnest($3::text[]) AS qw(word)
-          WHERE
-            lower(coalesce(p.excerpt, ''))
-              LIKE '%' || lower(qw.word) || '%'
-        ) AS excerpt_word_matches,
-
-        /*
-          =====================================================
-          CONTENT WORD COVERAGE
-          =====================================================
-        */
-
-        (
-          SELECT count(*)
-          FROM unnest($3::text[]) AS qw(word)
-          WHERE
-            lower(coalesce(p.content, ''))
-              LIKE '%' || lower(qw.word) || '%'
-        ) AS content_word_matches,
-
-        /*
-          =====================================================
-          DOMAIN EXACT MATCH
-          =====================================================
-        */
-
         CASE
           WHEN lower(coalesce(p.domain, '')) = params.q
           THEN 1
@@ -425,16 +288,105 @@ async function searchDatabase(query, mode, page, limit) {
         END AS exact_domain,
 
         /*
-          =====================================================
-          FRESHNESS
-          =====================================================
-        */
+         * ===================================================
+         * TITLE WORD MATCH
+         * ===================================================
+         */
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS w(word)
+          WHERE lower(coalesce(p.title, ''))
+            LIKE '%' || lower(w.word) || '%'
+        ) AS title_word_matches,
+
+        /*
+         * ===================================================
+         * DESCRIPTION WORD MATCH
+         * ===================================================
+         */
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS w(word)
+          WHERE lower(coalesce(p.description, ''))
+            LIKE '%' || lower(w.word) || '%'
+        ) AS description_word_matches,
+
+        /*
+         * ===================================================
+         * EXCERPT WORD MATCH
+         * ===================================================
+         */
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS w(word)
+          WHERE lower(coalesce(p.excerpt, ''))
+            LIKE '%' || lower(w.word) || '%'
+        ) AS excerpt_word_matches,
+
+        /*
+         * ===================================================
+         * CONTENT WORD MATCH
+         * ===================================================
+         */
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS w(word)
+          WHERE lower(coalesce(p.content, ''))
+            LIKE '%' || lower(w.word) || '%'
+        ) AS content_word_matches,
+
+        /*
+         * ===================================================
+         * FULL TEXT
+         * ===================================================
+         */
+
+        ts_rank_cd(
+          coalesce(
+            p.search_vector,
+            ''::tsvector
+          ),
+          params.tsq,
+          32
+        ) AS fts_rank,
+
+        /*
+         * ===================================================
+         * TRIGRAM TITLE SIMILARITY
+         * ===================================================
+         */
+
+        similarity(
+          lower(coalesce(p.title, '')),
+          params.q
+        ) AS title_similarity,
+
+        /*
+         * ===================================================
+         * DOMAIN SIMILARITY
+         * ===================================================
+         */
+
+        similarity(
+          lower(coalesce(p.domain, '')),
+          params.q
+        ) AS domain_similarity,
+
+        /*
+         * ===================================================
+         * FRESHNESS
+         * ===================================================
+         */
 
         CASE
-          WHEN p.published_at IS NULL THEN 0
+          WHEN p.published_at IS NULL THEN 0.0
 
           WHEN p.published_at >= NOW() - INTERVAL '1 day'
-            THEN 1.00
+            THEN 1.0
 
           WHEN p.published_at >= NOW() - INTERVAL '7 days'
             THEN 0.85
@@ -449,7 +401,7 @@ async function searchDatabase(query, mode, page, limit) {
             THEN 0.20
 
           ELSE 0.05
-        END AS freshness_score
+        END AS freshness
 
       FROM pages p
       CROSS JOIN params
@@ -457,441 +409,361 @@ async function searchDatabase(query, mode, page, limit) {
       WHERE
         (
           /*
-            ---------------------------------------------------
-            EXACT TITLE
-            ---------------------------------------------------
-          */
+           * -------------------------------------------------
+           * STRONG TITLE MATCHES
+           * -------------------------------------------------
+           */
+
           lower(trim(coalesce(p.title, ''))) = params.q
 
-          OR
+          OR lower(coalesce(p.title, ''))
+             LIKE params.q || '%'
+
+          OR lower(coalesce(p.title, ''))
+             LIKE '%' || params.q || '%'
 
           /*
-            ---------------------------------------------------
-            TITLE START
-            ---------------------------------------------------
-          */
-          lower(trim(coalesce(p.title, '')))
-            LIKE params.q || '%'
+           * -------------------------------------------------
+           * MULTI-WORD FTS
+           * -------------------------------------------------
+           */
 
-          OR
-
-          /*
-            ---------------------------------------------------
-            TITLE PHRASE
-            ---------------------------------------------------
-          */
-          lower(coalesce(p.title, ''))
-            LIKE '%' || params.q || '%'
-
-          OR
+          OR (
+            array_length($3::text[], 1) > 1
+            AND coalesce(
+              p.search_vector,
+              ''::tsvector
+            ) @@ params.tsq
+          )
 
           /*
-            ---------------------------------------------------
-            FTS
-            ---------------------------------------------------
-          */
-          coalesce(p.search_vector, ''::tsvector)
-            @@ params.tsq
+           * -------------------------------------------------
+           * DESCRIPTION / EXCERPT PHRASE
+           * -------------------------------------------------
+           */
 
-          OR
+          OR lower(coalesce(p.description, ''))
+             LIKE '%' || params.q || '%'
 
-          /*
-            ---------------------------------------------------
-            DESCRIPTION PHRASE
-            ---------------------------------------------------
-          */
-          lower(coalesce(p.description, ''))
-            LIKE '%' || params.q || '%'
-
-          OR
+          OR lower(coalesce(p.excerpt, ''))
+             LIKE '%' || params.q || '%'
 
           /*
-            ---------------------------------------------------
-            EXCERPT PHRASE
-            ---------------------------------------------------
-          */
-          lower(coalesce(p.excerpt, ''))
-            LIKE '%' || params.q || '%'
+           * -------------------------------------------------
+           * URL PHRASE
+           * -------------------------------------------------
+           */
 
-          OR
-
-          /*
-            ---------------------------------------------------
-            URL
-            ---------------------------------------------------
-          */
-          lower(coalesce(p.url, ''))
-            LIKE '%' || params.q || '%'
-
-          OR
+          OR lower(coalesce(p.url, ''))
+             LIKE '%' || params.q || '%'
 
           /*
-            ---------------------------------------------------
-            TITLE WORD
-            ---------------------------------------------------
-          */
-          EXISTS (
+           * -------------------------------------------------
+           * WORD MATCH IN TITLE
+           * -------------------------------------------------
+           */
+
+          OR EXISTS (
             SELECT 1
-            FROM unnest($3::text[]) AS qw(word)
+            FROM unnest($3::text[]) AS w(word)
             WHERE lower(coalesce(p.title, ''))
-              LIKE '%' || lower(qw.word) || '%'
+              LIKE '%' || lower(w.word) || '%'
           )
 
-          OR
-
           /*
-            ---------------------------------------------------
-            DESCRIPTION WORD
-            ---------------------------------------------------
-          */
-          EXISTS (
-            SELECT 1
-            FROM unnest($3::text[]) AS qw(word)
-            WHERE lower(coalesce(p.description, ''))
-              LIKE '%' || lower(qw.word) || '%'
+           * -------------------------------------------------
+           * MULTI-WORD DESCRIPTION MATCH
+           * -------------------------------------------------
+           */
+
+          OR (
+            array_length($3::text[], 1) > 1
+            AND (
+              SELECT count(*)
+              FROM unnest($3::text[]) AS w(word)
+              WHERE lower(coalesce(p.description, ''))
+                LIKE '%' || lower(w.word) || '%'
+            ) >= 2
           )
 
-          OR
-
           /*
-            ---------------------------------------------------
-            EXCERPT WORD
-            ---------------------------------------------------
-          */
-          EXISTS (
-            SELECT 1
-            FROM unnest($3::text[]) AS qw(word)
-            WHERE lower(coalesce(p.excerpt, ''))
-              LIKE '%' || lower(qw.word) || '%'
+           * -------------------------------------------------
+           * MULTI-WORD EXCERPT MATCH
+           * -------------------------------------------------
+           */
+
+          OR (
+            array_length($3::text[], 1) > 1
+            AND (
+              SELECT count(*)
+              FROM unnest($3::text[]) AS w(word)
+              WHERE lower(coalesce(p.excerpt, ''))
+                LIKE '%' || lower(w.word) || '%'
+            ) >= 2
           )
 
-          OR
-
           /*
-            ---------------------------------------------------
-            CONTENT WORD
+           * -------------------------------------------------
+           * CONTENT-ONLY MATCH
+           *
+           * Only allow content matching for multi-word
+           * searches when at least 50% of query words match.
+           *
+           * This is the important fix for:
+           * India -> Tamil Nadu / random pages
+           * -------------------------------------------------
+           */
 
-            Content-only match is allowed as candidate,
-            but will receive a strong ranking penalty later.
-            ---------------------------------------------------
-          */
-          EXISTS (
-            SELECT 1
-            FROM unnest($3::text[]) AS qw(word)
-            WHERE lower(coalesce(p.content, ''))
-              LIKE '%' || lower(qw.word) || '%'
+          OR (
+            array_length($3::text[], 1) > 1
+
+            AND (
+              SELECT count(*)
+              FROM unnest($3::text[]) AS w(word)
+              WHERE lower(coalesce(p.content, ''))
+                LIKE '%' || lower(w.word) || '%'
+            )::numeric
+            >=
+            GREATEST(
+              CEIL(
+                array_length($3::text[], 1) * 0.5
+              ),
+              2
+            )
           )
         )
 
         ${modeCondition(mode)}
+
+      LIMIT $5
     ),
 
     scored AS (
       SELECT
-        base.*,
+        candidate.*,
 
         /*
-          =====================================================
-          TITLE COVERAGE %
-          =====================================================
-        */
+         * ===================================================
+         * TITLE COVERAGE
+         * ===================================================
+         */
 
-        (
-          LEAST(
-            title_word_matches::numeric /
-            ${queryWordCount}::numeric,
-            1
-          )
+        LEAST(
+          title_word_matches::numeric /
+          ${wordCount}::numeric,
+          1
         ) AS title_coverage,
 
         /*
-          =====================================================
-          DESCRIPTION COVERAGE %
-          =====================================================
-        */
+         * ===================================================
+         * DESCRIPTION COVERAGE
+         * ===================================================
+         */
 
-        (
-          LEAST(
-            description_word_matches::numeric /
-            ${queryWordCount}::numeric,
-            1
-          )
+        LEAST(
+          description_word_matches::numeric /
+          ${wordCount}::numeric,
+          1
         ) AS description_coverage,
 
         /*
-          =====================================================
-          CONTENT COVERAGE %
-          =====================================================
-        */
+         * ===================================================
+         * CONTENT COVERAGE
+         * ===================================================
+         */
 
-        (
-          LEAST(
-            content_word_matches::numeric /
-            ${queryWordCount}::numeric,
-            1
-          )
+        LEAST(
+          content_word_matches::numeric /
+          ${wordCount}::numeric,
+          1
         ) AS content_coverage
 
-      FROM base
+      FROM candidate
     ),
 
-    final_scored AS (
+    ranked AS (
       SELECT
         scored.*,
 
         /*
-          =====================================================
-          FINAL RANKING SCORE
-          =====================================================
-
-          The order of importance is:
-
-          1. Exact title
-          2. Strong title relevance
-          3. All query words in title
-          4. Phrase relevance
-          5. FTS
-          6. Description
-          7. URL/domain
-          8. Authority
-          9. Quality
-          10. Freshness
-          11. Popularity
-
-          Body-only matches are deliberately weakened.
-        */
+         * ===================================================
+         * FINAL RELEVANCE SCORE
+         * ===================================================
+         */
 
         (
-
           /*
-            ---------------------------------------------------
-            EXACT TITLE
-            ---------------------------------------------------
-          */
-
-          exact_title * 1000000
+           * EXACT TITLE
+           */
+          exact_title * 10000000
 
           +
 
           /*
-            ---------------------------------------------------
-            TITLE START
-            ---------------------------------------------------
-          */
-
-          title_starts * 250000
+           * TITLE START
+           */
+          title_starts * 1500000
 
           +
 
           /*
-            ---------------------------------------------------
-            TITLE PHRASE
-            ---------------------------------------------------
-          */
-
-          title_phrase * 120000
+           * TITLE PHRASE
+           */
+          title_phrase * 800000
 
           +
 
           /*
-            ---------------------------------------------------
-            TITLE COVERAGE
-            ---------------------------------------------------
-          */
-
-          title_coverage * 180000
+           * TITLE COVERAGE
+           */
+          title_coverage * 700000
 
           +
 
           /*
-            ---------------------------------------------------
-            TITLE WORD MATCH COUNT
-            ---------------------------------------------------
-          */
-
+           * TITLE WORDS
+           */
           LEAST(
             title_word_matches,
-            ${queryWordCount}
-          ) * 30000
+            ${wordCount}
+          ) * 150000
 
           +
 
           /*
-            ---------------------------------------------------
-            TITLE SIMILARITY
-            ---------------------------------------------------
-          */
-
-          title_similarity * 50000
+           * TITLE SIMILARITY
+           */
+          title_similarity * 150000
 
           +
 
           /*
-            ---------------------------------------------------
-            FULL TEXT
-            ---------------------------------------------------
-          */
-
+           * FULL TEXT
+           */
           LEAST(
-            fts_rank * 50000,
-            150000
+            fts_rank * 100000,
+            500000
           )
 
           +
 
           /*
-            ---------------------------------------------------
-            DESCRIPTION PHRASE
-            ---------------------------------------------------
-          */
-
-          description_phrase * 12000
+           * DESCRIPTION PHRASE
+           */
+          description_phrase * 50000
 
           +
 
           /*
-            ---------------------------------------------------
-            DESCRIPTION COVERAGE
-            ---------------------------------------------------
-          */
-
-          description_coverage * 15000
+           * DESCRIPTION COVERAGE
+           */
+          description_coverage * 50000
 
           +
 
           /*
-            ---------------------------------------------------
-            EXCERPT PHRASE
-            ---------------------------------------------------
-          */
-
-          excerpt_phrase * 7000
+           * EXCERPT PHRASE
+           */
+          excerpt_phrase * 25000
 
           +
 
           /*
-            ---------------------------------------------------
-            EXCERPT COVERAGE
-            ---------------------------------------------------
-          */
-
-          excerpt_word_matches * 3000
+           * URL
+           */
+          url_phrase * 15000
 
           +
 
           /*
-            ---------------------------------------------------
-            URL MATCH
-            ---------------------------------------------------
-          */
-
-          url_phrase * 6000
+           * EXACT DOMAIN
+           */
+          exact_domain * 100000
 
           +
 
           /*
-            ---------------------------------------------------
-            EXACT DOMAIN
-            ---------------------------------------------------
-          */
-
-          exact_domain * 25000
-
-          +
-
-          /*
-            ---------------------------------------------------
-            DOMAIN SIMILARITY
-            ---------------------------------------------------
-          */
-
+           * DOMAIN SIMILARITY
+           */
           domain_similarity * 10000
 
           +
 
           /*
-            ---------------------------------------------------
-            AUTHORITY
-            ---------------------------------------------------
-          */
-
+           * AUTHORITY
+           */
           LEAST(
-            GREATEST(coalesce(authority_score, 0), 0),
+            GREATEST(
+              coalesce(authority_score, 0),
+              0
+            ),
             100
           ) * 1000
 
           +
 
           /*
-            ---------------------------------------------------
-            QUALITY
-            ---------------------------------------------------
-          */
-
+           * QUALITY
+           */
           LEAST(
-            GREATEST(coalesce(quality_score, 0), 0),
+            GREATEST(
+              coalesce(quality_score, 0),
+              0
+            ),
             100
-          ) * 500
+          ) * 600
 
           +
 
           /*
-            ---------------------------------------------------
-            POPULARITY
-            ---------------------------------------------------
-          */
-
+           * POPULARITY
+           */
           LEAST(
-            GREATEST(coalesce(popularity_score, 0), 0),
+            GREATEST(
+              coalesce(popularity_score, 0),
+              0
+            ),
             100
           ) * 300
 
           +
 
           /*
-            ---------------------------------------------------
-            INBOUND LINKS
-            ---------------------------------------------------
-          */
-
+           * INBOUND LINKS
+           */
           LEAST(
-            GREATEST(coalesce(inbound_links, 0), 0),
+            GREATEST(
+              coalesce(inbound_links, 0),
+              0
+            ),
             100
           ) * 200
 
           +
 
           /*
-            ---------------------------------------------------
-            FRESHNESS
-            ---------------------------------------------------
-          */
-
-          freshness_score * 5000
+           * FRESHNESS
+           */
+          freshness * 5000
 
           +
 
           /*
-            ---------------------------------------------------
-            CONTENT MATCH
-
-            Content relevance helps, but is intentionally
-            much weaker than title relevance.
-            ---------------------------------------------------
-          */
-
+           * SMALL CONTENT SUPPORT
+           */
           LEAST(
             content_word_matches,
-            ${queryWordCount}
-          ) * 500
+            ${wordCount}
+          ) * 300
 
           -
 
           /*
-            ---------------------------------------------------
-            BODY-ONLY PENALTY
-            ---------------------------------------------------
-          */
+           * =================================================
+           * STRONG PENALTY:
+           * content-only result
+           * =================================================
+           */
 
           CASE
             WHEN
@@ -901,26 +773,26 @@ async function searchDatabase(query, mode, page, limit) {
               AND title_starts = 0
               AND description_phrase = 0
               AND excerpt_phrase = 0
-              AND fts_rank <= 0
-            THEN 100000
+              AND url_phrase = 0
+            THEN 250000
             ELSE 0
           END
 
           -
 
           /*
-            ---------------------------------------------------
-            LONG-TITLE WEAK MATCH PENALTY
-            ---------------------------------------------------
-          */
+           * =================================================
+           * TITLE-IRRELEVANT LONG ARTICLE PENALTY
+           * =================================================
+           */
 
           CASE
             WHEN
-              title_word_matches > 0
-              AND title_phrase = 0
-              AND exact_title = 0
-              AND length(coalesce(title, '')) > 140
-            THEN 10000
+              title_word_matches = 0
+              AND length(
+                coalesce(title, '')
+              ) > 100
+            THEN 50000
             ELSE 0
           END
 
@@ -930,31 +802,38 @@ async function searchDatabase(query, mode, page, limit) {
     )
 
     SELECT *
-    FROM final_scored
+    FROM ranked
+
+    /*
+     * =======================================================
+     * IMPORTANT:
+     * SCORE FIRST
+     * =======================================================
+     */
 
     ORDER BY
-
-      /*
-        FINAL SCORE IS THE PRIMARY ORDER.
-      */
       final_score DESC,
 
-      /*
-        Stable tie breakers.
-      */
       exact_title DESC,
       title_starts DESC,
       title_phrase DESC,
       title_coverage DESC,
       title_word_matches DESC,
+
       fts_rank DESC,
       title_similarity DESC,
+
       description_phrase DESC,
+      description_coverage DESC,
+
+      exact_domain DESC,
       authority_score DESC,
       quality_score DESC,
       popularity_score DESC,
       inbound_links DESC,
-      freshness_score DESC,
+
+      freshness DESC,
+
       id DESC
 
     LIMIT $5
@@ -962,17 +841,22 @@ async function searchDatabase(query, mode, page, limit) {
   `;
 
   /*
-    ===========================================================
-    COUNT
-    ===========================================================
-  */
+   * =======================================================
+   * COUNT
+   * =======================================================
+   */
 
   const countSql = `
     SELECT COUNT(*)::int AS count
+
     FROM pages p
 
     WHERE
       (
+        /*
+         * Exact / title
+         */
+
         lower(trim(coalesce(p.title, '')))
           = lower(trim($1::text))
 
@@ -980,6 +864,10 @@ async function searchDatabase(query, mode, page, limit) {
 
         lower(coalesce(p.title, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
+
+        /*
+         * Description / excerpt
+         */
 
         OR
 
@@ -991,53 +879,69 @@ async function searchDatabase(query, mode, page, limit) {
         lower(coalesce(p.excerpt, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
 
+        /*
+         * URL
+         */
+
         OR
 
         lower(coalesce(p.url, ''))
           LIKE '%' || lower(trim($1::text)) || '%'
 
-        OR
-
-        coalesce(p.search_vector, ''::tsvector)
-          @@ websearch_to_tsquery(
-            'simple',
-            $1::text
-          )
+        /*
+         * FTS
+         */
 
         OR
 
-        EXISTS (
+        coalesce(
+          p.search_vector,
+          ''::tsvector
+        )
+        @@ websearch_to_tsquery(
+          'simple',
+          $1::text
+        )
+
+        /*
+         * Title word
+         */
+
+        OR EXISTS (
           SELECT 1
-          FROM unnest($2::text[]) AS qw(word)
+          FROM unnest($2::text[]) AS w(word)
           WHERE lower(coalesce(p.title, ''))
-            LIKE '%' || lower(qw.word) || '%'
+            LIKE '%' || lower(w.word) || '%'
         )
 
-        OR
+        /*
+         * Multi-word description
+         */
 
-        EXISTS (
-          SELECT 1
-          FROM unnest($2::text[]) AS qw(word)
-          WHERE lower(coalesce(p.description, ''))
-            LIKE '%' || lower(qw.word) || '%'
+        OR (
+          array_length($2::text[], 1) > 1
+
+          AND (
+            SELECT count(*)
+            FROM unnest($2::text[]) AS w(word)
+            WHERE lower(coalesce(p.description, ''))
+              LIKE '%' || lower(w.word) || '%'
+          ) >= 2
         )
 
-        OR
+        /*
+         * Multi-word content
+         */
 
-        EXISTS (
-          SELECT 1
-          FROM unnest($2::text[]) AS qw(word)
-          WHERE lower(coalesce(p.excerpt, ''))
-            LIKE '%' || lower(qw.word) || '%'
-        )
+        OR (
+          array_length($2::text[], 1) > 1
 
-        OR
-
-        EXISTS (
-          SELECT 1
-          FROM unnest($2::text[]) AS qw(word)
-          WHERE lower(coalesce(p.content, ''))
-            LIKE '%' || lower(qw.word) || '%'
+          AND (
+            SELECT count(*)
+            FROM unnest($2::text[]) AS w(word)
+            WHERE lower(coalesce(p.content, ''))
+              LIKE '%' || lower(w.word) || '%'
+          ) >= 2
         )
       )
 
@@ -1045,10 +949,10 @@ async function searchDatabase(query, mode, page, limit) {
   `;
 
   /*
-    ===========================================================
-    SUGGESTIONS
-    ===========================================================
-  */
+   * =======================================================
+   * SUGGESTIONS
+   * =======================================================
+   */
 
   const suggestionSql = `
     SELECT
@@ -1084,41 +988,49 @@ async function searchDatabase(query, mode, page, limit) {
     offset
   ];
 
-  const [dataResult, countResult, suggestionResult] =
-    await Promise.all([
-      pool.query(dataSql, dataParams),
-      pool.query(countSql, [query, queryWords]),
-      pool.query(suggestionSql, [query])
-    ]);
+  const [
+    dataResult,
+    countResult,
+    suggestionResult
+  ] = await Promise.all([
+    pool.query(dataSql, dataParams),
+
+    pool.query(
+      countSql,
+      [query, queryWords]
+    ),
+
+    pool.query(
+      suggestionSql,
+      [query]
+    )
+  ]);
+
+  /*
+   * =======================================================
+   * DOMAIN DIVERSIFICATION
+   * =======================================================
+   */
 
   const rows = dataResult.rows || [];
 
-  /*
-    ===========================================================
-    DOMAIN DIVERSIFICATION
-    ===========================================================
-
-    One domain should not occupy the whole first page.
-
-    But exact-title results are protected.
-  */
-
-  const exactRows = rows.filter(
-    row => Number(row.exact_title) === 1
+  const exact = rows.filter(
+    r => Number(r.exact_title) === 1
   );
 
-  const normalRows = rows.filter(
-    row => Number(row.exact_title) !== 1
+  const nonExact = rows.filter(
+    r => Number(r.exact_title) !== 1
   );
 
-  const selected = [];
-  const domainCounts = new Map();
+  const finalRows = [];
+  const seenUrls = new Set();
+  const domainCount = new Map();
 
   /*
-    Exact results first.
-  */
+   * Exact title results are always first.
+   */
 
-  for (const row of exactRows) {
+  for (const row of exact) {
     const key =
       String(
         row.canonical_url ||
@@ -1126,72 +1038,62 @@ async function searchDatabase(query, mode, page, limit) {
         row.id
       );
 
-    if (!selected.some(
-      x =>
-        String(
-          x.canonical_url ||
-          x.url ||
-          x.id
-        ) === key
-    )) {
-      selected.push(row);
+    if (seenUrls.has(key)) {
+      continue;
     }
 
-    if (selected.length >= limit) {
+    seenUrls.add(key);
+    finalRows.push(row);
+
+    if (finalRows.length >= limit) {
       break;
     }
   }
 
   /*
-    Normal results.
-  */
+   * Other results.
+   */
 
-  for (const row of normalRows) {
-    if (selected.length >= limit) {
-      break;
-    }
+  if (finalRows.length < limit) {
+    for (const row of nonExact) {
+      if (finalRows.length >= limit) {
+        break;
+      }
 
-    const domain =
-      String(row.domain || "")
-        .toLocaleLowerCase();
-
-    const count =
-      domainCounts.get(domain) || 0;
-
-    /*
-      Maximum 3 normal results per domain.
-    */
-
-    if (count >= 3) {
-      continue;
-    }
-
-    const key =
-      String(
-        row.canonical_url ||
-        row.url ||
-        row.id
-      );
-
-    const duplicate = selected.some(
-      x =>
+      const key =
         String(
-          x.canonical_url ||
-          x.url ||
-          x.id
-        ) === key
-    );
+          row.canonical_url ||
+          row.url ||
+          row.id
+        );
 
-    if (duplicate) {
-      continue;
+      if (seenUrls.has(key)) {
+        continue;
+      }
+
+      const domain =
+        String(row.domain || "")
+          .toLocaleLowerCase();
+
+      const count =
+        domainCount.get(domain) || 0;
+
+      /*
+       * Maximum 3 normal results per domain.
+       */
+
+      if (count >= 3) {
+        continue;
+      }
+
+      seenUrls.add(key);
+      finalRows.push(row);
+
+      domainCount.set(
+        domain,
+        count + 1
+      );
     }
-
-    selected.push(row);
-
-    domainCounts.set(
-      domain,
-      count + 1
-    );
   }
 
   return {
@@ -1205,14 +1107,49 @@ async function searchDatabase(query, mode, page, limit) {
       countResult.rows?.[0]?.count || 0
     ),
 
-    results: selected
+    results: finalRows
       .slice(0, limit)
       .map(resultFromRow),
 
-    suggestions: buildSuggestions(
-      suggestionResult.rows || []
-    )
+    suggestions:
+      buildSuggestions(
+        suggestionResult.rows || []
+      )
   };
+}
+
+/* =========================================================
+   SUGGESTIONS
+========================================================= */
+
+function buildSuggestions(rows) {
+  const seen = new Set();
+  const output = [];
+
+  for (const row of rows) {
+    const title =
+      String(row.title || "").trim();
+
+    if (!title) {
+      continue;
+    }
+
+    const key =
+      title.toLocaleLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    output.push(title);
+
+    if (output.length >= 5) {
+      break;
+    }
+  }
+
+  return output;
 }
 
 /* =========================================================
@@ -1237,6 +1174,7 @@ async function getNews(limit = 20) {
       image,
       image_items,
       video_items
+
     FROM pages
 
     WHERE published_at IS NOT NULL
@@ -1248,18 +1186,23 @@ async function getNews(limit = 20) {
     LIMIT $1
   `;
 
-  const result = await pool.query(sql, [limit]);
+  const result =
+    await pool.query(sql, [limit]);
 
-  return result.rows.map(resultFromRow);
+  return result.rows.map(
+    resultFromRow
+  );
 }
 
 /* =========================================================
    MEDIA
 ========================================================= */
 
-async function getMedia(type, query, limit = 20) {
-  const q = normalizeQuery(query);
-
+async function getMedia(
+  type,
+  query,
+  limit = 20
+) {
   let sql;
 
   if (type === "images") {
@@ -1280,6 +1223,7 @@ async function getMedia(type, query, limit = 20) {
         image,
         image_items,
         video_items
+
       FROM pages
 
       WHERE
@@ -1310,6 +1254,7 @@ async function getMedia(type, query, limit = 20) {
         image,
         image_items,
         video_items
+
       FROM pages
 
       WHERE
@@ -1323,9 +1268,12 @@ async function getMedia(type, query, limit = 20) {
     `;
   }
 
-  const result = await pool.query(sql, [limit]);
+  const result =
+    await pool.query(sql, [limit]);
 
-  return result.rows.map(resultFromRow);
+  return result.rows.map(
+    resultFromRow
+  );
 }
 
 /* =========================================================
@@ -1334,12 +1282,13 @@ async function getMedia(type, query, limit = 20) {
 
 async function healthCheck() {
   try {
-    const result = await pool.query(`
-      SELECT
-        NOW() AS now,
-        COUNT(*)::bigint AS pages
-      FROM pages
-    `);
+    const result =
+      await pool.query(`
+        SELECT
+          NOW() AS now,
+          COUNT(*)::bigint AS pages
+        FROM pages
+      `);
 
     return {
       ok: true,
@@ -1364,12 +1313,16 @@ async function healthCheck() {
 ========================================================= */
 
 function safeStaticPath(urlPath) {
-  const clean = decodeURIComponent(urlPath)
-    .split("?")[0]
-    .replace(/^\/+/, "");
+  const clean =
+    decodeURIComponent(urlPath)
+      .split("?")[0]
+      .replace(/^\/+/, "");
 
   const filePath =
-    path.join(__dirname, clean);
+    path.join(
+      __dirname,
+      clean
+    );
 
   const root =
     path.resolve(__dirname);
@@ -1432,12 +1385,20 @@ function contentType(filePath) {
   );
 }
 
-function serveStatic(res, pathname) {
+function serveStatic(
+  res,
+  pathname
+) {
   let filePath =
     safeStaticPath(pathname);
 
   if (!filePath) {
-    sendText(res, 403, "Forbidden");
+    sendText(
+      res,
+      403,
+      "Forbidden"
+    );
+
     return true;
   }
 
@@ -1446,7 +1407,9 @@ function serveStatic(res, pathname) {
     !fs.statSync(filePath).isFile()
   ) {
     filePath =
-      safeStaticPath("index.html");
+      safeStaticPath(
+        "index.html"
+      );
 
     if (
       !filePath ||
@@ -1477,7 +1440,7 @@ function serveStatic(res, pathname) {
 }
 
 /* =========================================================
-   HTTP SERVER
+   SERVER
 ========================================================= */
 
 const server =
@@ -1497,8 +1460,8 @@ const server =
           requestUrl.pathname;
 
         /*
-          HEALTH
-        */
+         * HEALTH
+         */
 
         if (
           pathname === "/health" ||
@@ -1517,8 +1480,8 @@ const server =
         }
 
         /*
-          SEARCH
-        */
+         * SEARCH
+         */
 
         if (
           pathname === "/search" ||
@@ -1531,13 +1494,16 @@ const server =
 
           const mode =
             String(
-              requestUrl.searchParams.get("mode") ||
-              "web"
+              requestUrl.searchParams.get(
+                "mode"
+              ) || "web"
             ).toLowerCase();
 
           const page =
             safeInt(
-              requestUrl.searchParams.get("page"),
+              requestUrl.searchParams.get(
+                "page"
+              ),
               1,
               1,
               MAX_PAGE
@@ -1545,18 +1511,24 @@ const server =
 
           const limit =
             safeInt(
-              requestUrl.searchParams.get("limit"),
+              requestUrl.searchParams.get(
+                "limit"
+              ),
               DEFAULT_LIMIT,
               1,
               MAX_LIMIT
             );
 
           if (!query) {
-            sendJson(res, 400, {
-              ok: false,
-              error:
-                "Search query is required"
-            });
+            sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error:
+                  "Search query is required"
+              }
+            );
 
             return;
           }
@@ -1569,17 +1541,21 @@ const server =
               limit
             );
 
-          sendJson(res, 200, {
-            ok: true,
-            ...data
-          });
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              ...data
+            }
+          );
 
           return;
         }
 
         /*
-          NEWS
-        */
+         * NEWS
+         */
 
         if (
           pathname === "/news" ||
@@ -1587,7 +1563,9 @@ const server =
         ) {
           const limit =
             safeInt(
-              requestUrl.searchParams.get("limit"),
+              requestUrl.searchParams.get(
+                "limit"
+              ),
               DEFAULT_LIMIT,
               1,
               MAX_LIMIT
@@ -1596,17 +1574,21 @@ const server =
           const results =
             await getNews(limit);
 
-          sendJson(res, 200, {
-            ok: true,
-            results
-          });
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              results
+            }
+          );
 
           return;
         }
 
         /*
-          IMAGES
-        */
+         * IMAGES
+         */
 
         if (
           pathname === "/images" ||
@@ -1619,7 +1601,9 @@ const server =
 
           const limit =
             safeInt(
-              requestUrl.searchParams.get("limit"),
+              requestUrl.searchParams.get(
+                "limit"
+              ),
               DEFAULT_LIMIT,
               1,
               MAX_LIMIT
@@ -1632,18 +1616,22 @@ const server =
               limit
             );
 
-          sendJson(res, 200, {
-            ok: true,
-            query,
-            results
-          });
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              query,
+              results
+            }
+          );
 
           return;
         }
 
         /*
-          VIDEOS
-        */
+         * VIDEOS
+         */
 
         if (
           pathname === "/videos" ||
@@ -1656,7 +1644,9 @@ const server =
 
           const limit =
             safeInt(
-              requestUrl.searchParams.get("limit"),
+              requestUrl.searchParams.get(
+                "limit"
+              ),
               DEFAULT_LIMIT,
               1,
               MAX_LIMIT
@@ -1669,34 +1659,42 @@ const server =
               limit
             );
 
-          sendJson(res, 200, {
-            ok: true,
-            query,
-            results
-          });
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              query,
+              results
+            }
+          );
 
           return;
         }
 
         /*
-          MAPS
-        */
+         * MAPS
+         */
 
         if (
           pathname === "/maps" ||
           pathname === "/api/maps"
         ) {
-          sendJson(res, 200, {
-            ok: true,
-            results: []
-          });
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              results: []
+            }
+          );
 
           return;
         }
 
         /*
-          STATIC FRONTEND
-        */
+         * STATIC FRONTEND
+         */
 
         if (req.method === "GET") {
           if (
@@ -1721,13 +1719,17 @@ const server =
           error
         );
 
-        sendJson(res, 500, {
-          ok: false,
-          error:
-            "Internal server error",
-          message:
-            error.message
-        });
+        sendJson(
+          res,
+          500,
+          {
+            ok: false,
+            error:
+              "Internal server error",
+            message:
+              error.message
+          }
+        );
       }
     }
   );
@@ -1747,7 +1749,7 @@ server.listen(
 );
 
 /* =========================================================
-   GRACEFUL SHUTDOWN
+   SHUTDOWN
 ========================================================= */
 
 async function shutdown(signal) {
