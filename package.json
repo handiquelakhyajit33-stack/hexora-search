@@ -1,3 +1,4 @@
+```json
 {
   "name": "hexora-search-engine",
   "version": "6.0.0",
@@ -6,6 +7,7 @@
   "scripts": {
     "start": "node server.mjs",
     "crawler": "node worker/worker.mjs",
+    "demand": "node demand-trends.mjs",
     "migrate:supabase": "node migrate-supabase.mjs",
     "archive:neon": "node archive-neon-to-r2.mjs",
     "rank": "node recalculate-authority.mjs",
@@ -21,3 +23,4 @@
     "robots-parser": "^3.0.0"
   }
 }
+```
