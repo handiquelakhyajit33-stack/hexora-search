@@ -5,13 +5,16 @@ import {
 
 const INTERVAL = Math.max(
   5000,
-  Number(process.env.CRAWL_WORKER_INTERVAL_MS || 15000)
+  Number(
+    process.env.CRAWL_WORKER_INTERVAL_MS ||
+      15000
+  )
 );
 
 let stopping = false;
 
 console.log(
-  `[HEXORA] crawler worker started`
+  "[HEXORA] crawler worker started"
 );
 
 console.log(
@@ -19,8 +22,16 @@ console.log(
 );
 
 console.log(
-  `[HEXORA] batch=${process.env.CRAWL_BATCH_SIZE || 5}`
+  `[HEXORA] batch=${
+    process.env.CRAWL_BATCH_SIZE || 5
+  }`
 );
+
+async function sleep(ms) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
 
 async function loop() {
   while (!stopping) {
@@ -29,29 +40,40 @@ async function loop() {
         await runCrawlCycle();
 
       console.log(
-        `[HEXORA] cycle: jobs=${result.jobs}, completed=${result.completed}`
+        `[HEXORA] cycle: ` +
+        `jobs=${result.jobs}, ` +
+        `indexed=${result.indexed}, ` +
+        `failed=${result.failed}, ` +
+        `blocked=${result.blocked}, ` +
+        `discovered=${result.discovered}`
       );
+
+      if (
+        result.storagePaused
+      ) {
+        console.warn(
+          "[HEXORA] storage protection active"
+        );
+      }
     } catch (error) {
       console.error(
         "[HEXORA] crawl cycle failed:",
         error?.message || error
       );
 
-      await new Promise(resolve =>
-        setTimeout(resolve, 15000)
-      );
+      await sleep(15000);
     }
 
     if (!stopping) {
-      await new Promise(resolve =>
-        setTimeout(resolve, INTERVAL)
-      );
+      await sleep(INTERVAL);
     }
   }
 }
 
 async function stop(signal) {
-  if (stopping) return;
+  if (stopping) {
+    return;
+  }
 
   stopping = true;
 
@@ -61,7 +83,12 @@ async function stop(signal) {
 
   try {
     await shutdownCrawler();
-  } catch {}
+  } catch (error) {
+    console.error(
+      "[HEXORA] shutdown error:",
+      error?.message || error
+    );
+  }
 
   process.exit(0);
 }
