@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
@@ -9,25 +10,40 @@ const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 8080);
-const DATABASE_URL = String(
-  process.env.DATABASE_URL || ""
-).trim();
+/* =========================================================
+   CONFIG
+========================================================= */
 
-const DB_POOL_MAX = Number(
-  process.env.DB_POOL_MAX || 10
-);
+const PORT = Number(process.env.PORT || 8080);
+
+const DATABASE_URL =
+  String(process.env.DATABASE_URL || "").trim();
+
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL is missing");
+}
+
+const DB_POOL_MAX =
+  Number(process.env.DB_POOL_MAX || 10);
 
 const MAX_QUERY_LENGTH = 300;
-const MAX_PAGE = 10000;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
-
 const SEARCH_CANDIDATE_LIMIT = 10000;
 
-/* =========================================================
-   DATABASE
-========================================================= */
+const RAZORPAY_KEY_ID =
+  String(process.env.RAZORPAY_KEY_ID || "").trim();
+
+const RAZORPAY_KEY_SECRET =
+  String(process.env.RAZORPAY_KEY_SECRET || "").trim();
+
+const RAZORPAY_WEBHOOK_SECRET =
+  String(
+    process.env.RAZORPAY_WEBHOOK_SECRET || ""
+  ).trim();
+
+const ADS_ADMIN_KEY =
+  String(process.env.HEXORA_ADS_ADMIN_KEY || "").trim();
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -39,15 +55,12 @@ const pool = new Pool({
     : { rejectUnauthorized: false }
 });
 
-pool.on("error", (error) => {
-  console.error(
-    "[HEXORA] PostgreSQL pool error:",
-    error?.message || error
-  );
-});
+console.log(
+  "[HEXORA] Neon database configured."
+);
 
 /* =========================================================
-   HELPERS
+   BASIC HELPERS
 ========================================================= */
 
 function sendJson(res, status, data) {
@@ -57,6 +70,11 @@ function sendJson(res, status, data) {
     "Content-Type":
       "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers":
+      "Content-Type, X-HEXORA-ADVERTISER-KEY, X-HEXORA-ADMIN-KEY",
+    "Access-Control-Allow-Methods":
+      "GET,POST,OPTIONS",
     "Content-Length":
       Buffer.byteLength(body)
   });
@@ -68,10 +86,10 @@ function sendText(
   res,
   status,
   text,
-  contentType = "text/plain; charset=utf-8"
+  type = "text/plain; charset=utf-8"
 ) {
   res.writeHead(status, {
-    "Content-Type": contentType,
+    "Content-Type": type,
     "Content-Length": Buffer.byteLength(text)
   });
 
@@ -112,18 +130,41 @@ function safeInt(
   );
 }
 
+function safeNumber(
+  value,
+  fallback = 0
+) {
+  const n = Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : fallback;
+}
+
+function cleanText(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
 
-    req.on("data", (chunk) => {
-      body += chunk;
+    req.on("data", chunk => {
+      body += chunk.toString();
 
-      if (body.length > 1024 * 1024) {
+      if (body.length > 2 * 1024 * 1024) {
         reject(
-          new Error(
-            "Request body too large"
-          )
+          new Error("Request body too large")
         );
 
         req.destroy();
@@ -140,9 +181,7 @@ function parseJsonBody(req) {
         resolve(JSON.parse(body));
       } catch {
         reject(
-          new Error(
-            "Invalid JSON body"
-          )
+          new Error("Invalid JSON body")
         );
       }
     });
@@ -151,227 +190,33 @@ function parseJsonBody(req) {
   });
 }
 
-function cleanAdText(
-  value,
-  max = 500
-) {
-  return String(value || "")
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-}
+function validHttpUrl(value) {
+  try {
+    const url = new URL(String(value));
 
-function normalizeAdKeywords(value) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) =>
-        cleanAdText(
-          item,
-          100
-        ).toLowerCase()
-      )
-      .filter(Boolean)
-      .slice(0, 50);
-  }
-
-  return String(value || "")
-    .split(",")
-    .map((item) =>
-      cleanAdText(
-        item,
-        100
-      ).toLowerCase()
-    )
-    .filter(Boolean)
-    .slice(0, 50);
-}
-
-function detectIntent(query) {
-  const q =
-    query.toLocaleLowerCase();
-
-  if (
-    /\b(news|latest|today|breaking|current|update|updates)\b/i.test(
-      q
-    )
-  ) {
-    return "news";
-  }
-
-  if (
-    /\b(image|images|photo|photos|picture|pictures)\b/i.test(
-      q
-    )
-  ) {
-    return "images";
-  }
-
-  if (
-    /\b(video|videos|watch)\b/i.test(
-      q
-    )
-  ) {
-    return "videos";
-  }
-
-  if (
-    /\b(map|maps|location|directions)\b/i.test(
-      q
-    )
-  ) {
-    return "maps";
-  }
-
-  return "web";
-}
-
-function modeCondition(mode) {
-  if (mode === "news") {
-    return "AND p.published_at IS NOT NULL";
-  }
-
-  return "";
-}
-
-function cleanSnippetText(value) {
-  return String(value || "")
-    .replace(
-      /<script[\s\S]*?<\/script>/gi,
-      " "
-    )
-    .replace(
-      /<style[\s\S]*?<\/style>/gi,
-      " "
-    )
-    .replace(
-      /<noscript[\s\S]*?<\/noscript>/gi,
-      " "
-    )
-    .replace(
-      /<[^>]+>/g,
-      " "
-    )
-    .replace(
-      /&nbsp;/gi,
-      " "
-    )
-    .replace(
-      /&amp;/gi,
-      "&"
-    )
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim();
-}
-
-function makeSnippet(row) {
-  const description =
-    cleanSnippetText(
-      row.description
+    return (
+      url.protocol === "http:" ||
+      url.protocol === "https:"
     );
-
-  if (description) {
-    return description.slice(
-      0,
-      320
-    );
+  } catch {
+    return false;
   }
-
-  const excerpt =
-    cleanSnippetText(
-      row.excerpt
-    );
-
-  if (excerpt) {
-    return excerpt.slice(
-      0,
-      320
-    );
-  }
-
-  const content =
-    cleanSnippetText(
-      row.content
-    );
-
-  if (content) {
-    return content.slice(
-      0,
-      320
-    );
-  }
-
-  return "";
-}
-
-function resultFromRow(row) {
-  return {
-    id: row.id,
-    title: row.title,
-    url: row.url,
-    canonical_url:
-      row.canonical_url ||
-      row.url,
-    domain: row.domain,
-    source:
-      row.source ||
-      row.domain,
-    description:
-      cleanSnippetText(
-        row.description
-      ),
-    snippet:
-      makeSnippet(row),
-    language: row.language,
-    date: row.date,
-    published_at:
-      row.published_at,
-    score:
-      Number(
-        row.final_score || 0
-      ),
-    image:
-      row.image || null,
-    image_items:
-      row.image_items || [],
-    video_items:
-      row.video_items || []
-  };
 }
 
 /* =========================================================
-   SEARCH DEMAND
+   DEMAND TRACKING
 ========================================================= */
 
-async function recordSearchDemand(
-  query
-) {
-  const normalized =
-    normalizeQuery(query)
-      .toLocaleLowerCase();
+async function recordSearchDemand(query) {
+  const normalized = normalizeQuery(query);
 
-  if (
-    !normalized ||
-    normalized.length < 2
-  ) {
-    return;
-  }
+  if (!normalized) return;
 
   try {
     await pool.query(
       `
-      INSERT INTO search_queries (
+      INSERT INTO search_queries
+      (
         query,
         normalized_query,
         search_count,
@@ -382,9 +227,10 @@ async function recordSearchDemand(
         created_at,
         updated_at
       )
-      VALUES (
+      VALUES
+      (
         $1,
-        $2,
+        lower($1),
         1,
         1,
         NOW(),
@@ -393,44 +239,34 @@ async function recordSearchDemand(
         NOW(),
         NOW()
       )
-
       ON CONFLICT (normalized_query)
-
       DO UPDATE SET
-        query =
-          EXCLUDED.query,
-
+        query = EXCLUDED.query,
         search_count =
           search_queries.search_count + 1,
-
         crawl_priority =
           LEAST(
-            search_queries.crawl_priority + 1,
-            100000
+            1000000,
+            GREATEST(
+              1,
+              search_queries.crawl_priority
+            ) + 1
           ),
-
-        last_searched_at =
-          NOW(),
-
+        last_searched_at = NOW(),
         status =
           CASE
-            WHEN search_queries.status = 'done'
+            WHEN search_queries.status = 'completed'
             THEN 'pending'
             ELSE search_queries.status
           END,
-
-        updated_at =
-          NOW()
+        updated_at = NOW()
       `,
-      [
-        query,
-        normalized
-      ]
+      [normalized]
     );
   } catch (error) {
     console.error(
-      "[HEXORA] Search demand log failed:",
-      error?.message || error
+      "[HEXORA] Search demand error:",
+      error.message
     );
   }
 }
@@ -445,27 +281,18 @@ async function searchDatabase(
   page,
   limit
 ) {
-  const queryWords =
-    wordsOf(query);
+  const queryWords = wordsOf(query);
 
   const wordCount =
-    Math.max(
-      queryWords.length,
-      1
-    );
+    Math.max(queryWords.length, 1);
 
   const offset =
     (page - 1) * limit;
-
-  const intent =
-    detectIntent(query);
 
   const dataSql = `
     WITH params AS (
       SELECT
         lower(trim($1::text)) AS q,
-        $2::text AS mode_param,
-        $4::text AS intent_param,
         websearch_to_tsquery(
           'simple',
           $1::text
@@ -477,161 +304,60 @@ async function searchDatabase(
         p.*,
 
         CASE
-          WHEN lower(
-            trim(
-              coalesce(
-                p.title,
-                ''
-              )
-            )
-          ) = params.q
-          THEN 1
-          ELSE 0
+          WHEN lower(trim(coalesce(p.title,''))) =
+               params.q
+          THEN 1 ELSE 0
         END AS exact_title,
 
         CASE
-          WHEN lower(
-            trim(
-              coalesce(
-                p.title,
-                ''
-              )
-            )
-          )
-          LIKE params.q || '%'
-          THEN 1
-          ELSE 0
+          WHEN lower(coalesce(p.title,'')) LIKE
+               params.q || '%'
+          THEN 1 ELSE 0
         END AS title_starts,
 
         CASE
-          WHEN lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
-          THEN 1
-          ELSE 0
+          WHEN lower(coalesce(p.title,'')) LIKE
+               '%' || params.q || '%'
+          THEN 1 ELSE 0
         END AS title_phrase,
 
         CASE
-          WHEN lower(
-            coalesce(
-              p.description,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
-          THEN 1
-          ELSE 0
+          WHEN lower(coalesce(p.description,'')) LIKE
+               '%' || params.q || '%'
+          THEN 1 ELSE 0
         END AS description_phrase,
 
         CASE
-          WHEN lower(
-            coalesce(
-              p.excerpt,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
-          THEN 1
-          ELSE 0
-        END AS excerpt_phrase,
-
-        CASE
-          WHEN lower(
-            coalesce(
-              p.url,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
-          THEN 1
-          ELSE 0
+          WHEN lower(coalesce(p.url,'')) LIKE
+               '%' || params.q || '%'
+          THEN 1 ELSE 0
         END AS url_phrase,
 
         CASE
-          WHEN lower(
-            coalesce(
-              p.domain,
-              ''
-            )
-          ) = params.q
-          THEN 1
-          ELSE 0
+          WHEN lower(coalesce(p.domain,'')) =
+               params.q
+          THEN 1 ELSE 0
         END AS exact_domain,
 
         (
           SELECT count(*)
-          FROM unnest(
-            $3::text[]
-          ) AS w(word)
-          WHERE lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-          LIKE '%' ||
-            lower(w.word) ||
-            '%'
+          FROM unnest($2::text[]) AS w(word)
+          WHERE lower(coalesce(p.title,'')) LIKE
+                '%' || lower(w.word) || '%'
         ) AS title_word_matches,
 
         (
           SELECT count(*)
-          FROM unnest(
-            $3::text[]
-          ) AS w(word)
-          WHERE lower(
-            coalesce(
-              p.description,
-              ''
-            )
-          )
-          LIKE '%' ||
-            lower(w.word) ||
-            '%'
+          FROM unnest($2::text[]) AS w(word)
+          WHERE lower(coalesce(p.description,'')) LIKE
+                '%' || lower(w.word) || '%'
         ) AS description_word_matches,
 
         (
           SELECT count(*)
-          FROM unnest(
-            $3::text[]
-          ) AS w(word)
-          WHERE lower(
-            coalesce(
-              p.excerpt,
-              ''
-            )
-          )
-          LIKE '%' ||
-            lower(w.word) ||
-            '%'
-        ) AS excerpt_word_matches,
-
-        (
-          SELECT count(*)
-          FROM unnest(
-            $3::text[]
-          ) AS w(word)
-          WHERE lower(
-            coalesce(
-              p.content,
-              ''
-            )
-          )
-          LIKE '%' ||
-            lower(w.word) ||
-            '%'
+          FROM unnest($2::text[]) AS w(word)
+          WHERE lower(coalesce(p.content,'')) LIKE
+                '%' || lower(w.word) || '%'
         ) AS content_word_matches,
 
         ts_rank_cd(
@@ -644,230 +370,119 @@ async function searchDatabase(
         ) AS fts_rank,
 
         similarity(
-          lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          ),
+          lower(coalesce(p.title,'')),
           params.q
         ) AS title_similarity,
 
-        similarity(
-          lower(
-            coalesce(
-              p.domain,
-              ''
-            )
-          ),
-          params.q
-        ) AS domain_similarity,
-
         CASE
           WHEN p.published_at IS NULL
-            THEN 0.0
+          THEN 0
 
           WHEN p.published_at >=
-            NOW() - INTERVAL '1 day'
-            THEN 1.0
+               NOW() - INTERVAL '1 day'
+          THEN 1
 
           WHEN p.published_at >=
-            NOW() - INTERVAL '7 days'
-            THEN 0.85
+               NOW() - INTERVAL '7 days'
+          THEN 0.85
 
           WHEN p.published_at >=
-            NOW() - INTERVAL '30 days'
-            THEN 0.65
+               NOW() - INTERVAL '30 days'
+          THEN 0.65
 
           WHEN p.published_at >=
-            NOW() - INTERVAL '180 days'
-            THEN 0.40
+               NOW() - INTERVAL '180 days'
+          THEN 0.40
 
-          WHEN p.published_at >=
-            NOW() - INTERVAL '1 year'
-            THEN 0.20
-
-          ELSE 0.05
+          ELSE 0.10
         END AS freshness
 
       FROM pages p
-
       CROSS JOIN params
 
       WHERE
-        (
-          lower(
-            trim(
-              coalesce(
-                p.title,
-                ''
-              )
-            )
-          ) = params.q
+      (
+        lower(trim(coalesce(p.title,''))) =
+          params.q
 
-          OR lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-          LIKE params.q || '%'
+        OR
 
-          OR lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
+        lower(coalesce(p.title,'')) LIKE
+          params.q || '%'
 
-          OR (
-            array_length(
-              $3::text[],
-              1
-            ) > 1
+        OR
 
-            AND coalesce(
-              p.search_vector,
-              ''::tsvector
-            ) @@ params.tsq
-          )
+        lower(coalesce(p.title,'')) LIKE
+          '%' || params.q || '%'
 
-          OR lower(
-            coalesce(
-              p.description,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
+        OR
 
-          OR lower(
-            coalesce(
-              p.excerpt,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
+        coalesce(
+          p.search_vector,
+          ''::tsvector
+        ) @@ params.tsq
 
-          OR lower(
-            coalesce(
-              p.url,
-              ''
-            )
-          )
-          LIKE '%' ||
-            params.q ||
-            '%'
+        OR
 
-          OR EXISTS (
-            SELECT 1
-            FROM unnest(
-              $3::text[]
-            ) AS w(word)
+        lower(coalesce(p.description,'')) LIKE
+          '%' || params.q || '%'
 
-            WHERE lower(
-              coalesce(
-                p.title,
-                ''
-              )
-            )
-            LIKE '%' ||
-              lower(w.word) ||
-              '%'
-          )
+        OR
 
-          OR (
-            array_length(
-              $3::text[],
-              1
-            ) > 1
+        lower(coalesce(p.url,'')) LIKE
+          '%' || params.q || '%'
 
-            AND (
-              SELECT count(*)
-              FROM unnest(
-                $3::text[]
-              ) AS w(word)
+        OR
 
-              WHERE lower(
-                coalesce(
-                  p.description,
-                  ''
-                )
-              )
-              LIKE '%' ||
-                lower(w.word) ||
-                '%'
-            ) >= 2
-          )
-
-          OR (
-            array_length(
-              $3::text[],
-              1
-            ) > 1
-
-            AND (
-              SELECT count(*)
-              FROM unnest(
-                $3::text[]
-              ) AS w(word)
-
-              WHERE lower(
-                coalesce(
-                  p.excerpt,
-                  ''
-                )
-              )
-              LIKE '%' ||
-                lower(w.word) ||
-                '%'
-            ) >= 2
-          )
-
-          OR (
-            array_length(
-              $3::text[],
-              1
-            ) > 1
-
-            AND (
-              SELECT count(*)
-              FROM unnest(
-                $3::text[]
-              ) AS w(word)
-
-              WHERE lower(
-                coalesce(
-                  p.content,
-                  ''
-                )
-              )
-              LIKE '%' ||
-                lower(w.word) ||
-                '%'
-            )::numeric
-
-            >= GREATEST(
-              CEIL(
-                array_length(
-                  $3::text[],
-                  1
-                ) * 0.5
-              ),
-              2
-            )
-          )
+        EXISTS (
+          SELECT 1
+          FROM unnest($2::text[]) AS w(word)
+          WHERE lower(coalesce(p.title,'')) LIKE
+                '%' || lower(w.word) || '%'
         )
 
-        ${modeCondition(mode)}
+        OR
 
-      LIMIT $5
+        (
+          array_length($2::text[],1) > 1
+          AND
+          (
+            SELECT count(*)
+            FROM unnest($2::text[]) AS w(word)
+            WHERE lower(coalesce(p.description,'')) LIKE
+                  '%' || lower(w.word) || '%'
+          )
+          >= 2
+        )
+
+        OR
+
+        (
+          array_length($2::text[],1) > 1
+          AND
+          (
+            SELECT count(*)
+            FROM unnest($2::text[]) AS w(word)
+            WHERE lower(coalesce(p.content,'')) LIKE
+                  '%' || lower(w.word) || '%'
+          )::numeric
+          >=
+          GREATEST(
+            CEIL(
+              array_length($2::text[],1) * 0.5
+            ),
+            2
+          )
+        )
+      )
+
+      ${
+        mode === "news"
+          ? "AND p.published_at IS NOT NULL"
+          : ""
+      }
+
+      LIMIT $3
     ),
 
     scored AS (
@@ -884,13 +499,7 @@ async function searchDatabase(
           description_word_matches::numeric /
           ${wordCount}::numeric,
           1
-        ) AS description_coverage,
-
-        LEAST(
-          content_word_matches::numeric /
-          ${wordCount}::numeric,
-          1
-        ) AS content_coverage
+        ) AS description_coverage
 
       FROM candidate
     ),
@@ -942,10 +551,6 @@ async function searchDatabase(
 
           +
 
-          excerpt_phrase * 25000
-
-          +
-
           url_phrase * 15000
 
           +
@@ -954,14 +559,10 @@ async function searchDatabase(
 
           +
 
-          domain_similarity * 10000
-
-          +
-
           LEAST(
             GREATEST(
               coalesce(
-                authority_score,
+                p_authority_score,
                 0
               ),
               0
@@ -974,39 +575,13 @@ async function searchDatabase(
           LEAST(
             GREATEST(
               coalesce(
-                quality_score,
-                0
-              ),
-              0
-            ),
-            100
-          ) * 600
-
-          +
-
-          LEAST(
-            GREATEST(
-              coalesce(
-                popularity_score,
+                p_popularity_score,
                 0
               ),
               0
             ),
             100
           ) * 300
-
-          +
-
-          LEAST(
-            GREATEST(
-              coalesce(
-                inbound_links,
-                0
-              ),
-              0
-            ),
-            100
-          ) * 200
 
           +
 
@@ -1028,30 +603,20 @@ async function searchDatabase(
               AND exact_title = 0
               AND title_starts = 0
               AND description_phrase = 0
-              AND excerpt_phrase = 0
               AND url_phrase = 0
             THEN 250000
             ELSE 0
           END
 
-          -
-
-          CASE
-            WHEN
-              title_word_matches = 0
-              AND length(
-                coalesce(
-                  title,
-                  ''
-                )
-              ) > 100
-            THEN 50000
-            ELSE 0
-          END
-
         ) AS final_score
 
-      FROM scored
+      FROM (
+        SELECT
+          scored.*,
+          authority_score AS p_authority_score,
+          popularity_score AS p_popularity_score
+        FROM scored
+      ) scored
     )
 
     SELECT *
@@ -1059,249 +624,97 @@ async function searchDatabase(
 
     ORDER BY
       final_score DESC,
-
       exact_title DESC,
       title_starts DESC,
       title_phrase DESC,
       title_coverage DESC,
       title_word_matches DESC,
-
       fts_rank DESC,
       title_similarity DESC,
-
       description_phrase DESC,
-      description_coverage DESC,
-
       exact_domain DESC,
-      authority_score DESC,
-      quality_score DESC,
-      popularity_score DESC,
-      inbound_links DESC,
-
+      p_authority_score DESC,
+      p_popularity_score DESC,
       freshness DESC,
-
       id DESC
 
-    LIMIT $5
-    OFFSET $6
+    LIMIT $3
+    OFFSET $4
   `;
 
   const countSql = `
-    SELECT
-      COUNT(*)::int AS count
+    SELECT COUNT(*)::int AS count
 
     FROM pages p
 
     WHERE
-      (
-        lower(
-          trim(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-        )
-        =
-        lower(
-          trim(
-            $1::text
-          )
-        )
+    (
+      lower(trim(coalesce(p.title,''))) =
+        lower(trim($1::text))
 
-        OR
+      OR
 
-        lower(
-          coalesce(
-            p.title,
-            ''
-          )
-        )
-        LIKE '%' ||
-          lower(
-            trim(
-              $1::text
-            )
-          ) ||
-          '%'
+      lower(coalesce(p.title,'')) LIKE
+        '%' || lower(trim($1::text)) || '%'
 
-        OR
+      OR
 
-        lower(
-          coalesce(
-            p.description,
-            ''
-          )
-        )
-        LIKE '%' ||
-          lower(
-            trim(
-              $1::text
-            )
-          ) ||
-          '%'
+      lower(coalesce(p.description,'')) LIKE
+        '%' || lower(trim($1::text)) || '%'
 
-        OR
+      OR
 
-        lower(
-          coalesce(
-            p.excerpt,
-            ''
-          )
-        )
-        LIKE '%' ||
-          lower(
-            trim(
-              $1::text
-            )
-          ) ||
-          '%'
+      lower(coalesce(p.url,'')) LIKE
+        '%' || lower(trim($1::text)) || '%'
 
-        OR
+      OR
 
-        lower(
-          coalesce(
-            p.url,
-            ''
-          )
-        )
-        LIKE '%' ||
-          lower(
-            trim(
-              $1::text
-            )
-          ) ||
-          '%'
-
-        OR
-
-        coalesce(
-          p.search_vector,
-          ''::tsvector
-        )
-        @@ websearch_to_tsquery(
-          'simple',
-          $1::text
-        )
-
-        OR EXISTS (
-          SELECT 1
-          FROM unnest(
-            $2::text[]
-          ) AS w(word)
-
-          WHERE lower(
-            coalesce(
-              p.title,
-              ''
-            )
-          )
-          LIKE '%' ||
-            lower(w.word) ||
-            '%'
-        )
-
-        OR (
-          array_length(
-            $2::text[],
-            1
-          ) > 1
-
-          AND (
-            SELECT count(*)
-            FROM unnest(
-              $2::text[]
-            ) AS w(word)
-
-            WHERE lower(
-              coalesce(
-                p.description,
-                ''
-              )
-            )
-            LIKE '%' ||
-              lower(w.word) ||
-              '%'
-          ) >= 2
-        )
-
-        OR (
-          array_length(
-            $2::text[],
-            1
-          ) > 1
-
-          AND (
-            SELECT count(*)
-            FROM unnest(
-              $2::text[]
-            ) AS w(word)
-
-            WHERE lower(
-              coalesce(
-                p.content,
-                ''
-              )
-            )
-            LIKE '%' ||
-              lower(w.word) ||
-              '%'
-          ) >= 2
-        )
+      coalesce(
+        p.search_vector,
+        ''::tsvector
+      ) @@ websearch_to_tsquery(
+        'simple',
+        $1::text
       )
 
-      ${modeCondition(mode)}
+      OR
+
+      EXISTS (
+        SELECT 1
+        FROM unnest($2::text[]) AS w(word)
+        WHERE lower(coalesce(p.title,'')) LIKE
+              '%' || lower(w.word) || '%'
+      )
+    )
+
+    ${
+      mode === "news"
+        ? "AND p.published_at IS NOT NULL"
+        : ""
+    }
   `;
 
   const suggestionSql = `
     SELECT
-      id,
       title,
-      url,
-      domain,
 
       similarity(
-        lower(
-          coalesce(
-            title,
-            ''
-          )
-        ),
-        lower(
-          $1::text
-        )
+        lower(coalesce(title,'')),
+        lower($1::text)
       ) AS similarity_score
 
     FROM pages
 
     WHERE
-      lower(
-        coalesce(
-          title,
-          ''
-        )
-      )
-      LIKE '%' ||
-        lower(
-          $1::text
-        ) ||
-        '%'
+      lower(coalesce(title,'')) LIKE
+        '%' || lower($1::text) || '%'
 
     ORDER BY
       similarity_score DESC,
       id DESC
 
-    LIMIT 50
+    LIMIT 20
   `;
-
-  const dataParams = [
-    query,
-    mode,
-    queryWords,
-    intent,
-    SEARCH_CANDIDATE_LIMIT,
-    offset
-  ];
 
   const [
     dataResult,
@@ -1310,7 +723,12 @@ async function searchDatabase(
   ] = await Promise.all([
     pool.query(
       dataSql,
-      dataParams
+      [
+        query,
+        queryWords,
+        SEARCH_CANDIDATE_LIMIT,
+        offset
+      ]
     ),
 
     pool.query(
@@ -1330,213 +748,316 @@ async function searchDatabase(
   const rows =
     dataResult.rows || [];
 
-  const exact =
-    rows.filter(
-      (r) =>
-        Number(
-          r.exact_title
-        ) === 1
-    );
-
-  const nonExact =
-    rows.filter(
-      (r) =>
-        Number(
-          r.exact_title
-        ) !== 1
-    );
-
   const finalRows = [];
-  const seenUrls = new Set();
+  const seen = new Set();
   const domainCount = new Map();
 
-  for (const row of exact) {
-    const key =
-      String(
-        row.canonical_url ||
-        row.url ||
-        row.id
-      );
+  for (const row of rows) {
+    if (finalRows.length >= limit) {
+      break;
+    }
 
-    if (seenUrls.has(key)) {
+    const key = String(
+      row.canonical ||
+      row.url ||
+      row.id
+    );
+
+    if (seen.has(key)) {
       continue;
     }
 
-    seenUrls.add(key);
+    const domain =
+      String(row.domain || "")
+        .toLowerCase();
+
+    const count =
+      domainCount.get(domain) || 0;
+
+    if (count >= 3) {
+      continue;
+    }
+
+    seen.add(key);
     finalRows.push(row);
 
-    if (
-      finalRows.length >=
-      limit
-    ) {
-      break;
-    }
+    domainCount.set(
+      domain,
+      count + 1
+    );
   }
 
-  if (
-    finalRows.length <
-    limit
-  ) {
-    for (const row of nonExact) {
-      if (
-        finalRows.length >=
-        limit
-      ) {
-        break;
-      }
+  const results =
+    finalRows.map(row => ({
+      id: row.id,
+      title:
+        row.title || "Untitled",
+      url: row.url,
+      canonical_url:
+        row.canonical || row.url,
+      domain:
+        row.domain || "",
+      source:
+        row.domain || "",
+      description:
+        cleanText(row.description),
+      snippet:
+        cleanText(
+          row.description ||
+          row.content
+        ).slice(0, 320),
+      language:
+        row.language || null,
+      author:
+        row.author || null,
+      image:
+        row.image_url || null,
+      published_at:
+        row.published_at || null,
+      updated_at:
+        row.updated_at || null,
+      score:
+        Number(
+          row.final_score || 0
+        )
+    }));
 
-      const key =
-        String(
-          row.canonical_url ||
-          row.url ||
-          row.id
-        );
+  const suggestions = [];
 
-      if (seenUrls.has(key)) {
-        continue;
-      }
+  for (const row of
+    suggestionResult.rows || []) {
 
-      const domain =
-        String(
-          row.domain || ""
-        ).toLocaleLowerCase();
+    const title =
+      String(row.title || "").trim();
 
-      const count =
-        domainCount.get(
-          domain
-        ) || 0;
+    if (!title) continue;
 
-      if (count >= 3) {
-        continue;
-      }
+    if (
+      suggestions.some(
+        x =>
+          x.toLowerCase() ===
+          title.toLowerCase()
+      )
+    ) {
+      continue;
+    }
 
-      seenUrls.add(key);
-      finalRows.push(row);
+    suggestions.push(title);
 
-      domainCount.set(
-        domain,
-        count + 1
-      );
+    if (suggestions.length >= 5) {
+      break;
     }
   }
 
   return {
     query,
     mode,
-    intent,
     page,
     limit,
-
     total:
       Number(
-        countResult.rows?.[0]?.count ||
-        0
+        countResult.rows?.[0]?.count || 0
       ),
-
-    results:
-      finalRows
-        .slice(0, limit)
-        .map(resultFromRow),
-
-    suggestions:
-      buildSuggestions(
-        suggestionResult.rows ||
-          []
-      )
+    results,
+    suggestions
   };
 }
 
 /* =========================================================
-   SUGGESTIONS
+   ADS — DATABASE SAFETY
 ========================================================= */
 
-function buildSuggestions(
-  rows
-) {
-  const seen = new Set();
-  const output = [];
+async function ensureAdsColumns() {
+  try {
+    await pool.query(`
+      ALTER TABLE advertisers
+      ADD COLUMN IF NOT EXISTS
+      api_key_hash TEXT
+    `);
 
-  for (const row of rows) {
-    const title =
-      String(
-        row.title || ""
-      ).trim();
+    await pool.query(`
+      ALTER TABLE advertisers
+      ADD COLUMN IF NOT EXISTS
+      api_key_prefix TEXT
+    `);
 
-    if (!title) {
-      continue;
-    }
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS
+      advertisers_api_key_hash_idx
+      ON advertisers(api_key_hash)
+      WHERE api_key_hash IS NOT NULL
+    `);
 
-    const key =
-      title.toLocaleLowerCase();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS
+      ad_payment_orders (
+        id BIGSERIAL PRIMARY KEY,
+        advertiser_id BIGINT NOT NULL
+          REFERENCES advertisers(id)
+          ON DELETE CASCADE,
 
-    if (seen.has(key)) {
-      continue;
-    }
+        amount NUMERIC(14,2) NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'INR',
 
-    seen.add(key);
-    output.push(title);
+        razorpay_order_id TEXT NOT NULL UNIQUE,
+        razorpay_payment_id TEXT,
 
-    if (
-      output.length >= 5
-    ) {
-      break;
-    }
+        status TEXT NOT NULL DEFAULT 'created',
+
+        created_at TIMESTAMPTZ
+          NOT NULL DEFAULT NOW(),
+
+        paid_at TIMESTAMPTZ
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      ad_payment_orders_advertiser_idx
+      ON ad_payment_orders(advertiser_id)
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS
+      ad_webhook_events (
+        id BIGSERIAL PRIMARY KEY,
+        event_id TEXT UNIQUE,
+        event_type TEXT,
+        payload JSONB,
+        created_at TIMESTAMPTZ
+          NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    console.log(
+      "[HEXORA] Ads payment tables ready."
+    );
+
+  } catch (error) {
+    console.error(
+      "[HEXORA] Ads schema setup failed:",
+      error.message
+    );
   }
-
-  return output;
 }
 
 /* =========================================================
-   HEXORA ADS / INCOME SYSTEM
+   ADS — API KEY
 ========================================================= */
 
-async function createAdvertiser(
-  data
-) {
-  const name =
-    cleanAdText(
-      data.name,
-      150
-    );
+function generateAdvertiserKey() {
+  return (
+    "hex_" +
+    crypto.randomBytes(32).toString("hex")
+  );
+}
 
-  const email =
-    cleanAdText(
-      data.email,
-      200
-    ).toLowerCase();
+function hashAdvertiserKey(key) {
+  return crypto
+    .createHash("sha256")
+    .update(String(key))
+    .digest("hex");
+}
 
-  const companyName =
-    cleanAdText(
-      data.company_name,
-      200
-    );
+async function getAdvertiserFromKey(key) {
+  if (!key) return null;
 
-  const website =
-    cleanAdText(
-      data.website,
-      1000
-    );
-
-  if (!name || !email) {
-    throw new Error(
-      "Name and email are required"
-    );
-  }
+  const hash =
+    hashAdvertiserKey(key);
 
   const result =
     await pool.query(
       `
-      INSERT INTO advertisers (
+      SELECT *
+      FROM advertisers
+      WHERE api_key_hash = $1
+        AND status = 'active'
+      LIMIT 1
+      `,
+      [hash]
+    );
+
+  return result.rows[0] || null;
+}
+
+function getAdvertiserKey(req) {
+  return String(
+    req.headers[
+      "x-hexora-advertiser-key"
+    ] || ""
+  ).trim();
+}
+
+function getAdminKey(req) {
+  return String(
+    req.headers[
+      "x-hexora-admin-key"
+    ] || ""
+  ).trim();
+}
+
+function requireAdmin(req) {
+  return (
+    ADS_ADMIN_KEY &&
+    getAdminKey(req) ===
+      ADS_ADMIN_KEY
+  );
+}
+
+/* =========================================================
+   ADS — CREATE ADVERTISER
+========================================================= */
+
+async function createAdvertiser(data) {
+  const name =
+    String(data.name || "").trim();
+
+  const email =
+    String(data.email || "")
+      .trim()
+      .toLowerCase();
+
+  if (!name || !email) {
+    throw new Error(
+      "name and email are required"
+    );
+  }
+
+  const key =
+    generateAdvertiserKey();
+
+  const hash =
+    hashAdvertiserKey(key);
+
+  const prefix =
+    key.slice(0, 12);
+
+  const result =
+    await pool.query(
+      `
+      INSERT INTO advertisers
+      (
         name,
         email,
         company_name,
-        website
+        website,
+        balance,
+        total_spent,
+        status,
+        api_key_hash,
+        api_key_prefix
       )
-      VALUES (
+      VALUES
+      (
         $1,
         $2,
         $3,
-        $4
+        $4,
+        0,
+        0,
+        'active',
+        $5,
+        $6
       )
       RETURNING
         id,
@@ -1552,98 +1073,82 @@ async function createAdvertiser(
       [
         name,
         email,
-        companyName ||
-          null,
-        website ||
-          null
+        String(
+          data.company_name || ""
+        ).trim() || null,
+        validHttpUrl(data.website)
+          ? data.website
+          : null,
+        hash,
+        prefix
       ]
     );
 
-  return result.rows[0];
+  return {
+    advertiser:
+      result.rows[0],
+    api_key: key
+  };
 }
 
+/* =========================================================
+   ADS — AUTHENTICATED CAMPAIGN
+========================================================= */
+
 async function createCampaign(
+  advertiser,
   data
 ) {
-  const advertiserId =
-    safeInt(
-      data.advertiser_id,
-      0,
-      1,
-      Number.MAX_SAFE_INTEGER
-    );
-
   const name =
-    cleanAdText(
-      data.name,
-      200
+    String(data.name || "").trim();
+
+  if (!name) {
+    throw new Error(
+      "Campaign name is required"
     );
+  }
 
   const dailyBudget =
     Math.max(
       0,
-      Number(
-        data.daily_budget || 0
+      safeNumber(
+        data.daily_budget
       )
     );
 
   const totalBudget =
     Math.max(
       0,
-      Number(
-        data.total_budget || 0
+      safeNumber(
+        data.total_budget
       )
     );
-
-  if (
-    !advertiserId ||
-    !name
-  ) {
-    throw new Error(
-      "advertiser_id and campaign name are required"
-    );
-  }
-
-  const advertiser =
-    await pool.query(
-      `
-      SELECT id
-      FROM advertisers
-      WHERE id = $1
-        AND status = 'active'
-      `,
-      [advertiserId]
-    );
-
-  if (
-    !advertiser.rows.length
-  ) {
-    throw new Error(
-      "Advertiser not found"
-    );
-  }
 
   const result =
     await pool.query(
       `
-      INSERT INTO ad_campaigns (
+      INSERT INTO ad_campaigns
+      (
         advertiser_id,
         name,
         daily_budget,
         total_budget,
+        spent,
         status
       )
-      VALUES (
+      VALUES
+      (
         $1,
         $2,
         $3,
         $4,
+        0,
         'draft'
       )
       RETURNING *
       `,
       [
-        advertiserId,
+        advertiser.id,
         name,
         dailyBudget,
         totalBudget
@@ -1653,91 +1158,97 @@ async function createCampaign(
   return result.rows[0];
 }
 
+/* =========================================================
+   ADS — CREATE AD
+========================================================= */
+
 async function createAd(
+  advertiser,
   data
 ) {
   const campaignId =
-    safeInt(
-      data.campaign_id,
-      0,
-      1,
-      Number.MAX_SAFE_INTEGER
-    );
+    Number(data.campaign_id);
 
-  const title =
-    cleanAdText(
-      data.title,
-      150
-    );
-
-  const description =
-    cleanAdText(
-      data.description,
-      500
-    );
-
-  const destinationUrl =
-    cleanAdText(
-      data.destination_url,
-      2000
-    );
-
-  const keywords =
-    normalizeAdKeywords(
-      data.keywords
-    );
-
-  const bidPerClick =
-    Math.max(
-      0.01,
-      Number(
-        data.bid_per_click ||
-          0.10
-      )
-    );
-
-  if (
-    !campaignId ||
-    !title ||
-    !destinationUrl
-  ) {
+  if (!Number.isInteger(campaignId)) {
     throw new Error(
-      "campaign_id, title and destination_url are required"
-    );
-  }
-
-  try {
-    new URL(
-      destinationUrl
-    );
-  } catch {
-    throw new Error(
-      "Invalid destination URL"
+      "Valid campaign_id is required"
     );
   }
 
   const campaign =
     await pool.query(
       `
-      SELECT id
+      SELECT *
       FROM ad_campaigns
       WHERE id = $1
+        AND advertiser_id = $2
+      LIMIT 1
       `,
-      [campaignId]
+      [
+        campaignId,
+        advertiser.id
+      ]
     );
 
-  if (
-    !campaign.rows.length
-  ) {
+  if (!campaign.rows[0]) {
     throw new Error(
       "Campaign not found"
     );
   }
 
+  const title =
+    String(data.title || "").trim();
+
+  const description =
+    String(
+      data.description || ""
+    ).trim();
+
+  const destinationUrl =
+    String(
+      data.destination_url || ""
+    ).trim();
+
+  if (!title) {
+    throw new Error(
+      "Ad title is required"
+    );
+  }
+
+  if (
+    !validHttpUrl(
+      destinationUrl
+    )
+  ) {
+    throw new Error(
+      "destination_url must be http/https"
+    );
+  }
+
+  const keywords =
+    Array.isArray(data.keywords)
+      ? data.keywords
+          .map(x =>
+            normalizeQuery(x)
+          )
+          .filter(Boolean)
+          .slice(0, 100)
+      : [];
+
+  const bid =
+    Math.max(
+      0.01,
+      safeNumber(
+        data.bid_per_click,
+        0.10
+      )
+    );
+
   const result =
     await pool.query(
       `
-      INSERT INTO ads (
+      INSERT INTO ads
+      (
         campaign_id,
         title,
         description,
@@ -1746,7 +1257,8 @@ async function createAd(
         bid_per_click,
         status
       )
-      VALUES (
+      VALUES
+      (
         $1,
         $2,
         $3,
@@ -1760,20 +1272,30 @@ async function createAd(
       [
         campaignId,
         title,
-        description ||
-          null,
+        description,
         destinationUrl,
         keywords,
-        bidPerClick
+        bid
       ]
     );
 
   return result.rows[0];
 }
 
-async function approveAd(
-  adId
-) {
+/* =========================================================
+   ADS — APPROVE
+========================================================= */
+
+async function approveAd(adId) {
+  const id =
+    Number(adId);
+
+  if (!Number.isInteger(id)) {
+    throw new Error(
+      "Invalid ad id"
+    );
+  }
+
   const result =
     await pool.query(
       `
@@ -1784,107 +1306,32 @@ async function approveAd(
       WHERE id = $1
       RETURNING *
       `,
-      [adId]
+      [id]
     );
 
-  if (
-    !result.rows.length
-  ) {
+  if (!result.rows[0]) {
     throw new Error(
-      "Advertisement not found"
+      "Ad not found"
     );
   }
 
   return result.rows[0];
 }
 
-async function getAdvertiserDashboard(
-  advertiserId
-) {
-  const advertiserResult =
-    await pool.query(
-      `
-      SELECT
-        id,
-        name,
-        email,
-        company_name,
-        website,
-        balance,
-        total_spent,
-        status,
-        created_at
-      FROM advertisers
-      WHERE id = $1
-      `,
-      [advertiserId]
-    );
-
-  if (
-    !advertiserResult.rows.length
-  ) {
-    throw new Error(
-      "Advertiser not found"
-    );
-  }
-
-  const campaigns =
-    await pool.query(
-      `
-      SELECT
-        c.*,
-
-        COALESCE(
-          SUM(a.impressions),
-          0
-        )::bigint AS impressions,
-
-        COALESCE(
-          SUM(a.clicks),
-          0
-        )::bigint AS clicks
-
-      FROM ad_campaigns c
-
-      LEFT JOIN ads a
-        ON a.campaign_id =
-          c.id
-
-      WHERE
-        c.advertiser_id =
-          $1
-
-      GROUP BY c.id
-
-      ORDER BY
-        c.created_at DESC
-      `,
-      [advertiserId]
-    );
-
-  return {
-    advertiser:
-      advertiserResult.rows[0],
-
-    campaigns:
-      campaigns.rows
-  };
-}
+/* =========================================================
+   ADS — SPONSORED SEARCH
+========================================================= */
 
 async function getSponsoredAds(
   query,
   limit = 3
 ) {
-  const normalized =
-    normalizeQuery(query)
-      .toLowerCase();
+  const words =
+    wordsOf(query);
 
-  if (!normalized) {
+  if (!words.length) {
     return [];
   }
-
-  const words =
-    wordsOf(normalized);
 
   const result =
     await pool.query(
@@ -1894,21 +1341,24 @@ async function getSponsoredAds(
         a.title,
         a.description,
         a.destination_url,
-        a.bid_per_click,
         a.keywords,
+        a.bid_per_click,
 
         c.id AS campaign_id,
-        c.name AS campaign_name
+        c.daily_budget,
+        c.total_budget,
+        c.spent,
+
+        adv.id AS advertiser_id,
+        adv.name AS advertiser_name
 
       FROM ads a
 
-      INNER JOIN ad_campaigns c
-        ON c.id =
-          a.campaign_id
+      JOIN ad_campaigns c
+        ON c.id = a.campaign_id
 
-      INNER JOIN advertisers adv
-        ON adv.id =
-          c.advertiser_id
+      JOIN advertisers adv
+        ON adv.id = c.advertiser_id
 
       WHERE
         a.status = 'active'
@@ -1918,57 +1368,60 @@ async function getSponsoredAds(
         AND adv.status = 'active'
 
         AND (
-          cardinality(
-            a.keywords
-          ) = 0
-
-          OR EXISTS (
-            SELECT 1
-
-            FROM unnest(
-              a.keywords
-            ) AS keyword
-
-            WHERE
-              lower(keyword)
-                = ANY(
-                  $2::text[]
-                )
-
-              OR lower(keyword)
-                LIKE '%' ||
-                  lower($1::text) ||
-                  '%'
-
-              OR lower($1::text)
-                LIKE '%' ||
-                  lower(keyword) ||
-                  '%'
-          )
+          c.total_budget <= 0
+          OR c.spent < c.total_budget
         )
 
         AND (
-          c.total_budget <= 0
-
-          OR c.spent <
-            c.total_budget
+          a.keywords && $1::text[]
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(
+              a.keywords
+            ) AS k(word)
+            WHERE
+              lower(k.word) = ANY($1::text[])
+          )
         )
 
       ORDER BY
         a.bid_per_click DESC,
-        a.id DESC
+        a.clicks DESC,
+        a.impressions ASC
 
-      LIMIT $3
+      LIMIT $2
       `,
       [
-        normalized,
-        words,
+        words.map(
+          x => x.toLowerCase()
+        ),
         limit
       ]
     );
 
-  return result.rows;
+  return result.rows.map(row => ({
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    destination_url:
+      row.destination_url,
+    advertiser:
+      row.advertiser_name,
+    advertiser_id:
+      row.advertiser_id,
+    campaign_id:
+      row.campaign_id,
+    bid_per_click:
+      Number(
+        row.bid_per_click || 0
+      ),
+    sponsored: true
+  }));
 }
+
+/* =========================================================
+   ADS — IMPRESSION
+========================================================= */
 
 async function recordAdImpression(
   adId,
@@ -1990,19 +1443,15 @@ async function recordAdImpression(
           impressions =
             impressions + 1,
           updated_at = NOW()
-
         WHERE
           id = $1
           AND status = 'active'
-
         RETURNING id
         `,
-        [adId]
+        [Number(adId)]
       );
 
-    if (
-      !ad.rows.length
-    ) {
+    if (!ad.rows[0]) {
       await client.query(
         "ROLLBACK"
       );
@@ -2012,13 +1461,15 @@ async function recordAdImpression(
 
     await client.query(
       `
-      INSERT INTO ad_events (
+      INSERT INTO ad_events
+      (
         ad_id,
         event_type,
         query,
         cost
       )
-      VALUES (
+      VALUES
+      (
         $1,
         'impression',
         $2,
@@ -2026,11 +1477,8 @@ async function recordAdImpression(
       )
       `,
       [
-        adId,
-        cleanAdText(
-          query,
-          300
-        )
+        Number(adId),
+        normalizeQuery(query)
       ]
     );
 
@@ -2039,18 +1487,22 @@ async function recordAdImpression(
     );
 
     return true;
+
   } catch (error) {
-    try {
-      await client.query(
-        "ROLLBACK"
-      );
-    } catch {}
+    await client.query(
+      "ROLLBACK"
+    );
 
     throw error;
+
   } finally {
     client.release();
   }
 }
+
+/* =========================================================
+   ADS — CLICK / CPC
+========================================================= */
 
 async function recordAdClick(
   adId,
@@ -2064,184 +1516,161 @@ async function recordAdClick(
       "BEGIN"
     );
 
-    const adResult =
+    const result =
       await client.query(
         `
         SELECT
           a.id,
           a.bid_per_click,
+          a.clicks,
           c.id AS campaign_id,
-          c.advertiser_id,
           c.total_budget,
           c.spent,
-          adv.balance
+          c.advertiser_id,
+          adv.balance,
+          adv.total_spent
 
         FROM ads a
 
-        INNER JOIN ad_campaigns c
-          ON c.id =
-            a.campaign_id
+        JOIN ad_campaigns c
+          ON c.id = a.campaign_id
 
-        INNER JOIN advertisers adv
-          ON adv.id =
-            c.advertiser_id
+        JOIN advertisers adv
+          ON adv.id = c.advertiser_id
 
         WHERE
           a.id = $1
 
-          AND a.status =
-            'active'
+          AND a.status = 'active'
 
-          AND c.status =
-            'active'
+          AND c.status = 'active'
 
-          AND adv.status =
-            'active'
+          AND adv.status = 'active'
 
         FOR UPDATE
         `,
-        [adId]
+        [Number(adId)]
       );
 
-    if (
-      !adResult.rows.length
-    ) {
-      throw new Error(
-        "Advertisement is not active"
+    const row =
+      result.rows[0];
+
+    if (!row) {
+      await client.query(
+        "ROLLBACK"
       );
+
+      return {
+        ok: false,
+        error: "Ad not active"
+      };
     }
-
-    const ad =
-      adResult.rows[0];
 
     const cost =
       Math.max(
         0.01,
         Number(
-          ad.bid_per_click || 0
+          row.bid_per_click || 0.10
         )
       );
 
-    const currentBalance =
+    const balance =
       Number(
-        ad.balance || 0
+        row.balance || 0
       );
 
-    if (
-      currentBalance <
-      cost
-    ) {
+    const totalBudget =
+      Number(
+        row.total_budget || 0
+      );
+
+    const spent =
+      Number(
+        row.spent || 0
+      );
+
+    if (balance < cost) {
       await client.query(
-        `
-        UPDATE ads
-        SET
-          status = 'paused',
-          updated_at = NOW()
-        WHERE id = $1
-        `,
-        [adId]
+        "ROLLBACK"
       );
 
-      throw new Error(
-        "Advertiser balance is too low"
-      );
+      return {
+        ok: false,
+        error:
+          "Advertiser balance is insufficient"
+      };
     }
 
     if (
-      Number(
-        ad.total_budget || 0
-      ) > 0 &&
-
-      Number(
-        ad.spent || 0
-      ) + cost >
-
-      Number(
-        ad.total_budget
-      )
+      totalBudget > 0 &&
+      spent + cost > totalBudget
     ) {
       await client.query(
-        `
-        UPDATE ad_campaigns
-        SET
-          status = 'paused',
-          updated_at = NOW()
-        WHERE id = $1
-        `,
-        [ad.campaign_id]
+        "ROLLBACK"
       );
 
-      throw new Error(
-        "Campaign budget exhausted"
-      );
+      return {
+        ok: false,
+        error:
+          "Campaign budget exhausted"
+      };
     }
 
     await client.query(
       `
       UPDATE advertisers
-
       SET
         balance =
           balance - $1,
-
         total_spent =
           total_spent + $1,
-
-        updated_at =
-          NOW()
-
+        updated_at = NOW()
       WHERE id = $2
       `,
       [
         cost,
-        ad.advertiser_id
+        row.advertiser_id
       ]
     );
 
     await client.query(
       `
       UPDATE ad_campaigns
-
       SET
         spent =
           spent + $1,
-
-        updated_at =
-          NOW()
-
+        updated_at = NOW()
       WHERE id = $2
       `,
       [
         cost,
-        ad.campaign_id
+        row.campaign_id
       ]
     );
 
     await client.query(
       `
       UPDATE ads
-
       SET
         clicks =
           clicks + 1,
-
-        updated_at =
-          NOW()
-
+        updated_at = NOW()
       WHERE id = $1
       `,
-      [adId]
+      [Number(adId)]
     );
 
     await client.query(
       `
-      INSERT INTO ad_events (
+      INSERT INTO ad_events
+      (
         ad_id,
         event_type,
         query,
         cost
       )
-      VALUES (
+      VALUES
+      (
         $1,
         'click',
         $2,
@@ -2249,25 +1678,24 @@ async function recordAdClick(
       )
       `,
       [
-        adId,
-        cleanAdText(
-          query,
-          300
-        ),
+        Number(adId),
+        normalizeQuery(query),
         cost
       ]
     );
 
     await client.query(
       `
-      INSERT INTO ad_transactions (
+      INSERT INTO ad_transactions
+      (
         advertiser_id,
         amount,
         transaction_type,
         reference,
         status
       )
-      VALUES (
+      VALUES
+      (
         $1,
         $2,
         'ad_click',
@@ -2276,9 +1704,9 @@ async function recordAdClick(
       )
       `,
       [
-        ad.advertiser_id,
+        row.advertiser_id,
         cost,
-        `ad:${adId}`
+        `ad_${adId}_${Date.now()}`
       ]
     );
 
@@ -2288,158 +1716,628 @@ async function recordAdClick(
 
     return {
       ok: true,
-      ad_id: adId,
-      charged: cost
+      cost,
+      destination_url: null
     };
+
   } catch (error) {
-    try {
-      await client.query(
-        "ROLLBACK"
-      );
-    } catch {}
+    await client.query(
+      "ROLLBACK"
+    );
 
     throw error;
+
   } finally {
     client.release();
   }
 }
 
 /* =========================================================
-   NEWS
+   RAZORPAY — CREATE ORDER
 ========================================================= */
 
-async function getNews(
-  limit = 20
+async function createRazorpayOrder(
+  advertiser,
+  amount
 ) {
-  const sql = `
-    SELECT
-      id,
-      title,
-      url,
-      canonical_url,
-      domain,
-      source,
-      description,
-      excerpt,
-      content,
-      language,
-      date,
-      published_at,
-      image,
-      image_items,
-      video_items
+  if (
+    !RAZORPAY_KEY_ID ||
+    !RAZORPAY_KEY_SECRET
+  ) {
+    throw new Error(
+      "Razorpay environment variables are not configured"
+    );
+  }
 
-    FROM pages
+  const rupees =
+    Number(amount);
 
-    WHERE
-      published_at IS NOT NULL
+  if (
+    !Number.isFinite(rupees) ||
+    rupees < 1
+  ) {
+    throw new Error(
+      "Minimum deposit is ₹1"
+    );
+  }
 
-    ORDER BY
-      published_at DESC NULLS LAST,
-      id DESC
+  if (rupees > 1000000) {
+    throw new Error(
+      "Deposit amount is too large"
+    );
+  }
 
-    LIMIT $1
-  `;
-
-  const result =
-    await pool.query(
-      sql,
-      [limit]
+  const paise =
+    Math.round(
+      rupees * 100
     );
 
-  return result.rows.map(
-    resultFromRow
+  const receipt =
+    `hexora_${advertiser.id}_${Date.now()}`;
+
+  const auth =
+    Buffer.from(
+      `${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`
+    ).toString("base64");
+
+  const response =
+    await fetch(
+      "https://api.razorpay.com/v1/orders",
+      {
+        method: "POST",
+
+        headers: {
+          Authorization:
+            `Basic ${auth}`,
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          amount: paise,
+          currency: "INR",
+          receipt,
+          notes: {
+            advertiser_id:
+              String(advertiser.id),
+            platform:
+              "HEXORA"
+          }
+        })
+      }
+    );
+
+  const data =
+    await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.description ||
+      "Razorpay order creation failed"
+    );
+  }
+
+  await pool.query(
+    `
+    INSERT INTO ad_payment_orders
+    (
+      advertiser_id,
+      amount,
+      currency,
+      razorpay_order_id,
+      status
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      'INR',
+      $3,
+      'created'
+    )
+    `,
+    [
+      advertiser.id,
+      rupees,
+      data.id
+    ]
+  );
+
+  return {
+    key_id:
+      RAZORPAY_KEY_ID,
+    order_id:
+      data.id,
+    amount:
+      paise,
+    currency:
+      "INR"
+  };
+}
+
+/* =========================================================
+   RAZORPAY — VERIFY PAYMENT
+========================================================= */
+
+async function verifyRazorpayPayment(
+  advertiser,
+  data
+) {
+  if (!RAZORPAY_KEY_SECRET) {
+    throw new Error(
+      "Razorpay secret is not configured"
+    );
+  }
+
+  const orderId =
+    String(
+      data.razorpay_order_id || ""
+    ).trim();
+
+  const paymentId =
+    String(
+      data.razorpay_payment_id || ""
+    ).trim();
+
+  const signature =
+    String(
+      data.razorpay_signature || ""
+    ).trim();
+
+  if (
+    !orderId ||
+    !paymentId ||
+    !signature
+  ) {
+    throw new Error(
+      "Payment verification fields are missing"
+    );
+  }
+
+  const orderResult =
+    await pool.query(
+      `
+      SELECT *
+      FROM ad_payment_orders
+      WHERE
+        razorpay_order_id = $1
+        AND advertiser_id = $2
+      LIMIT 1
+      `,
+      [
+        orderId,
+        advertiser.id
+      ]
+    );
+
+  const order =
+    orderResult.rows[0];
+
+  if (!order) {
+    throw new Error(
+      "Payment order not found"
+    );
+  }
+
+  const expected =
+    crypto
+      .createHmac(
+        "sha256",
+        RAZORPAY_KEY_SECRET
+      )
+      .update(
+        `${orderId}|${paymentId}`
+      )
+      .digest("hex");
+
+  if (
+    !crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    )
+  ) {
+    throw new Error(
+      "Invalid Razorpay payment signature"
+    );
+  }
+
+  if (
+    order.status === "paid"
+  ) {
+    return {
+      ok: true,
+      already_processed: true
+    };
+  }
+
+  const client =
+    await pool.connect();
+
+  try {
+    await client.query(
+      "BEGIN"
+    );
+
+    const locked =
+      await client.query(
+        `
+        SELECT *
+        FROM ad_payment_orders
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [order.id]
+      );
+
+    const lockedOrder =
+      locked.rows[0];
+
+    if (
+      lockedOrder.status === "paid"
+    ) {
+      await client.query(
+        "COMMIT"
+      );
+
+      return {
+        ok: true,
+        already_processed: true
+      };
+    }
+
+    const amount =
+      Number(
+        lockedOrder.amount
+      );
+
+    await client.query(
+      `
+      UPDATE advertisers
+      SET
+        balance =
+          balance + $1,
+        updated_at = NOW()
+      WHERE id = $2
+      `,
+      [
+        amount,
+        advertiser.id
+      ]
+    );
+
+    await client.query(
+      `
+      UPDATE ad_payment_orders
+      SET
+        razorpay_payment_id = $1,
+        status = 'paid',
+        paid_at = NOW()
+      WHERE id = $2
+      `,
+      [
+        paymentId,
+        lockedOrder.id
+      ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO ad_transactions
+      (
+        advertiser_id,
+        amount,
+        transaction_type,
+        reference,
+        status,
+        payment_provider,
+        payment_id
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        'deposit',
+        $3,
+        'completed',
+        'razorpay',
+        $4
+      )
+      `,
+      [
+        advertiser.id,
+        amount,
+        orderId,
+        paymentId
+      ]
+    );
+
+    await client.query(
+      "COMMIT"
+    );
+
+    return {
+      ok: true,
+      amount
+    };
+
+  } catch (error) {
+    await client.query(
+      "ROLLBACK"
+    );
+
+    throw error;
+
+  } finally {
+    client.release();
+  }
+}
+
+/* =========================================================
+   RAZORPAY — WEBHOOK
+========================================================= */
+
+function verifyWebhookSignature(
+  rawBody,
+  signature
+) {
+  if (
+    !RAZORPAY_WEBHOOK_SECRET ||
+    !signature
+  ) {
+    return false;
+  }
+
+  const expected =
+    crypto
+      .createHmac(
+        "sha256",
+        RAZORPAY_WEBHOOK_SECRET
+      )
+      .update(rawBody)
+      .digest("hex");
+
+  return (
+    expected.length ===
+      signature.length &&
+    crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    )
+  );
+}
+
+async function handleRazorpayWebhook(
+  req,
+  res
+) {
+  let rawBody = "";
+
+  await new Promise(
+    (resolve, reject) => {
+      req.on(
+        "data",
+        chunk => {
+          rawBody +=
+            chunk.toString();
+
+          if (
+            rawBody.length >
+            2 * 1024 * 1024
+          ) {
+            reject(
+              new Error(
+                "Webhook body too large"
+              )
+            );
+
+            req.destroy();
+          }
+        }
+      );
+
+      req.on(
+        "end",
+        resolve
+      );
+
+      req.on(
+        "error",
+        reject
+      );
+    }
+  );
+
+  const signature =
+    String(
+      req.headers[
+        "x-razorpay-signature"
+      ] || ""
+    );
+
+  if (
+    !verifyWebhookSignature(
+      rawBody,
+      signature
+    )
+  ) {
+    sendJson(
+      res,
+      400,
+      {
+        ok: false,
+        error:
+          "Invalid webhook signature"
+      }
+    );
+
+    return;
+  }
+
+  let payload;
+
+  try {
+    payload =
+      JSON.parse(rawBody);
+  } catch {
+    sendJson(
+      res,
+      400,
+      {
+        ok: false,
+        error:
+          "Invalid webhook JSON"
+      }
+    );
+
+    return;
+  }
+
+  const eventId =
+    String(
+      req.headers[
+        "x-razorpay-event-id"
+      ] || ""
+    ).trim();
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO ad_webhook_events
+      (
+        event_id,
+        event_type,
+        payload
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        $3
+      )
+      ON CONFLICT (event_id)
+      DO NOTHING
+      `,
+      [
+        eventId || null,
+        payload.event || null,
+        payload
+      ]
+    );
+  } catch {}
+
+  /*
+   * Payment verification is still performed
+   * through the trusted order/payment record.
+   *
+   * Webhook duplicate events are harmless.
+   */
+
+  if (
+    payload.event ===
+      "payment.captured" ||
+    payload.event ===
+      "order.paid"
+  ) {
+    console.log(
+      "[HEXORA] Razorpay payment event received."
+    );
+  }
+
+  sendJson(
+    res,
+    200,
+    {
+      ok: true
+    }
   );
 }
 
 /* =========================================================
-   MEDIA
+   ADVERTISER DASHBOARD
 ========================================================= */
 
-async function getMedia(
-  type,
-  query,
-  limit = 20
+async function getAdvertiserDashboard(
+  advertiser
 ) {
-  let sql;
-
-  if (
-    type === "images"
-  ) {
-    sql = `
+  const [
+    advertiserResult,
+    campaignsResult,
+    adsResult,
+    transactionsResult
+  ] = await Promise.all([
+    pool.query(
+      `
       SELECT
         id,
-        title,
-        url,
-        canonical_url,
-        domain,
-        source,
-        description,
-        excerpt,
-        content,
-        language,
-        date,
-        published_at,
-        image,
-        image_items,
-        video_items
+        name,
+        email,
+        company_name,
+        website,
+        balance,
+        total_spent,
+        status,
+        created_at
+      FROM advertisers
+      WHERE id = $1
+      `,
+      [advertiser.id]
+    ),
 
-      FROM pages
+    pool.query(
+      `
+      SELECT *
+      FROM ad_campaigns
+      WHERE advertiser_id = $1
+      ORDER BY id DESC
+      `,
+      [advertiser.id]
+    ),
 
+    pool.query(
+      `
+      SELECT
+        a.*,
+        c.name AS campaign_name
+      FROM ads a
+      JOIN ad_campaigns c
+        ON c.id = a.campaign_id
       WHERE
-        image IS NOT NULL
+        c.advertiser_id = $1
+      ORDER BY a.id DESC
+      `,
+      [advertiser.id]
+    ),
 
-        OR image_items IS NOT NULL
-
-      ORDER BY
-        last_crawled_at
-          DESC NULLS LAST,
-        id DESC
-
-      LIMIT $1
-    `;
-  } else {
-    sql = `
+    pool.query(
+      `
       SELECT
         id,
-        title,
-        url,
-        canonical_url,
-        domain,
-        source,
-        description,
-        excerpt,
-        content,
-        language,
-        date,
-        published_at,
-        image,
-        image_items,
-        video_items
+        amount,
+        transaction_type,
+        reference,
+        status,
+        payment_provider,
+        payment_id,
+        created_at
+      FROM ad_transactions
+      WHERE advertiser_id = $1
+      ORDER BY created_at DESC
+      LIMIT 100
+      `,
+      [advertiser.id]
+    )
+  ]);
 
-      FROM pages
-
-      WHERE
-        video_items IS NOT NULL
-
-      ORDER BY
-        last_crawled_at
-          DESC NULLS LAST,
-        id DESC
-
-      LIMIT $1
-    `;
-  }
-
-  const result =
-    await pool.query(
-      sql,
-      [limit]
-    );
-
-  return result.rows.map(
-    resultFromRow
-  );
+  return {
+    advertiser:
+      advertiserResult.rows[0],
+    campaigns:
+      campaignsResult.rows,
+    ads:
+      adsResult.rows,
+    transactions:
+      transactionsResult.rows
+  };
 }
 
 /* =========================================================
@@ -2449,27 +2347,24 @@ async function getMedia(
 async function healthCheck() {
   try {
     const result =
-      await pool.query(
-        `
+      await pool.query(`
         SELECT
           NOW() AS now,
           COUNT(*)::bigint AS pages
         FROM pages
-        `
-      );
+      `);
 
     return {
       ok: true,
       database: true,
       pages:
         Number(
-          result.rows?.[0]?.pages ||
-            0
+          result.rows?.[0]?.pages || 0
         ),
       time:
-        result.rows?.[0]?.now ||
-        null
+        result.rows?.[0]?.now || null
     };
+
   } catch (error) {
     return {
       ok: false,
@@ -2481,45 +2376,54 @@ async function healthCheck() {
 }
 
 /* =========================================================
-   STATIC FILES
+   STATIC FRONTEND
 ========================================================= */
 
 function safeStaticPath(
-  urlPath
+  pathname
 ) {
-  const clean =
-    decodeURIComponent(
-      urlPath
-    )
+  let clean;
+
+  try {
+    clean =
+      decodeURIComponent(
+        pathname
+      );
+  } catch {
+    return null;
+  }
+
+  clean =
+    clean
       .split("?")[0]
       .replace(/^\/+/, "");
 
+  if (
+    clean.includes("..") ||
+    clean.includes("\\")
+  ) {
+    return null;
+  }
+
+  const root =
+    path.resolve(__dirname);
+
   const filePath =
-    path.join(
-      __dirname,
+    path.resolve(
+      root,
       clean
     );
 
-  const root =
-    path.resolve(
-      __dirname
-    );
-
-  const resolved =
-    path.resolve(
-      filePath
-    );
-
   if (
-    resolved !== root &&
-    !resolved.startsWith(
+    filePath !== root &&
+    !filePath.startsWith(
       root + path.sep
     )
   ) {
     return null;
   }
 
-  return resolved;
+  return filePath;
 }
 
 function contentType(
@@ -2535,7 +2439,10 @@ function contentType(
       "text/html; charset=utf-8",
 
     ".js":
-      "text/javascript; charset=utf-8",
+      "application/javascript; charset=utf-8",
+
+    ".mjs":
+      "application/javascript; charset=utf-8",
 
     ".css":
       "text/css; charset=utf-8",
@@ -2559,7 +2466,13 @@ function contentType(
       "image/webp",
 
     ".ico":
-      "image/x-icon"
+      "image/x-icon",
+
+    ".woff":
+      "font/woff",
+
+    ".woff2":
+      "font/woff2"
   };
 
   return (
@@ -2588,23 +2501,18 @@ function serveStatic(
   }
 
   if (
-    !fs.existsSync(
-      filePath
-    ) ||
-    !fs.statSync(
-      filePath
-    ).isFile()
+    pathname === "/" ||
+    !fs.existsSync(filePath) ||
+    !fs.statSync(filePath).isFile()
   ) {
     filePath =
       safeStaticPath(
-        "index.html"
+        "/index.html"
       );
 
     if (
       !filePath ||
-      !fs.existsSync(
-        filePath
-      )
+      !fs.existsSync(filePath)
     ) {
       return false;
     }
@@ -2620,9 +2528,7 @@ function serveStatic(
       200,
       {
         "Content-Type":
-          contentType(
-            filePath
-          ),
+          contentType(filePath),
 
         "Content-Length":
           data.length
@@ -2632,22 +2538,41 @@ function serveStatic(
     res.end(data);
 
     return true;
+
   } catch {
     return false;
   }
 }
 
 /* =========================================================
-   SERVER
+   HTTP SERVER
 ========================================================= */
 
 const server =
   http.createServer(
-    async (
-      req,
-      res
-    ) => {
+    async (req, res) => {
+
       try {
+
+        if (
+          req.method === "OPTIONS"
+        ) {
+          res.writeHead(
+            204,
+            {
+              "Access-Control-Allow-Origin":
+                "*",
+              "Access-Control-Allow-Headers":
+                "Content-Type, X-HEXORA-ADVERTISER-KEY, X-HEXORA-ADMIN-KEY",
+              "Access-Control-Allow-Methods":
+                "GET,POST,OPTIONS"
+            }
+          );
+
+          res.end();
+          return;
+        }
+
         const requestUrl =
           new URL(
             req.url,
@@ -2665,11 +2590,8 @@ const server =
         ================================================= */
 
         if (
-          pathname ===
-            "/health" ||
-
-          pathname ===
-            "/api/health"
+          pathname === "/health" ||
+          pathname === "/api/health"
         ) {
           const health =
             await healthCheck();
@@ -2690,11 +2612,8 @@ const server =
         ================================================= */
 
         if (
-          pathname ===
-            "/search" ||
-
-          pathname ===
-            "/api/search"
+          pathname === "/search" ||
+          pathname === "/api/search"
         ) {
           const query =
             normalizeQuery(
@@ -2717,7 +2636,7 @@ const server =
               ),
               1,
               1,
-              MAX_PAGE
+              10000
             );
 
           const limit =
@@ -2744,6 +2663,14 @@ const server =
             return;
           }
 
+          /*
+           * Demand tracking never blocks search.
+           */
+
+          recordSearchDemand(
+            query
+          ).catch(() => {});
+
           const data =
             await searchDatabase(
               query,
@@ -2751,13 +2678,6 @@ const server =
               page,
               limit
             );
-
-          /*
-           * Sponsored ads.
-           *
-           * If the ads database has a problem,
-           * normal search must still work.
-           */
 
           let sponsoredAds = [];
 
@@ -2769,23 +2689,10 @@ const server =
               );
           } catch (error) {
             console.error(
-              "[HEXORA] Sponsored ads failed:",
-              error?.message ||
-                error
+              "[HEXORA] Sponsored ads error:",
+              error.message
             );
           }
-
-          recordSearchDemand(
-            query
-          ).catch(
-            (error) => {
-              console.error(
-                "[HEXORA] Demand tracking error:",
-                error?.message ||
-                  error
-              );
-            }
-          );
 
           sendJson(
             res,
@@ -2802,440 +2709,12 @@ const server =
         }
 
         /* =================================================
-           ADS — CREATE ADVERTISER
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/advertisers" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const advertiser =
-              await createAdvertiser(
-                body
-              );
-
-            sendJson(
-              res,
-              201,
-              {
-                ok: true,
-                advertiser
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not create advertiser"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — CREATE CAMPAIGN
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/campaigns" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const campaign =
-              await createCampaign(
-                body
-              );
-
-            sendJson(
-              res,
-              201,
-              {
-                ok: true,
-                campaign
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not create campaign"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — CREATE AD
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const ad =
-              await createAd(
-                body
-              );
-
-            sendJson(
-              res,
-              201,
-              {
-                ok: true,
-                ad
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not create advertisement"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — APPROVE
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/approve" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const adId =
-              safeInt(
-                body.ad_id,
-                0,
-                1,
-                Number.MAX_SAFE_INTEGER
-              );
-
-            if (!adId) {
-              throw new Error(
-                "ad_id is required"
-              );
-            }
-
-            const ad =
-              await approveAd(
-                adId
-              );
-
-            sendJson(
-              res,
-              200,
-              {
-                ok: true,
-                ad
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not approve advertisement"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — SERVE
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/serve" &&
-
-          req.method === "GET"
-        ) {
-          try {
-            const query =
-              normalizeQuery(
-                requestUrl.searchParams.get(
-                  "q"
-                )
-              );
-
-            const limit =
-              safeInt(
-                requestUrl.searchParams.get(
-                  "limit"
-                ),
-                3,
-                1,
-                3
-              );
-
-            const ads =
-              await getSponsoredAds(
-                query,
-                limit
-              );
-
-            sendJson(
-              res,
-              200,
-              {
-                ok: true,
-                query,
-                ads
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              500,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not serve ads"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — IMPRESSION
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/impression" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const adId =
-              safeInt(
-                body.ad_id,
-                0,
-                1,
-                Number.MAX_SAFE_INTEGER
-              );
-
-            if (!adId) {
-              throw new Error(
-                "ad_id is required"
-              );
-            }
-
-            const recorded =
-              await recordAdImpression(
-                adId,
-                body.query
-              );
-
-            sendJson(
-              res,
-              200,
-              {
-                ok: recorded
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not record impression"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — CLICK
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/click" &&
-
-          req.method === "POST"
-        ) {
-          try {
-            const body =
-              await parseJsonBody(
-                req
-              );
-
-            const adId =
-              safeInt(
-                body.ad_id,
-                0,
-                1,
-                Number.MAX_SAFE_INTEGER
-              );
-
-            if (!adId) {
-              throw new Error(
-                "ad_id is required"
-              );
-            }
-
-            const result =
-              await recordAdClick(
-                adId,
-                body.query
-              );
-
-            sendJson(
-              res,
-              200,
-              result
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not record click"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
-           ADS — DASHBOARD
-        ================================================= */
-
-        if (
-          pathname ===
-            "/api/ads/dashboard" &&
-
-          req.method === "GET"
-        ) {
-          try {
-            const advertiserId =
-              safeInt(
-                requestUrl.searchParams.get(
-                  "advertiser_id"
-                ),
-                0,
-                1,
-                Number.MAX_SAFE_INTEGER
-              );
-
-            if (!advertiserId) {
-              throw new Error(
-                "advertiser_id is required"
-              );
-            }
-
-            const dashboard =
-              await getAdvertiserDashboard(
-                advertiserId
-              );
-
-            sendJson(
-              res,
-              200,
-              {
-                ok: true,
-                ...dashboard
-              }
-            );
-          } catch (error) {
-            sendJson(
-              res,
-              400,
-              {
-                ok: false,
-                error:
-                  error?.message ||
-                  "Could not load dashboard"
-              }
-            );
-          }
-
-          return;
-        }
-
-        /* =================================================
            NEWS
         ================================================= */
 
         if (
-          pathname ===
-            "/news" ||
-
-          pathname ===
-            "/api/news"
+          pathname === "/news" ||
+          pathname === "/api/news"
         ) {
           const limit =
             safeInt(
@@ -3247,9 +2726,30 @@ const server =
               MAX_LIMIT
             );
 
-          const results =
-            await getNews(
-              limit
+          const result =
+            await pool.query(
+              `
+              SELECT
+                id,
+                url,
+                title,
+                description,
+                content,
+                language,
+                domain,
+                canonical,
+                image_url,
+                published_at,
+                last_crawled_at
+              FROM pages
+              WHERE
+                published_at IS NOT NULL
+              ORDER BY
+                published_at DESC,
+                id DESC
+              LIMIT $1
+              `,
+              [limit]
             );
 
           sendJson(
@@ -3257,7 +2757,8 @@ const server =
             200,
             {
               ok: true,
-              results
+              results:
+                result.rows
             }
           );
 
@@ -3269,11 +2770,8 @@ const server =
         ================================================= */
 
         if (
-          pathname ===
-            "/images" ||
-
-          pathname ===
-            "/api/images"
+          pathname === "/images" ||
+          pathname === "/api/images"
         ) {
           const query =
             normalizeQuery(
@@ -3292,11 +2790,37 @@ const server =
               MAX_LIMIT
             );
 
-          const results =
-            await getMedia(
-              "images",
-              query,
-              limit
+          const result =
+            await pool.query(
+              `
+              SELECT
+                id,
+                url,
+                title,
+                description,
+                domain,
+                image_url,
+                published_at
+              FROM pages
+              WHERE
+                image_url IS NOT NULL
+                AND
+                (
+                  $1 = ''
+                  OR lower(coalesce(title,'')) LIKE
+                     '%' || lower($1) || '%'
+                  OR lower(coalesce(description,'')) LIKE
+                     '%' || lower($1) || '%'
+                )
+              ORDER BY
+                last_crawled_at DESC NULLS LAST,
+                id DESC
+              LIMIT $2
+              `,
+              [
+                query,
+                limit
+              ]
             );
 
           sendJson(
@@ -3305,7 +2829,8 @@ const server =
             {
               ok: true,
               query,
-              results
+              results:
+                result.rows
             }
           );
 
@@ -3317,43 +2842,21 @@ const server =
         ================================================= */
 
         if (
-          pathname ===
-            "/videos" ||
-
-          pathname ===
-            "/api/videos"
+          pathname === "/videos" ||
+          pathname === "/api/videos"
         ) {
-          const query =
-            normalizeQuery(
-              requestUrl.searchParams.get(
-                "q"
-              )
-            );
-
-          const limit =
-            safeInt(
-              requestUrl.searchParams.get(
-                "limit"
-              ),
-              DEFAULT_LIMIT,
-              1,
-              MAX_LIMIT
-            );
-
-          const results =
-            await getMedia(
-              "videos",
-              query,
-              limit
-            );
-
           sendJson(
             res,
             200,
             {
               ok: true,
-              query,
-              results
+              query:
+                normalizeQuery(
+                  requestUrl.searchParams.get(
+                    "q"
+                  )
+                ),
+              results: []
             }
           );
 
@@ -3365,11 +2868,8 @@ const server =
         ================================================= */
 
         if (
-          pathname ===
-            "/maps" ||
-
-          pathname ===
-            "/api/maps"
+          pathname === "/maps" ||
+          pathname === "/api/maps"
         ) {
           sendJson(
             res,
@@ -3377,6 +2877,473 @@ const server =
             {
               ok: true,
               results: []
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CREATE ADVERTISER
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/advertisers"
+        ) {
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const result =
+            await createAdvertiser(
+              body
+            );
+
+          sendJson(
+            res,
+            201,
+            {
+              ok: true,
+              ...result
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CAMPAIGN
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/campaigns"
+        ) {
+          const advertiser =
+            await getAdvertiserFromKey(
+              getAdvertiserKey(req)
+            );
+
+          if (!advertiser) {
+            sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error:
+                  "Invalid advertiser key"
+              }
+            );
+
+            return;
+          }
+
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const campaign =
+            await createCampaign(
+              advertiser,
+              body
+            );
+
+          sendJson(
+            res,
+            201,
+            {
+              ok: true,
+              campaign
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CREATE AD
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads"
+        ) {
+          const advertiser =
+            await getAdvertiserFromKey(
+              getAdvertiserKey(req)
+            );
+
+          if (!advertiser) {
+            sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error:
+                  "Invalid advertiser key"
+              }
+            );
+
+            return;
+          }
+
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const ad =
+            await createAd(
+              advertiser,
+              body
+            );
+
+          sendJson(
+            res,
+            201,
+            {
+              ok: true,
+              ad
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — APPROVE
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/approve"
+        ) {
+          if (
+            !requireAdmin(req)
+          ) {
+            sendJson(
+              res,
+              403,
+              {
+                ok: false,
+                error:
+                  "Admin authorization required"
+              }
+            );
+
+            return;
+          }
+
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const ad =
+            await approveAd(
+              body.ad_id
+            );
+
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              ad
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — SERVE
+        ================================================= */
+
+        if (
+          req.method === "GET" &&
+          pathname ===
+            "/api/ads/serve"
+        ) {
+          const query =
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              )
+            );
+
+          const ads =
+            await getSponsoredAds(
+              query,
+              3
+            );
+
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              query,
+              ads
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — IMPRESSION
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/impression"
+        ) {
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const ok =
+            await recordAdImpression(
+              body.ad_id,
+              body.query
+            );
+
+          sendJson(
+            res,
+            200,
+            {
+              ok
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CLICK
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/click"
+        ) {
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const result =
+            await recordAdClick(
+              body.ad_id,
+              body.query
+            );
+
+          sendJson(
+            res,
+            result.ok
+              ? 200
+              : 400,
+            result
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — DASHBOARD
+        ================================================= */
+
+        if (
+          req.method === "GET" &&
+          pathname ===
+            "/api/ads/dashboard"
+        ) {
+          const advertiser =
+            await getAdvertiserFromKey(
+              getAdvertiserKey(req)
+            );
+
+          if (!advertiser) {
+            sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error:
+                  "Invalid advertiser key"
+              }
+            );
+
+            return;
+          }
+
+          const dashboard =
+            await getAdvertiserDashboard(
+              advertiser
+            );
+
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              ...dashboard
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CREATE RAZORPAY ORDER
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/payment/order"
+        ) {
+          const advertiser =
+            await getAdvertiserFromKey(
+              getAdvertiserKey(req)
+            );
+
+          if (!advertiser) {
+            sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error:
+                  "Invalid advertiser key"
+              }
+            );
+
+            return;
+          }
+
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const payment =
+            await createRazorpayOrder(
+              advertiser,
+              body.amount
+            );
+
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              payment
+            }
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — VERIFY RAZORPAY PAYMENT
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/payment/verify"
+        ) {
+          const advertiser =
+            await getAdvertiserFromKey(
+              getAdvertiserKey(req)
+            );
+
+          if (!advertiser) {
+            sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error:
+                  "Invalid advertiser key"
+              }
+            );
+
+            return;
+          }
+
+          const body =
+            await parseJsonBody(
+              req
+            );
+
+          const result =
+            await verifyRazorpayPayment(
+              advertiser,
+              body
+            );
+
+          sendJson(
+            res,
+            200,
+            result
+          );
+
+          return;
+        }
+
+        /* =================================================
+           RAZORPAY WEBHOOK
+        ================================================= */
+
+        if (
+          req.method === "POST" &&
+          pathname ===
+            "/api/ads/payment/webhook"
+        ) {
+          await handleRazorpayWebhook(
+            req,
+            res
+          );
+
+          return;
+        }
+
+        /* =================================================
+           ADS — CONFIG
+        ================================================= */
+
+        if (
+          req.method === "GET" &&
+          pathname ===
+            "/api/ads/config"
+        ) {
+          sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              razorpay:
+                Boolean(
+                  RAZORPAY_KEY_ID
+                ),
+              razorpay_key_id:
+                RAZORPAY_KEY_ID ||
+                null,
+              currency:
+                "INR"
             }
           );
 
@@ -3400,15 +3367,20 @@ const server =
           }
         }
 
-        sendText(
+        sendJson(
           res,
           404,
-          "Not Found"
+          {
+            ok: false,
+            error:
+              "Not found"
+          }
         );
 
       } catch (error) {
+
         console.error(
-          "[HEXORA] SERVER ERROR:",
+          "[HEXORA SERVER ERROR]",
           error
         );
 
@@ -3420,8 +3392,7 @@ const server =
             error:
               "Internal server error",
             message:
-              error?.message ||
-              "Unknown error"
+              error.message
           }
         );
       }
@@ -3432,10 +3403,13 @@ const server =
    START
 ========================================================= */
 
+await ensureAdsColumns();
+
 server.listen(
   PORT,
   "0.0.0.0",
   () => {
+
     console.log(
       `HEXORA server running on port ${PORT}`
     );
@@ -3446,6 +3420,12 @@ server.listen(
 
     console.log(
       "[HEXORA] Ads / Income API enabled"
+    );
+
+    console.log(
+      `[HEXORA] Razorpay configured: ${
+        Boolean(RAZORPAY_KEY_ID)
+      }`
     );
   }
 );
@@ -3458,11 +3438,12 @@ async function shutdown(
   signal
 ) {
   console.log(
-    `${signal} received. Shutting down...`
+    `[HEXORA] ${signal} received. Shutting down...`
   );
 
   server.close(
     async () => {
+
       try {
         await pool.end();
       } catch {}
@@ -3474,12 +3455,10 @@ async function shutdown(
 
 process.on(
   "SIGTERM",
-  () =>
-    shutdown("SIGTERM")
+  () => shutdown("SIGTERM")
 );
 
 process.on(
   "SIGINT",
-  () =>
-    shutdown("SIGINT")
+  () => shutdown("SIGINT")
 );
