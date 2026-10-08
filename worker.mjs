@@ -12,15 +12,15 @@ const CRAWL_INTERVAL = Math.max(
 );
 
 const DEMAND_INTERVAL = Math.max(
-  60000,
+  15 * 60 * 1000,
   Number(
-    process.env.DEMAND_REFRESH_INTERVAL_MS || 900000
+    process.env.DEMAND_REFRESH_INTERVAL_MS ||
+      60 * 60 * 1000
   )
 );
 
 let stopping = false;
-
-let lastDemandRun = 0;
+let demandRunning = false;
 
 console.log(
   "[HEXORA] crawler worker started"
@@ -35,7 +35,7 @@ console.log(
 );
 
 console.log(
-  `[HEXORA] batch=${
+  `[HEXORA] crawl batch=${
     process.env.CRAWL_BATCH_SIZE || 5
   }`
 );
@@ -46,115 +46,66 @@ async function sleep(ms) {
   );
 }
 
-async function runDemandRefresh() {
-  const now = Date.now();
-
-  if (
-    now - lastDemandRun <
-    DEMAND_INTERVAL
-  ) {
+/*
+ * Run the demand collector.
+ *
+ * This is intentionally isolated from the crawler.
+ * If demand collection fails, the crawler continues.
+ */
+async function refreshDemand() {
+  if (demandRunning) {
     return;
   }
 
-  lastDemandRun = now;
+  demandRunning = true;
 
   try {
     console.log(
-      "[HEXORA] refreshing search demand..."
+      "[HEXORA] starting demand intelligence..."
     );
 
     const module =
       await import("../demand-trends.mjs");
 
-    console.log(
-      "[HEXORA] demand refresh completed"
-    );
-  } catch (error) {
-    console.error(
-      "[HEXORA] demand refresh failed:",
-      error?.message || error
-    );
-  }
-}
-
-async function loop() {
-  while (!stopping) {
-    try {
-      await runDemandRefresh();
-    } catch (error) {
-      console.error(
-        "[HEXORA] demand cycle error:",
-        error?.message || error
-      );
-    }
-
-    try {
-      const result =
-        await runCrawlCycle();
+    if (
+      typeof module.runDemandCollection ===
+      "function"
+    ) {
+      await module.runDemandCollection();
 
       console.log(
-        `[HEXORA] cycle: ` +
-        `jobs=${result.jobs}, ` +
-        `indexed=${result.indexed}, ` +
-        `failed=${result.failed}, ` +
-        `blocked=${result.blocked}, ` +
-        `discovered=${result.discovered}`
+        "[HEXORA] demand intelligence completed"
       );
-
-      if (
-        result.storagePaused
-      ) {
-        console.warn(
-          "[HEXORA] storage protection active"
-        );
-      }
-    } catch (error) {
-      console.error(
-        "[HEXORA] crawl cycle failed:",
-        error?.message || error
+    } else {
+      console.warn(
+        "[HEXORA] demand collector does not export runDemandCollection()"
       );
-
-      await sleep(15000);
     }
-
-    if (!stopping) {
-      await sleep(CRAWL_INTERVAL);
-    }
-  }
-}
-
-async function stop(signal) {
-  if (stopping) {
-    return;
-  }
-
-  stopping = true;
-
-  console.log(
-    `[HEXORA] ${signal} received`
-  );
-
-  try {
-    await shutdownCrawler();
   } catch (error) {
+    /*
+     * IMPORTANT:
+     * Demand collector failure must NEVER
+     * stop the HEXORA crawler.
+     */
     console.error(
-      "[HEXORA] shutdown error:",
+      "[HEXORA] demand intelligence failed:",
       error?.message || error
     );
+  } finally {
+    demandRunning = false;
   }
-
-  process.exit(0);
 }
 
-process.on(
-  "SIGTERM",
-  () => stop("SIGTERM")
-);
+async function crawl() {
+  try {
+    const result =
+      await runCrawlCycle();
 
-process.on(
-  "SIGINT",
-  () => stop("SIGINT")
-);
-
-await loop();
+    console.log(
+      `[HEXORA] cycle: ` +
+      `jobs=${result.jobs}, ` +
+      `indexed=${result.indexed}, ` +
+      `failed=${result.failed}, ` +
+      `blocked=${result.blocked}, ` +
+      `discovered=${result.di
 ```
