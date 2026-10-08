@@ -1,3 +1,4 @@
+```js
 import "dotenv/config";
 import pg from "pg";
 
@@ -30,7 +31,7 @@ const COUNTRIES = [
   "MX",
   "SG",
   "AE",
-  "ZA"
+  "ZA",
 ];
 
 const GOOGLE_TRENDS_URL =
@@ -50,10 +51,22 @@ function cleanQuery(value) {
     .slice(0, 500);
 }
 
-function parseTraffic(value) {
-  if (!value) return 1000;
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
 
-  const text = String(value)
+function parseTraffic(value) {
+  if (!value) {
+    return 1000;
+  }
+
+  const text = decodeXml(value)
     .toLowerCase()
     .replace(/,/g, "")
     .trim();
@@ -100,8 +113,7 @@ function priorityFromTraffic(traffic) {
 async function fetchText(url) {
   const response = await fetch(url, {
     headers: {
-      "User-Agent":
-        "HEXORA-DemandBot/1.0",
+      "User-Agent": "HEXORA-DemandBot/1.0",
       Accept:
         "application/rss+xml, application/xml, text/xml",
     },
@@ -146,22 +158,17 @@ function extractItems(xml) {
       )?.[1];
 
     const query = cleanQuery(
-      title
-        ?.replace(/<!\[CDATA\[|\]\]>/g, "")
-        ?.replace(/&amp;/g, "&")
-        ?.replace(/&quot;/g, '"')
-        ?.replace(/&#39;/g, "'")
+      decodeXml(title)
     );
 
-    if (!query) continue;
+    if (!query) {
+      continue;
+    }
 
     items.push({
       query,
-      traffic: parseTraffic(
-        traffic
-          ?.replace(/<!\[CDATA\[|\]\]>/g, "")
-      ),
-      pubDate: pubDate || null,
+      traffic: parseTraffic(traffic),
+      pubDate: decodeXml(pubDate),
     });
   }
 
@@ -223,7 +230,8 @@ async function upsertDemand({
           EXCLUDED.crawl_priority
         ),
 
-      last_searched_at = NOW(),
+      last_searched_at =
+        NOW(),
 
       status =
         CASE
@@ -232,7 +240,8 @@ async function upsertDemand({
           ELSE search_queries.status
         END,
 
-      updated_at = NOW()
+      updated_at =
+        NOW()
     `,
     [
       query,
@@ -259,6 +268,10 @@ async function collectCountry(country) {
   const items =
     extractItems(xml);
 
+  console.log(
+    `[HEXORA] ${country}: ${items.length} trends found`
+  );
+
   let inserted = 0;
 
   for (const item of items) {
@@ -282,13 +295,21 @@ async function collectCountry(country) {
   }
 
   console.log(
-    `[HEXORA] ${country}: ${inserted} demand queries`
+    `[HEXORA] ${country}: ${inserted} demand queries saved`
   );
 
   return inserted;
 }
 
 async function runDemandCollection() {
+  console.log(
+    "[HEXORA] Demand Intelligence started"
+  );
+
+  console.log(
+    `[HEXORA] Countries: ${COUNTRIES.join(", ")}`
+  );
+
   let total = 0;
 
   for (const country of COUNTRIES) {
@@ -326,3 +347,4 @@ main().catch((error) => {
 
   process.exitCode = 1;
 });
+```
