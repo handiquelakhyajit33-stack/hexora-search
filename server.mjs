@@ -312,6 +312,7 @@ async function searchDatabase(
       SELECT
         lower(trim($1::text)) AS q,
         $2::text AS mode_param,
+        $4::text AS intent_param,
         websearch_to_tsquery(
           'simple',
           $1::text
