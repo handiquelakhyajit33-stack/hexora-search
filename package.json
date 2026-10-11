@@ -1,24 +1,15 @@
 {
   "name": "hexora-search-engine",
-  "version": "6.0.0",
+  "version": "5.1.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=20" },
   "scripts": {
     "start": "node server.mjs",
-    "crawler": "node worker/worker.mjs",
-    "demand": "node demand-trends.mjs",
-    "migrate:supabase": "node migrate-supabase.mjs",
-    "archive:neon": "node archive-neon-to-r2.mjs",
-    "rank": "node recalculate-authority.mjs",
-    "import:commoncrawl": "node commoncrawl-importer.mjs"
+    "check": "node --check server.mjs"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.922.0",
-    "@supabase/supabase-js": "^2.57.0",
-    "cheerio": "^1.1.2",
-    "maplibre-gl": "^6.11.2",
-    "pg": "^8.16.3",
-    "dotenv": "^17.2.2",
-    "robots-parser": "^3.0.0"
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1"
   }
 }
