@@ -489,335 +489,159 @@ async function recordSearchDemand(query) {
 // ============================================================
 
 function buildTsQuery(query) {
-  const words = wordsOf(query);
-
-  if (!words.length) {
-    return null;
-  }
-
-  return words
-    .map(word =>
-      word.replace(
-        /[^a-zA-Z0-9\u00C0-\uFFFF]/g,
-        ""
-      )
-    )
-    .filter(Boolean)
-    .join(" & ");
+  const words = wordsOf(query)
+    .map(word => word.replace(/[^a-zA-Z0-9\u00C0-\uFFFF]/g, ""))
+    .filter(Boolean);
+  return words.length ? words.join(" | ") : null;
 }
 
-async function searchDatabase(
-  query,
-  mode = "web",
-  page = 1,
-  limit = 20
-) {
+async function searchDatabase(query, mode = "web", page = 1, limit = 10) {
   const q = normalizeQuery(query);
+  const safePage = safeInt(page, 1, 1, 100000);
+  const safeLimit = safeInt(limit, 10, 1, 50);
+  const offset = (safePage - 1) * safeLimit;
+  if (!q) return { results: [], total: 0, suggestions: [] };
 
-  if (!q) {
-    return {
-      results: [],
-      total: 0,
-      suggestions: [],
-    };
-  }
-
-  const offset =
-    (page - 1) * limit;
-
-  const tsQuery =
-    buildTsQuery(q);
-
-  const searchWords =
-    wordsOf(q);
-
-  const pattern =
-    `%${q.replace(/[%_]/g, "")}%`;
-
-  let rows = [];
+  const escaped = q.replace(/[\\%_]/g, "\\$&");
+  const phrasePattern = `%${escaped}%`;
+  const terms = [...new Set(wordsOf(q))].slice(0, 12);
+  const tsQuery = buildTsQuery(q) || q;
+  const matchWhere = `
+    COALESCE(p.crawl_status, '') NOT IN ('deleted', 'blocked')
+    AND (
+      COALESCE(p.title, '') ILIKE $1 ESCAPE '\\'
+      OR COALESCE(p.description, '') ILIKE $1 ESCAPE '\\'
+      OR COALESCE(p.content, '') ILIKE $1 ESCAPE '\\'
+      OR COALESCE(p.url, '') ILIKE $1 ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM unnest($2::text[]) AS term
+        WHERE COALESCE(p.title, '') ILIKE ('%' || term || '%')
+           OR COALESCE(p.description, '') ILIKE ('%' || term || '%')
+           OR COALESCE(p.content, '') ILIKE ('%' || term || '%')
+           OR COALESCE(p.url, '') ILIKE ('%' || term || '%')
+      )
+      OR (p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple', $3))
+    )`;
 
   try {
-    const result =
-      await pool.query(
-        `
-        SELECT
-          p.id,
-          p.url,
-          p.title,
-          p.description,
-          p.content,
-          p.domain,
-          p.language,
-          p.author,
-          p.image_url,
-          p.published_at,
-          p.updated_at,
-          p.last_crawled_at,
-          p.authority_score,
-          p.popularity_score,
+    const count = await pool.query(
+      `SELECT COUNT(*)::bigint AS total FROM pages p WHERE ${matchWhere}`,
+      [phrasePattern, terms, tsQuery]
+    );
+    const total = Number(count.rows[0]?.total || 0);
+    const result = await pool.query(
+      `SELECT p.id, p.url, p.canonical_url, p.title, p.description, p.content,
+        p.domain, p.language, p.author, p.image_url, p.published_at, p.updated_at,
+        p.last_crawled_at, p.authority_score, p.popularity_score, p.quality_score,
+        p.inbound_links, p.excerpt, p.r2_key,
+        (CASE WHEN lower(COALESCE(p.title,'')) = lower($4) THEN 1000 ELSE 0 END
+        + CASE WHEN COALESCE(p.title,'') ILIKE $1 ESCAPE '\\' THEN 450 ELSE 0 END
+        + CASE WHEN COALESCE(p.description,'') ILIKE $1 ESCAPE '\\' THEN 180 ELSE 0 END
+        + CASE WHEN COALESCE(p.url,'') ILIKE $1 ESCAPE '\\' THEN 100 ELSE 0 END
+        + CASE WHEN COALESCE(p.content,'') ILIKE $1 ESCAPE '\\' THEN 35 ELSE 0 END
+        + COALESCE((SELECT SUM(CASE
+            WHEN COALESCE(p.title,'') ILIKE ('%'||term||'%') THEN 40
+            WHEN COALESCE(p.description,'') ILIKE ('%'||term||'%') THEN 18
+            WHEN COALESCE(p.url,'') ILIKE ('%'||term||'%') THEN 12
+            WHEN COALESCE(p.content,'') ILIKE ('%'||term||'%') THEN 4 ELSE 0 END)
+          FROM unnest($2::text[]) AS term),0)
+        + CASE WHEN p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple',$3)
+          THEN LEAST(100, ts_rank_cd(p.search_vector, websearch_to_tsquery('simple',$3))*100) ELSE 0 END
+        + LEAST(30,GREATEST(0,COALESCE(p.authority_score,0)))
+        + LEAST(15,GREATEST(0,COALESCE(p.popularity_score,0))*0.15)
+        + LEAST(15,GREATEST(0,COALESCE(p.quality_score,0))*0.15)
+        + LEAST(20,GREATEST(0,COALESCE(p.inbound_links,0))*0.1)
+        + CASE WHEN COALESCE(p.published_at,p.updated_at,p.last_crawled_at) >= NOW()-INTERVAL '7 days' THEN 8
+               WHEN COALESCE(p.published_at,p.updated_at,p.last_crawled_at) >= NOW()-INTERVAL '30 days' THEN 4 ELSE 0 END
+        ) AS relevance_score
+       FROM pages p WHERE ${matchWhere}
+       ORDER BY relevance_score DESC, p.authority_score DESC NULLS LAST,
+         p.quality_score DESC NULLS LAST, p.last_crawled_at DESC NULLS LAST
+       LIMIT $5 OFFSET $6`,
+      [phrasePattern, terms, tsQuery, q, safeLimit, offset]
+    );
 
-          CASE
-            WHEN LOWER(COALESCE(p.title,'')) =
-                 LOWER($1)
-            THEN 1000
-
-            WHEN LOWER(COALESCE(p.title,'')) LIKE
-                 LOWER($2)
-            THEN 700
-
-            WHEN LOWER(COALESCE(p.description,'')) LIKE
-                 LOWER($2)
-            THEN 350
-
-            WHEN LOWER(COALESCE(p.url,'')) LIKE
-                 LOWER($2)
-            THEN 250
-
-            ELSE 0
-          END AS exact_score,
-
-          CASE
-            WHEN $3::text IS NOT NULL
-            THEN ts_rank_cd(
-              p.search_vector,
-              websearch_to_tsquery(
-                'simple',
-                $3
-              )
-            )
-            ELSE 0
-          END AS text_rank,
-
-          CASE
-            WHEN p.authority_score IS NULL
-            THEN 0
-            ELSE LEAST(
-              100,
-              GREATEST(
-                0,
-                p.authority_score
-              )
-            )
-          END AS authority,
-
-          CASE
-            WHEN p.popularity_score IS NULL
-            THEN 0
-            ELSE LEAST(
-              100,
-              GREATEST(
-                0,
-                p.popularity_score
-              )
-            )
-          END AS popularity
-
-        FROM pages p
-
-        WHERE
-          (
-            LOWER(COALESCE(p.title,'')) LIKE LOWER($2)
-            OR LOWER(COALESCE(p.description,'')) LIKE LOWER($2)
-            OR LOWER(COALESCE(p.content,'')) LIKE LOWER($2)
-            OR LOWER(COALESCE(p.url,'')) LIKE LOWER($2)
-            OR (
-              $3::text IS NOT NULL
-              AND p.search_vector @@
-                  websearch_to_tsquery(
-                    'simple',
-                    $3
-                  )
-            )
-          )
-
-        ORDER BY
-          exact_score DESC,
-          text_rank DESC,
-          authority DESC,
-          popularity DESC,
-          p.last_crawled_at DESC NULLS LAST
-
-        LIMIT $4
-        OFFSET $5
-        `,
-        [
-          q,
-          pattern,
-          tsQuery,
-          Math.min(
-            SEARCH_CANDIDATE_LIMIT,
-            Math.max(
-              limit * 5,
-              100
-            )
-          ),
-          offset,
-        ]
-      );
-
-    rows = result.rows;
+    const results = [];
+    const seenUrls = new Set();
+    const domainCounts = new Map();
+    for (const row of result.rows) {
+      const url = safeUrl(row.canonical_url || row.url);
+      if (!url) continue;
+      const canonical = url.toLowerCase().replace(/#.*$/, "").replace(/\/$/, "");
+      if (seenUrls.has(canonical)) continue;
+      const domain = cleanText(row.domain, 255) || (() => { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } })();
+      if (domain && (domainCounts.get(domain) || 0) >= 3) continue;
+      seenUrls.add(canonical);
+      if (domain) domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+      const description = cleanSnippet(row.excerpt || row.description || row.content || "", 360);
+      results.push({
+        id: row.id, url, title: cleanText(row.title || url, 250),
+        description, snippet: description, domain, language: row.language || null,
+        author: row.author || null, image_url: safeUrl(row.image_url || "") || null,
+        published_at: row.published_at || null,
+        updated_at: row.updated_at || row.last_crawled_at || null,
+        relevance_score: Number(row.relevance_score || 0)
+      });
+    }
+    return { results, total, suggestions: terms.slice(0, 5) };
   } catch (error) {
-    console.error(
-      "[HEXORA] search query failed:",
-      error?.message || error
-    );
+    console.error("[HEXORA] search query failed:", error?.message || error);
+    return { results: [], total: 0, suggestions: terms.slice(0, 5), error: "Search temporarily unavailable" };
+  }
+}
 
-    // Fallback search without search_vector
-    try {
-      const fallback =
-        await pool.query(
-          `
-          SELECT
-            id,
-            url,
-            title,
-            description,
-            content,
-            domain,
-            language,
-            author,
-            image_url,
-            published_at,
-            updated_at,
-            last_crawled_at,
-            authority_score,
-            popularity_score
-          FROM pages
-          WHERE
-            LOWER(COALESCE(title,'')) LIKE LOWER($1)
-            OR LOWER(COALESCE(description,'')) LIKE LOWER($1)
-            OR LOWER(COALESCE(content,'')) LIKE LOWER($1)
-            OR LOWER(COALESCE(url,'')) LIKE LOWER($1)
-          ORDER BY
-            authority_score DESC NULLS LAST,
-            popularity_score DESC NULLS LAST,
-            last_crawled_at DESC NULLS LAST
-          LIMIT $2
-          OFFSET $3
-          `,
-          [
-            pattern,
-            limit,
-            offset,
-          ]
-        );
+function mediaValues(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return [value];
+  if (typeof value === "string") {
+    try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" ? [parsed] : []; }
+    catch { return []; }
+  }
+  return [];
+}
 
-      rows = fallback.rows;
-    } catch (fallbackError) {
-      console.error(
-        "[HEXORA] fallback search failed:",
-        fallbackError?.message ||
-          fallbackError
-      );
-
-      rows = [];
+async function searchMedia(query, kind = "images", limit = 40) {
+  const q = normalizeQuery(query);
+  if (!q) return [];
+  const terms = [...new Set(wordsOf(q))].slice(0, 8);
+  const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
+  const column = kind === "videos" ? "video_items" : "image_items";
+  const rows = await pool.query(
+    `SELECT id,url,title,domain,description,image_url,${column} AS media_items
+     FROM pages p
+     WHERE COALESCE(crawl_status,'') NOT IN ('deleted','blocked')
+       AND (COALESCE(p.title,'') ILIKE $1 ESCAPE '\\'
+         OR COALESCE(p.description,'') ILIKE $1 ESCAPE '\\'
+         OR COALESCE(p.content,'') ILIKE $1 ESCAPE '\\'
+         OR EXISTS (SELECT 1 FROM unnest($2::text[]) term WHERE
+           COALESCE(p.title,'') ILIKE ('%'||term||'%') OR COALESCE(p.description,'') ILIKE ('%'||term||'%') OR COALESCE(p.url,'') ILIKE ('%'||term||'%')))
+       AND (${column} IS NOT NULL)
+     ORDER BY quality_score DESC NULLS LAST, authority_score DESC NULLS LAST, last_crawled_at DESC NULLS LAST
+     LIMIT 300`, [like, terms]);
+  const output = [];
+  const seen = new Set();
+  for (const row of rows.rows) {
+    const items = mediaValues(row.media_items);
+    if (kind === "images" && row.image_url) items.unshift({ image_url: row.image_url, title: row.title, page_url: row.url });
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const mediaUrl = safeUrl(item.image_url || item.url || item.src || item.thumbnail_url || item.thumbnail || item.embed_url || item.video_url || "");
+      if (!mediaUrl || seen.has(mediaUrl)) continue;
+      const itemText = `${item.title || item.alt || item.name || ""} ${row.title || ""} ${row.description || ""} ${row.url || ""}`.toLowerCase();
+      if (terms.length && !terms.some(term => itemText.includes(term.toLowerCase()))) continue;
+      seen.add(mediaUrl);
+      output.push({
+        url: mediaUrl,
+        title: cleanText(item.title || item.alt || row.title || mediaUrl, 250),
+        thumbnail_url: safeUrl(item.thumbnail_url || item.thumbnail || item.image_url || (kind === "images" ? mediaUrl : "")) || null,
+        page_url: safeUrl(item.page_url || item.source_url || row.url || "") || null,
+        domain: cleanText(row.domain, 255),
+        type: kind === "videos" ? "video" : "image"
+      });
+      if (output.length >= limit) return output;
     }
   }
-
-  const results = [];
-
-  const domainCounts = new Map();
-
-  for (const row of rows) {
-    const domain =
-      row.domain ||
-      (() => {
-        try {
-          return new URL(row.url).hostname;
-        } catch {
-          return "";
-        }
-      })();
-
-    const current =
-      domainCounts.get(domain) || 0;
-
-    if (current >= 3) {
-      continue;
-    }
-
-    domainCounts.set(
-      domain,
-      current + 1
-    );
-
-    const title =
-      cleanText(
-        row.title ||
-        row.url ||
-        "Untitled",
-        250
-      );
-
-    const description =
-      cleanSnippet(
-        row.description ||
-        row.content ||
-        "",
-        360
-      );
-
-    results.push({
-      id: row.id,
-      url: row.url,
-      title,
-      description,
-      snippet: description,
-      domain,
-      language:
-        row.language || null,
-      author:
-        row.author || null,
-      image_url:
-        row.image_url || null,
-      published_at:
-        row.published_at || null,
-      updated_at:
-        row.updated_at ||
-        row.last_crawled_at ||
-        null,
-    });
-
-    if (results.length >= limit) {
-      break;
-    }
-  }
-
-  let total = 0;
-
-  try {
-    const countResult =
-      await pool.query(
-        `
-        SELECT COUNT(*)::BIGINT AS total
-        FROM pages p
-        WHERE
-          LOWER(COALESCE(p.title,'')) LIKE LOWER($1)
-          OR LOWER(COALESCE(p.description,'')) LIKE LOWER($1)
-          OR LOWER(COALESCE(p.content,'')) LIKE LOWER($1)
-          OR LOWER(COALESCE(p.url,'')) LIKE LOWER($1)
-        `,
-        [pattern]
-      );
-
-    total =
-      Number(
-        countResult.rows[0]?.total || 0
-      );
-  } catch {
-    total = results.length;
-  }
-
-  const suggestions =
-    searchWords.length
-      ? searchWords.slice(0, 5)
-      : [];
-
-  return {
-    results,
-    total,
-    suggestions,
-  };
+  return output;
 }
 
 // ============================================================
@@ -1488,7 +1312,7 @@ const server =
               parsed.searchParams.get(
                 "limit"
               ),
-              20,
+              10,
               1,
               50
             );
@@ -1575,11 +1399,13 @@ const server =
               )
             );
 
-          return json(res, 200, {
-            ok: true,
-            query,
-            results: [],
-          });
+          try {
+            const results = await searchMedia(query, "images", 40);
+            return json(res, 200, { ok: true, query, results });
+          } catch (error) {
+            console.error("[HEXORA] image search failed:", error?.message || error);
+            return json(res, 200, { ok: true, query, results: [], message: "No indexed images found yet." });
+          }
         }
 
         // ======================================================
@@ -1597,11 +1423,13 @@ const server =
               )
             );
 
-          return json(res, 200, {
-            ok: true,
-            query,
-            results: [],
-          });
+          try {
+            const results = await searchMedia(query, "videos", 40);
+            return json(res, 200, { ok: true, query, results });
+          } catch (error) {
+            console.error("[HEXORA] video search failed:", error?.message || error);
+            return json(res, 200, { ok: true, query, results: [], message: "No indexed videos found yet." });
+          }
         }
 
         // ======================================================
