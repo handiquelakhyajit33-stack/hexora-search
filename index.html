@@ -1364,6 +1364,21 @@ footer{color:#8994a6!important}
   #hexoraResultsSearchTools .search-box{max-width:none;margin-bottom:10px;}
   #hexoraResultsSearchTools .search-modes{gap:18px!important;justify-content:space-between!important;}
 }
+
+/* ================= ABOUT HEXORA (additive; existing views untouched) ================= */
+#aboutView{display:none;width:min(1050px,calc(100% - 42px));margin:0 auto;padding:38px 0 80px;color:var(--text);}
+#aboutView.active{display:block;}
+.hexora-about-card{border:1px solid var(--line);border-radius:22px;padding:clamp(20px,4vw,42px);background:linear-gradient(145deg,rgba(5,24,40,.96),rgba(3,10,19,.96));box-shadow:var(--shadow);}
+.hexora-about-kicker{color:var(--cyan);font-size:11px;letter-spacing:.18em;font-weight:800;text-transform:uppercase;margin-bottom:12px;}
+.hexora-about-title{font-size:clamp(30px,5vw,48px);line-height:1.1;margin:0 0 18px;letter-spacing:-.035em;}
+.hexora-about-card p{color:#b6c7d8;line-height:1.8;font-size:15px;max-width:820px;}
+.hexora-about-card h2{font-size:18px;margin:28px 0 8px;}
+.hexora-about-note{margin-top:24px;padding:14px 16px;border-left:3px solid var(--cyan);background:rgba(0,223,255,.06);border-radius:0 12px 12px 0;color:#c6d8e8;line-height:1.7;font-size:13px;}
+.hexora-footer-link{color:var(--cyan);text-decoration:none;font-weight:700;}
+.hexora-footer-link:hover{text-decoration:underline;}
+#aboutView .hexora-about-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px;}
+@media(max-width:760px){#aboutView{width:calc(100% - 28px);padding-top:20px}.hexora-about-card{border-radius:17px}}
+
 </style>
 </head>
 
@@ -1964,6 +1979,8 @@ footer{color:#8994a6!important}
 
   <footer>
     HEXORA © 2026 · Search Beyond Limits
+    <span class="hexora-footer-separator"> · </span>
+    <a href="#about" data-hexora-about class="hexora-footer-link">About HEXORA</a>
   </footer>
 
 </section>
@@ -2356,6 +2373,26 @@ footer{color:#8994a6!important}
 
   </div>
 
+</section>
+
+
+<!-- ================= ABOUT HEXORA ================= -->
+<section id="aboutView" aria-labelledby="hexoraAboutTitle">
+  <article class="hexora-about-card">
+    <div class="hexora-about-kicker">Independent search project</div>
+    <h1 id="hexoraAboutTitle" class="hexora-about-title">About HEXORA</h1>
+    <p><strong>HEXORA</strong> is an independent search-engine project founded by <strong>Lakhyajit Handique</strong> in Assam, India. It is being developed with a long-term goal of making useful information easier to discover across the web and across languages.</p>
+    <h2>Our vision</h2>
+    <p>HEXORA aims to grow into a worldwide search platform with relevant web results, multilingual discovery, and useful experiences for people searching in English, Assamese, Hindi, and other languages. The project’s direction is inspired by the ambition of Digital India and the broader idea of building useful technology from Assam for people everywhere.</p>
+    <h2>How HEXORA is being built</h2>
+    <p>The project is developing its own search interface, web-crawling workflow, stored page index, and ranking system. Search coverage and result quality depend on the pages successfully discovered, processed, indexed, and ranked; these capabilities will continue to evolve as development progresses.</p>
+    <h2>Independent project</h2>
+    <p>HEXORA is an independent project and is not an official product of, or endorsed by, the Government of India, the Government of Assam, or any political office or organization.</p>
+    <div class="hexora-about-note">Our goal is simple: help people explore the web with a search experience that keeps improving—built from Assam, with a worldwide vision.</div>
+    <div class="hexora-about-actions">
+      <button type="button" class="primary" data-hexora-home>← Back to HEXORA</button>
+    </div>
+  </article>
 </section>
 
 
@@ -4130,7 +4167,8 @@ footer{color:#8994a6!important}
       const showingResults = results.classList.contains("active") && getComputedStyle(results).display !== "none";
       const ads = document.getElementById("adsView");
       const map = document.getElementById("mapView");
-      const anotherViewOpen = !!((ads && ads.classList.contains("active") && getComputedStyle(ads).display !== "none") || (map && map.classList.contains("active")));
+      const about = document.getElementById("aboutView");
+      const anotherViewOpen = !!((ads && ads.classList.contains("active") && getComputedStyle(ads).display !== "none") || (map && map.classList.contains("active")) || (about && about.classList.contains("active") && getComputedStyle(about).display !== "none"));
 
       if (showingResults) {
         /* Results view must replace the homepage, not appear after homepage sections. */
@@ -4155,6 +4193,37 @@ footer{color:#8994a6!important}
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setupResultsSearchBar);
   else setupResultsSearchBar();
+})();
+</script>
+
+
+<script>
+/* HEXORA About navigation: isolated from search API and existing main.js. */
+(function () {
+  "use strict";
+  const ids = ["homeView", "searchView", "adsView", "mapView", "aboutView"];
+  function get(id) { return document.getElementById(id); }
+  function showAbout() {
+    const home = get("homeView"), search = get("searchView"), ads = get("adsView"), map = get("mapView"), about = get("aboutView");
+    if (!about) return;
+    [home, search, ads, map].forEach(el => { if (el) { el.classList.remove("active"); el.style.display = "none"; } });
+    about.style.display = "block"; about.classList.add("active");
+    document.querySelectorAll("[data-mode]").forEach(el => el.classList.remove("active"));
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+  function showHome() {
+    const home = get("homeView"), search = get("searchView"), ads = get("adsView"), map = get("mapView"), about = get("aboutView");
+    if (about) { about.classList.remove("active"); about.style.display = "none"; }
+    [search, ads, map].forEach(el => { if (el) { el.classList.remove("active"); el.style.display = "none"; } });
+    if (home) { home.style.display = ""; home.classList.add("active"); }
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+  document.addEventListener("click", function (event) {
+    const aboutButton = event.target.closest("[data-hexora-about]");
+    if (aboutButton) { event.preventDefault(); showAbout(); return; }
+    const homeButton = event.target.closest("[data-hexora-home]");
+    if (homeButton) { event.preventDefault(); showHome(); }
+  });
 })();
 </script>
 
