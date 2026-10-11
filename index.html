@@ -1365,19 +1365,21 @@ footer{color:#8994a6!important}
   #hexoraResultsSearchTools .search-modes{gap:18px!important;justify-content:space-between!important;}
 }
 
-/* ================= ABOUT HEXORA (additive; existing views untouched) ================= */
-#aboutView{display:none;width:min(1050px,calc(100% - 42px));margin:0 auto;padding:38px 0 80px;color:var(--text);}
-#aboutView.active{display:block;}
-.hexora-about-card{border:1px solid var(--line);border-radius:22px;padding:clamp(20px,4vw,42px);background:linear-gradient(145deg,rgba(5,24,40,.96),rgba(3,10,19,.96));box-shadow:var(--shadow);}
-.hexora-about-kicker{color:var(--cyan);font-size:11px;letter-spacing:.18em;font-weight:800;text-transform:uppercase;margin-bottom:12px;}
-.hexora-about-title{font-size:clamp(30px,5vw,48px);line-height:1.1;margin:0 0 18px;letter-spacing:-.035em;}
-.hexora-about-card p{color:#b6c7d8;line-height:1.8;font-size:15px;max-width:820px;}
-.hexora-about-card h2{font-size:18px;margin:28px 0 8px;}
-.hexora-about-note{margin-top:24px;padding:14px 16px;border-left:3px solid var(--cyan);background:rgba(0,223,255,.06);border-radius:0 12px 12px 0;color:#c6d8e8;line-height:1.7;font-size:13px;}
-.hexora-footer-link{color:var(--cyan);text-decoration:none;font-weight:700;}
-.hexora-footer-link:hover{text-decoration:underline;}
-#aboutView .hexora-about-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px;}
-@media(max-width:760px){#aboutView{width:calc(100% - 28px);padding-top:20px}.hexora-about-card{border-radius:17px}}
+
+/* HEXORA About page: additive styles only; existing components remain unchanged. */
+#aboutView{display:none;box-sizing:border-box;width:min(100% - 36px,980px);margin:28px auto 56px;padding:clamp(20px,4vw,42px);border:1px solid #e4eaf3;border-radius:24px;background:#fff;color:#17233f;box-shadow:0 14px 44px rgba(22,45,80,.07);line-height:1.75}
+#aboutView .about-kicker{font-size:12px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:#1769ff;margin-bottom:10px}
+#aboutView h1{font-size:clamp(28px,5vw,44px);line-height:1.15;letter-spacing:-.035em;margin:0 0 12px;color:#13213a}
+#aboutView .about-lead{font-size:clamp(16px,2.3vw,20px);color:#50617b;margin:0 0 28px}
+#aboutView .about-block{padding:20px 0;border-top:1px solid #e9eef5}
+#aboutView h2{font-size:20px;line-height:1.3;margin:0 0 9px;color:#1c3152}
+#aboutView p{margin:0 0 12px;color:#4a5b74}
+#aboutView p:last-child{margin-bottom:0}
+#aboutView .about-signoff{margin-top:20px;padding:18px;border-radius:16px;background:linear-gradient(135deg,#eff5ff,#f7f9ff);font-weight:750;color:#244a88}
+#aboutView .about-home-btn{margin-top:24px;border:0;border-radius:12px;background:#1769ff;color:#fff;padding:12px 18px;font-weight:750;cursor:pointer}
+#aboutView .about-home-btn:hover{filter:brightness(.95)}
+#aboutView .about-disclaimer{font-size:13px;color:#697991}
+@media(max-width:600px){#aboutView{width:calc(100% - 24px);margin:14px auto 32px;padding:20px;border-radius:18px}#aboutView .about-block{padding:17px 0}#aboutView h2{font-size:18px}}
 
 </style>
 </head>
@@ -1979,8 +1981,8 @@ footer{color:#8994a6!important}
 
   <footer>
     HEXORA © 2026 · Search Beyond Limits
-    <span class="hexora-footer-separator"> · </span>
-    <a href="#about" data-hexora-about class="hexora-footer-link">About HEXORA</a>
+    <span aria-hidden="true"> · </span>
+    <a href="#about-hexora" data-hexora-about style="color:inherit;text-decoration:underline;text-underline-offset:3px">About HEXORA</a>
   </footer>
 
 </section>
@@ -2377,22 +2379,50 @@ footer{color:#8994a6!important}
 
 
 <!-- ================= ABOUT HEXORA ================= -->
-<section id="aboutView" aria-labelledby="hexoraAboutTitle">
-  <article class="hexora-about-card">
-    <div class="hexora-about-kicker">Independent search project</div>
-    <h1 id="hexoraAboutTitle" class="hexora-about-title">About HEXORA</h1>
-    <p><strong>HEXORA</strong> is an independent search-engine project founded by <strong>Lakhyajit Handique</strong> in Assam, India. It is being developed with a long-term goal of making useful information easier to discover across the web and across languages.</p>
-    <h2>Our vision</h2>
-    <p>HEXORA aims to grow into a worldwide search platform with relevant web results, multilingual discovery, and useful experiences for people searching in English, Assamese, Hindi, and other languages. The project’s direction is inspired by the ambition of Digital India and the broader idea of building useful technology from Assam for people everywhere.</p>
-    <h2>How HEXORA is being built</h2>
-    <p>The project is developing its own search interface, web-crawling workflow, stored page index, and ranking system. Search coverage and result quality depend on the pages successfully discovered, processed, indexed, and ranked; these capabilities will continue to evolve as development progresses.</p>
-    <h2>Independent project</h2>
-    <p>HEXORA is an independent project and is not an official product of, or endorsed by, the Government of India, the Government of Assam, or any political office or organization.</p>
-    <div class="hexora-about-note">Our goal is simple: help people explore the web with a search experience that keeps improving—built from Assam, with a worldwide vision.</div>
-    <div class="hexora-about-actions">
-      <button type="button" class="primary" data-hexora-home>← Back to HEXORA</button>
-    </div>
-  </article>
+<section id="aboutView" aria-labelledby="aboutTitle">
+  <div class="about-kicker">Independent Search · Global Vision</div>
+  <h1 id="aboutTitle">About HEXORA</h1>
+  <p class="about-lead"><strong>HEXORA — An Independent Search Engine. A Worldwide Vision.</strong></p>
+
+  <div class="about-block">
+    <p>HEXORA is an independent search engine project founded by <strong>Lakhyajit Handique</strong>, born on 10 October 1999 in Assam, India.</p>
+    <p>Built with a vision to make information accessible across the world, HEXORA is being developed with its own search architecture, web crawling infrastructure, indexing systems, databases, and search technologies.</p>
+  </div>
+
+  <div class="about-block">
+    <h2>Our Vision</h2>
+    <p>Our vision is to build a truly independent, worldwide search engine that helps people discover useful information across countries, languages, and communities. We aspire to create a search platform that grows through our own technology, continuous innovation, and dedication to better web discovery.</p>
+  </div>
+
+  <div class="about-block">
+    <h2>Built in Assam. Designed for the World.</h2>
+    <p>HEXORA represents an ambitious technology initiative from Assam, India, with a global vision. From developing our own search infrastructure to improving crawling, indexing, and search relevance, we are working step by step toward building a search engine for users around the world.</p>
+  </div>
+
+  <div class="about-block">
+    <h2>Our Inspiration</h2>
+    <p>Inspired by the vision of Digital India and the broader goal of a digitally empowered nation, HEXORA is an independent effort to contribute to India's growing digital technology ecosystem. We acknowledge the Digital India vision associated with Hon'ble Prime Minister Narendra Modi and the development aspirations of Assam under Chief Minister Himanta Biswa Sarma.</p>
+    <p class="about-disclaimer">HEXORA is an independent project and is not affiliated with, endorsed by, or officially supported by the Government of India or the Government of Assam.</p>
+  </div>
+
+  <div class="about-block">
+    <h2>Our Independence</h2>
+    <p>HEXORA is being developed as an independent search engine initiative. Our long-term goal is to build and operate our own search technology and infrastructure, relying on our own engineering, systems, and continuous development rather than depending on another search engine as our core product.</p>
+  </div>
+
+  <div class="about-block">
+    <h2>Our Commitment</h2>
+    <p>We are committed to improving search quality, supporting multilingual discovery—including English, Assamese, and Hindi—and making the web easier to explore. HEXORA is under active development, and our coverage, features, and performance will continue to evolve as the platform grows.</p>
+  </div>
+
+  <div class="about-block">
+    <p><strong>Founded by:</strong> Lakhyajit Handique<br>
+    <strong>Origin:</strong> Assam, India<br>
+    <strong>Project:</strong> HEXORA Independent Search Engine</p>
+    <div class="about-signoff">HEXORA — Born in Assam. Built with Independence. Searching for a World of Possibilities.</div>
+  </div>
+
+  <button type="button" class="about-home-btn" data-hexora-home>← Back to HEXORA Home</button>
 </section>
 
 
@@ -4167,8 +4197,7 @@ footer{color:#8994a6!important}
       const showingResults = results.classList.contains("active") && getComputedStyle(results).display !== "none";
       const ads = document.getElementById("adsView");
       const map = document.getElementById("mapView");
-      const about = document.getElementById("aboutView");
-      const anotherViewOpen = !!((ads && ads.classList.contains("active") && getComputedStyle(ads).display !== "none") || (map && map.classList.contains("active")) || (about && about.classList.contains("active") && getComputedStyle(about).display !== "none"));
+      const anotherViewOpen = !!((ads && ads.classList.contains("active") && getComputedStyle(ads).display !== "none") || (map && map.classList.contains("active")));
 
       if (showingResults) {
         /* Results view must replace the homepage, not appear after homepage sections. */
@@ -4197,32 +4226,56 @@ footer{color:#8994a6!important}
 </script>
 
 
+
+<!-- HEXORA About navigation: isolated from search, crawler, Ads and Maps logic. -->
 <script>
-/* HEXORA About navigation: isolated from search API and existing main.js. */
 (function () {
   "use strict";
   const ids = ["homeView", "searchView", "adsView", "mapView", "aboutView"];
-  function get(id) { return document.getElementById(id); }
+  const get = id => document.getElementById(id);
+
   function showAbout() {
-    const home = get("homeView"), search = get("searchView"), ads = get("adsView"), map = get("mapView"), about = get("aboutView");
-    if (!about) return;
-    [home, search, ads, map].forEach(el => { if (el) { el.classList.remove("active"); el.style.display = "none"; } });
-    about.style.display = "block"; about.classList.add("active");
-    document.querySelectorAll("[data-mode]").forEach(el => el.classList.remove("active"));
+    ids.forEach(id => {
+      const el = get(id);
+      if (!el) return;
+      if (id === "aboutView") {
+        el.style.display = "block";
+        el.classList.add("active");
+      } else {
+        el.style.display = "none";
+        el.classList.remove("active");
+      }
+    });
+    document.querySelectorAll(".side-btn").forEach(btn => btn.classList.remove("active"));
     window.scrollTo({ top: 0, behavior: "auto" });
   }
+
   function showHome() {
-    const home = get("homeView"), search = get("searchView"), ads = get("adsView"), map = get("mapView"), about = get("aboutView");
-    if (about) { about.classList.remove("active"); about.style.display = "none"; }
-    [search, ads, map].forEach(el => { if (el) { el.classList.remove("active"); el.style.display = "none"; } });
-    if (home) { home.style.display = ""; home.classList.add("active"); }
+    ids.forEach(id => {
+      const el = get(id);
+      if (!el) return;
+      if (id === "homeView") {
+        el.style.display = "";
+        el.classList.remove("active");
+      } else {
+        el.style.display = "none";
+        el.classList.remove("active");
+      }
+    });
     window.scrollTo({ top: 0, behavior: "auto" });
   }
+
   document.addEventListener("click", function (event) {
-    const aboutButton = event.target.closest("[data-hexora-about]");
-    if (aboutButton) { event.preventDefault(); showAbout(); return; }
-    const homeButton = event.target.closest("[data-hexora-home]");
-    if (homeButton) { event.preventDefault(); showHome(); }
+    const about = event.target.closest("[data-hexora-about]");
+    if (about) {
+      event.preventDefault();
+      showAbout();
+      return;
+    }
+    if (event.target.closest("[data-hexora-home]")) {
+      event.preventDefault();
+      showHome();
+    }
   });
 })();
 </script>
