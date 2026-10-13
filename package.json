@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs"
+    "crawler": "node crawler.mjs",
+    "check": "node --check server.mjs && node --check crawler.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
