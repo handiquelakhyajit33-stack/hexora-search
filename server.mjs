@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 
 const { Pool } = pg;
 
@@ -42,6 +43,63 @@ const pool = new Pool({
 });
 
 console.log("[HEXORA] Neon database configured.");
+
+// ============================================================
+// SUPABASE CONFIG (keeps Neon as the primary search database)
+// ============================================================
+
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
+const SUPABASE_SERVICE_ROLE_KEY = String(
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+).trim();
+
+let supabase = null;
+
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    supabase = createClient(
+      SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
+    console.log("[HEXORA] Supabase client configured.");
+  } catch (error) {
+    console.error("[HEXORA] Supabase client setup failed:", error.message);
+  }
+} else {
+  console.warn(
+    "[HEXORA] Supabase not configured: check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+  );
+}
+
+async function checkSupabaseEndpoint() {
+  if (!supabase || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    return "missing";
+  }
+
+  try {
+    const base = SUPABASE_URL.replace(/\/+$/, "");
+    const response = await fetch(`${base}/auth/v1/health`, {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    return response.ok ? "ok" : `http_${response.status}`;
+  } catch (error) {
+    console.error("[HEXORA] Supabase endpoint check failed:", error.message);
+    return "error";
+  }
+}
 
 // ============================================================
 // PAYPAL CONFIG
@@ -1246,10 +1304,14 @@ const server =
             database = "error";
           }
 
+          const supabaseStatus = await checkSupabaseEndpoint();
+
           return json(res, 200, {
-            ok: true,
+            ok: database === "ok",
             service: "HEXORA",
             database,
+            supabase: supabaseStatus,
+            supabaseClientConfigured: Boolean(supabase),
             paypal:
               paypalConfigured(),
             mode: PAYPAL_MODE,
