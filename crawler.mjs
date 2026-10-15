@@ -1,4 +1,4 @@
-
+```js
 import "dotenv/config";
 import pg from "pg";
 import * as cheerio from "cheerio";
@@ -12,19 +12,44 @@ import {
 const { Pool } = pg;
 const env = process.env;
 
+// ============================================================
+// HEXORA WORLDWIDE CRAWLER
+// Neon = searchable database
+// R2 = page archive
+// R2 storage protection = disabled
+// Neon storage protection = enabled
+// ============================================================
+
 const DATABASE_URL = env.DATABASE_URL || "";
 const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
-const CF_TOKEN = env.CLOUDFLARE_API_TOKEN || "";
-const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
+const R2_BUCKET = env.R2_BUCKET_NAME || "hexoraase";
 
 const NEON_PAUSE_MB = Number(env.NEON_PAUSE_MB || 950);
-const R2_PAUSE_GB = Number(env.R2_PAUSE_GB || 9.5);
 
-const BATCH_SIZE = Number(env.CRAWL_BATCH_SIZE || 5);
-const LOOP_DELAY = Number(env.CRAWL_DELAY_MS || 15000);
-const REQUEST_TIMEOUT = Number(env.CRAWL_TIMEOUT_MS || 15000);
-const MAX_CONTENT = Number(env.CRAWL_MAX_CONTENT || 50000);
-const MAX_LINKS = Number(env.CRAWL_MAX_LINKS || 50);
+const BATCH_SIZE = Math.max(
+  1,
+  Math.min(20, Number(env.CRAWL_BATCH_SIZE || 5))
+);
+
+const LOOP_DELAY = Math.max(
+  5000,
+  Number(env.CRAWL_DELAY_MS || 15000)
+);
+
+const REQUEST_TIMEOUT = Math.max(
+  5000,
+  Number(env.CRAWL_TIMEOUT_MS || 15000)
+);
+
+const MAX_CONTENT = Math.max(
+  1000,
+  Number(env.CRAWL_MAX_CONTENT || 50000)
+);
+
+const MAX_LINKS = Math.max(
+  1,
+  Math.min(200, Number(env.CRAWL_MAX_LINKS || 50))
+);
 
 const USER_AGENT =
   env.HEXORA_USER_AGENT ||
@@ -37,21 +62,29 @@ if (!DATABASE_URL) {
 
 if (
   !Number.isFinite(NEON_PAUSE_MB) ||
-  NEON_PAUSE_MB <= 0 ||
-  !Number.isFinite(R2_PAUSE_GB) ||
-  R2_PAUSE_GB <= 0
+  NEON_PAUSE_MB <= 0
 ) {
-  console.error("[HEXORA] Invalid storage protection settings.");
+  console.error("[HEXORA] Invalid Neon protection settings.");
   process.exit(1);
 }
 
+// ============================================================
+// NEON CONNECTION
+// ============================================================
+
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: Number(env.DB_POOL_MAX || 5),
+  max: Math.max(1, Number(env.DB_POOL_MAX || 5)),
   connectionTimeoutMillis: 15000,
   idleTimeoutMillis: 30000,
   ssl: { rejectUnauthorized: false }
 });
+
+// ============================================================
+// CLOUDFLARE R2 CONNECTION
+// R2 storage is used for archiving pages.
+// No Cloudflare Analytics token is required.
+// ============================================================
 
 const s3 =
   CF_ACCOUNT_ID &&
@@ -68,6 +101,14 @@ const s3 =
       })
     : null;
 
+if (!s3) {
+  console.warn(
+    "[HEXORA] R2 credentials missing. R2 archiving will fail " +
+    "until R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and " +
+    "R2_SECRET_ACCESS_KEY are configured."
+  );
+}
+
 const columnCache = new Map();
 const robotsCache = new Map();
 
@@ -80,6 +121,10 @@ function hash(value) {
     .update(value)
     .digest("hex");
 }
+
+// ============================================================
+// URL NORMALIZATION
+// ============================================================
 
 function normalizeUrl(value) {
   try {
@@ -147,122 +192,8 @@ async function getColumns(table) {
 }
 
 // ============================================================
-// CLOUDFLARE R2 STORAGE USAGE
-// Unknown usage MUST pause crawling.
-// ============================================================
-
-async function getR2UsageGB() {
-  if (!CF_ACCOUNT_ID || !CF_TOKEN || !R2_BUCKET) {
-    throw new Error(
-      "Missing R2_ACCOUNT_ID, CLOUDFLARE_API_TOKEN or R2_BUCKET_NAME"
-    );
-  }
-
-  const now = new Date();
-  const start = new Date(
-    now.getTime() - 7 * 24 * 60 * 60 * 1000
-  );
-
-  // Cloudflare's documented GraphQL scalar is lowercase string.
-  const query = `
-    query R2StorageUsage(
-      $accountTag: string!
-      $startDate: Time
-      $endDate: Time
-      $bucketName: string
-    ) {
-      viewer {
-        accounts(filter: { accountTag: $accountTag }) {
-          r2StorageAdaptiveGroups(
-            limit: 10000
-            filter: {
-              datetime_geq: $startDate
-              datetime_leq: $endDate
-              bucketName: $bucketName
-            }
-            orderBy: [datetime_DESC]
-          ) {
-            max {
-              payloadSize
-              metadataSize
-              objectCount
-              uploadCount
-            }
-            dimensions {
-              datetime
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  const response = await fetch(
-    "https://api.cloudflare.com/client/v4/graphql",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${CF_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        query,
-        variables: {
-          accountTag: CF_ACCOUNT_ID,
-          startDate: start.toISOString(),
-          endDate: now.toISOString(),
-          bucketName: R2_BUCKET
-        }
-      }),
-      signal: AbortSignal.timeout(15000)
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Cloudflare GraphQL HTTP ${response.status}`
-    );
-  }
-
-  const body = await response.json();
-
-  if (body.errors?.length) {
-    throw new Error(JSON.stringify(body.errors));
-  }
-
-  const accounts = body.data?.viewer?.accounts;
-  const groups = accounts?.[0]?.r2StorageAdaptiveGroups;
-
-  if (!Array.isArray(groups) || groups.length === 0) {
-    throw new Error(
-      "R2 metrics unavailable; usage cannot be verified"
-    );
-  }
-
-  const latest = groups.reduce((a, b) =>
-    (b.dimensions?.datetime || "") >
-    (a.dimensions?.datetime || "")
-      ? b
-      : a
-  );
-
-  const payload = Number(latest.max?.payloadSize);
-  const metadata = Number(latest.max?.metadataSize ?? 0);
-
-  if (
-    !Number.isFinite(payload) ||
-    payload < 0 ||
-    !Number.isFinite(metadata) ||
-    metadata < 0
-  ) {
-    throw new Error("Invalid R2 storage usage values");
-  }
-
-  return (payload + metadata) / (1024 ** 3);
-}
-
-// ============================================================
-// NEON DATABASE STORAGE USAGE
+// NEON STORAGE USAGE
+// R2 storage usage is deliberately not checked.
 // ============================================================
 
 async function getNeonUsageMB() {
@@ -290,6 +221,9 @@ async function getNeonUsageMB() {
 
 // ============================================================
 // STORAGE PROTECTION
+// Neon protection remains enabled.
+// R2 storage protection is disabled.
+// If Neon usage cannot be checked, crawling pauses safely.
 // ============================================================
 
 async function getStorageStatus() {
@@ -325,54 +259,16 @@ async function getStorageStatus() {
     };
   }
 
-  let r2GB;
-
-  try {
-    r2GB = await getR2UsageGB();
-  } catch (error) {
-    console.error(
-      "[HEXORA] R2 usage check failed:",
-      error.message
-    );
-
-    console.log(
-      `[HEXORA] Storage: Neon=${neonMB.toFixed(2)} MB, ` +
-      "R2=unknown"
-    );
-
-    return {
-      safe: false,
-      reason: "R2 usage unknown"
-    };
-  }
-
-  console.log(
-    `[HEXORA] Storage: Neon=${neonMB.toFixed(2)} MB, ` +
-    `R2=${r2GB.toFixed(3)} GB`
-  );
-
-  if (r2GB >= R2_PAUSE_GB) {
-    console.error(
-      `[HEXORA] R2 protection: ${r2GB.toFixed(3)} GB ` +
-      `reached ${R2_PAUSE_GB} GB threshold.`
-    );
-
-    return {
-      safe: false,
-      reason: "R2 storage threshold reached"
-    };
-  }
-
   return {
     safe: true,
-    neonMB,
-    r2GB
+    neonMB
   };
 }
 
 // ============================================================
-// OPTIONAL SUPABASE DUPLICATE CHECK
-// If enabled, a failed check prevents saving to Neon.
+// SUPABASE DUPLICATE CHECK
+// If Supabase is configured but the check fails,
+// do not save the page to Neon.
 // ============================================================
 
 async function checkSupabaseDuplicate(url) {
@@ -425,6 +321,7 @@ async function checkSupabaseDuplicate(url) {
 
 // ============================================================
 // ROBOTS.TXT
+// If robots.txt is unavailable, skip the site.
 // ============================================================
 
 async function canCrawl(url) {
@@ -702,6 +599,8 @@ async function updateJob(id, status, message = null) {
 
 // ============================================================
 // R2 ARCHIVE
+// Writes a JSON copy of the crawled page to R2.
+// No R2 storage usage check is performed.
 // ============================================================
 
 async function archiveToR2(page) {
@@ -735,8 +634,6 @@ async function archiveToR2(page) {
 // ============================================================
 
 async function savePage(page) {
-  // If Supabase is configured but the duplicate check fails,
-  // the error propagates and this page is not saved to Neon.
   const duplicateCheck =
     await checkSupabaseDuplicate(page.url);
 
@@ -796,10 +693,13 @@ async function savePage(page) {
     values
   );
 
-  // Neon is the searchable index.
-  // R2 archive failure is logged without deleting the Neon row.
+  // Archive errors do not delete the Neon search-index row.
   try {
-    await archiveToR2(page);
+    const key = await archiveToR2(page);
+
+    console.log(
+      `[HEXORA] R2 archived: ${key}`
+    );
   } catch (error) {
     console.error(
       "[HEXORA] R2 archive failed:",
@@ -845,6 +745,11 @@ async function processJob(job) {
 
     if (saved.duplicate) {
       await updateJob(job.id, "done");
+
+      console.log(
+        `[HEXORA] Duplicate skipped: ${page.url}`
+      );
+
       return "duplicate";
     }
 
@@ -889,8 +794,8 @@ async function main() {
   );
 
   console.log(
-    `[HEXORA] Protection: Neon=${NEON_PAUSE_MB} MB, ` +
-    `R2=${R2_PAUSE_GB} GB`
+    `[HEXORA] Protection: Neon=${NEON_PAUSE_MB} MB; ` +
+    "R2 storage protection disabled."
   );
 
   try {
@@ -913,12 +818,12 @@ async function main() {
 
   while (true) {
     try {
+      // Only Neon storage is checked.
       const storage = await getStorageStatus();
 
       if (!storage.safe) {
         console.error(
-          `[HEXORA] Storage protection active. ` +
-          `Crawler paused: ${storage.reason}`
+          `[HEXORA] Crawler paused: ${storage.reason}`
         );
 
         await sleep(
@@ -1014,3 +919,4 @@ main().catch(error => {
 
   process.exit(1);
 });
+```
