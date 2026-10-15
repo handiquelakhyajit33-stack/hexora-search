@@ -570,12 +570,14 @@ async function searchDatabase(query, mode = "web", page = 1, limit = 10) {
       COALESCE(p.title, '') ILIKE $1 ESCAPE '\\'
       OR COALESCE(p.description, '') ILIKE $1 ESCAPE '\\'
       OR COALESCE(p.content, '') ILIKE $1 ESCAPE '\\'
+      OR COALESCE(p.excerpt, '') ILIKE $1 ESCAPE '\\'
       OR COALESCE(p.url, '') ILIKE $1 ESCAPE '\\'
       OR EXISTS (
         SELECT 1 FROM unnest($2::text[]) AS term
         WHERE COALESCE(p.title, '') ILIKE ('%' || term || '%')
            OR COALESCE(p.description, '') ILIKE ('%' || term || '%')
            OR COALESCE(p.content, '') ILIKE ('%' || term || '%')
+           OR COALESCE(p.excerpt, '') ILIKE ('%' || term || '%')
            OR COALESCE(p.url, '') ILIKE ('%' || term || '%')
       )
       OR (p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple', $3))
@@ -597,11 +599,13 @@ async function searchDatabase(query, mode = "web", page = 1, limit = 10) {
         + CASE WHEN COALESCE(p.description,'') ILIKE $1 ESCAPE '\\' THEN 180 ELSE 0 END
         + CASE WHEN COALESCE(p.url,'') ILIKE $1 ESCAPE '\\' THEN 100 ELSE 0 END
         + CASE WHEN COALESCE(p.content,'') ILIKE $1 ESCAPE '\\' THEN 35 ELSE 0 END
+        + CASE WHEN COALESCE(p.excerpt,'') ILIKE $1 ESCAPE '\\' THEN 28 ELSE 0 END
         + COALESCE((SELECT SUM(CASE
             WHEN COALESCE(p.title,'') ILIKE ('%'||term||'%') THEN 40
             WHEN COALESCE(p.description,'') ILIKE ('%'||term||'%') THEN 18
             WHEN COALESCE(p.url,'') ILIKE ('%'||term||'%') THEN 12
-            WHEN COALESCE(p.content,'') ILIKE ('%'||term||'%') THEN 4 ELSE 0 END)
+            WHEN COALESCE(p.content,'') ILIKE ('%'||term||'%') THEN 4
+            WHEN COALESCE(p.excerpt,'') ILIKE ('%'||term||'%') THEN 3 ELSE 0 END)
           FROM unnest($2::text[]) AS term),0)
         + CASE WHEN p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple',$3)
           THEN LEAST(100, ts_rank_cd(p.search_vector, websearch_to_tsquery('simple',$3))*100) ELSE 0 END
