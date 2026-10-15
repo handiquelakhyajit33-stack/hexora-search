@@ -1,4 +1,3 @@
-```js
 import "dotenv/config";
 import pg from "pg";
 import * as cheerio from "cheerio";
@@ -14,17 +13,14 @@ const env = process.env;
 
 // ============================================================
 // HEXORA WORLDWIDE CRAWLER
-// Neon = searchable database
-// R2 = page archive
-// R2 storage protection = disabled
-// Neon storage protection = enabled
+// Neon = compact searchable metadata only
+// R2 = full crawled page content
+// Full page content is archived to R2 before metadata indexing
 // ============================================================
 
 const DATABASE_URL = env.DATABASE_URL || "";
 const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
-const R2_BUCKET = env.R2_BUCKET_NAME || "hexoraase";
-
-const NEON_PAUSE_MB = Number(env.NEON_PAUSE_MB || 950);
+const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
 
 const BATCH_SIZE = Math.max(
   1,
@@ -57,14 +53,6 @@ const USER_AGENT =
 
 if (!DATABASE_URL) {
   console.error("[HEXORA] DATABASE_URL missing.");
-  process.exit(1);
-}
-
-if (
-  !Number.isFinite(NEON_PAUSE_MB) ||
-  NEON_PAUSE_MB <= 0
-) {
-  console.error("[HEXORA] Invalid Neon protection settings.");
   process.exit(1);
 }
 
@@ -192,131 +180,13 @@ async function getColumns(table) {
 }
 
 // ============================================================
-// NEON STORAGE USAGE
-// R2 storage usage is deliberately not checked.
-// ============================================================
-
-async function getNeonUsageMB() {
-  const result = await pool.query(`
-    SELECT COALESCE(
-      SUM(
-        pg_total_relation_size(
-          format('%I.%I', schemaname, tablename)::regclass
-        )
-      ),
-      0
-    ) AS bytes
-    FROM pg_tables
-    WHERE schemaname = 'public'
-  `);
-
-  const bytes = Number(result.rows[0]?.bytes);
-
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    throw new Error("Invalid Neon storage usage");
-  }
-
-  return bytes / (1024 ** 2);
-}
-
-// ============================================================
-// STORAGE PROTECTION
-// Neon protection remains enabled.
-// R2 storage protection is disabled.
-// If Neon usage cannot be checked, crawling pauses safely.
+// STORAGE STATUS
+// New page bodies are stored in R2. Neon stores compact metadata.
+// Do not pause the R2 crawler because the old Neon content quota is full.
 // ============================================================
 
 async function getStorageStatus() {
-  let neonMB;
-
-  try {
-    neonMB = await getNeonUsageMB();
-  } catch (error) {
-    console.error(
-      "[HEXORA] Neon storage check failed:",
-      error.message
-    );
-
-    return {
-      safe: false,
-      reason: "Neon usage unknown"
-    };
-  }
-
-  console.log(
-    `[HEXORA] Neon storage: ${neonMB.toFixed(2)} MB`
-  );
-
-  if (neonMB >= NEON_PAUSE_MB) {
-    console.error(
-      `[HEXORA] Neon protection: ${neonMB.toFixed(2)} MB ` +
-      `reached ${NEON_PAUSE_MB} MB threshold.`
-    );
-
-    return {
-      safe: false,
-      reason: "Neon storage threshold reached"
-    };
-  }
-
-  return {
-    safe: true,
-    neonMB
-  };
-}
-
-// ============================================================
-// SUPABASE DUPLICATE CHECK
-// If Supabase is configured but the check fails,
-// do not save the page to Neon.
-// ============================================================
-
-async function checkSupabaseDuplicate(url) {
-  const supabaseUrl = env.SUPABASE_URL;
-  const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    return {
-      enabled: false,
-      duplicate: false
-    };
-  }
-
-  const endpoint = new URL(
-    "/rest/v1/pages",
-    supabaseUrl
-  );
-
-  endpoint.searchParams.set("url", `eq.${url}`);
-  endpoint.searchParams.set("select", "url");
-  endpoint.searchParams.set("limit", "1");
-
-  const response = await fetch(endpoint, {
-    headers: {
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`
-    },
-    signal: AbortSignal.timeout(12000)
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Supabase duplicate check HTTP ${response.status}`
-    );
-  }
-
-  const rows = await response.json();
-
-  if (!Array.isArray(rows)) {
-    throw new Error(
-      "Invalid Supabase duplicate-check response"
-    );
-  }
-
-  return {
-    enabled: true,
-    duplicate: rows.length > 0
-  };
+  return { safe: true, mode: "R2-first; compact Neon metadata" };
 }
 
 // ============================================================
@@ -634,82 +504,62 @@ async function archiveToR2(page) {
 // ============================================================
 
 async function savePage(page) {
-  const duplicateCheck =
-    await checkSupabaseDuplicate(page.url);
-
-  if (duplicateCheck.duplicate) {
-    return {
-      duplicate: true
-    };
-  }
-
+  // First save the complete page body to R2. If R2 fails, do not pretend
+  // that the page was archived or mark the job complete.
+  const r2Key = await archiveToR2(page);
   const columns = await getColumns("pages");
+  const hostname = (() => {
+    try { return new URL(page.url).hostname.toLowerCase(); }
+    catch { return ""; }
+  })();
+
+  // Keep only a compact searchable excerpt in Neon. The full body stays in R2.
+  // Existing rows' content is deliberately excluded from UPDATE so old data
+  // is never erased by a new crawl.
+  const compactExcerpt = String(page.content || "").slice(0, 1800);
+  const compactDescription = String(
+    page.description || compactExcerpt || ""
+  ).slice(0, 3000);
 
   const data = {
     url: page.url,
+    canonical_url: page.canonical_url || page.url,
     title: page.title,
-    description: page.description,
-    content: page.content,
+    description: compactDescription,
+    excerpt: compactExcerpt,
+    content: null,
     content_hash: page.content_hash,
     word_count: page.word_count,
-    language: page.language
+    language: page.language,
+    domain: hostname,
+    r2_key: r2Key,
+    last_crawled_at: new Date(),
+    updated_at: new Date(),
+    crawl_status: "indexed"
   };
 
-  const fields = Object.keys(data).filter(
-    key => columns.has(key)
-  );
-
+  const fields = Object.keys(data).filter(key => columns.has(key));
   if (!fields.includes("url")) {
     throw new Error("pages.url column is missing");
   }
 
-  if (columns.has("updated_at")) {
-    data.updated_at = new Date();
-    fields.push("updated_at");
-  }
-
   const values = fields.map(key => data[key]);
-
-  const placeholders = fields.map(
-    (_, i) => `$${i + 1}`
-  );
-
+  const placeholders = fields.map((_, i) => `$${i + 1}`);
+  // Never overwrite the existing full content column on conflict.
   const updates = fields
-    .filter(key => key !== "url")
-    .map(
-      key => `"${key}" = EXCLUDED."${key}"`
-    );
+    .filter(key => key !== "url" && key !== "content")
+    .map(key => `"${key}" = EXCLUDED."${key}"`);
 
   await pool.query(
-    `INSERT INTO pages
-      (${fields.map(c => `"${c}"`).join(",")})
+    `INSERT INTO pages (${fields.map(c => `"${c}"`).join(",")})
      VALUES (${placeholders.join(",")})
      ON CONFLICT (url) DO UPDATE SET
-       ${
-         updates.length
-           ? updates.join(",")
-           : '"url" = EXCLUDED."url"'
-       }`,
+       ${updates.length ? updates.join(",") : '"url" = EXCLUDED."url"'}`,
     values
   );
 
-  // Archive errors do not delete the Neon search-index row.
-  try {
-    const key = await archiveToR2(page);
-
-    console.log(
-      `[HEXORA] R2 archived: ${key}`
-    );
-  } catch (error) {
-    console.error(
-      "[HEXORA] R2 archive failed:",
-      error.message
-    );
-  }
-
-  return {
-    duplicate: false
-  };
+  console.log(`[HEXORA] R2 archived: ${r2Key}; compact metadata indexed in Neon`);
+  return { duplicate: false, r2Key };
 }
 
 // ============================================================
@@ -794,8 +644,7 @@ async function main() {
   );
 
   console.log(
-    `[HEXORA] Protection: Neon=${NEON_PAUSE_MB} MB; ` +
-    "R2 storage protection disabled."
+    "[HEXORA] Storage mode: full page bodies in R2; compact search metadata in Neon."
   );
 
   try {
@@ -818,20 +667,8 @@ async function main() {
 
   while (true) {
     try {
-      // Only Neon storage is checked.
-      const storage = await getStorageStatus();
-
-      if (!storage.safe) {
-        console.error(
-          `[HEXORA] Crawler paused: ${storage.reason}`
-        );
-
-        await sleep(
-          Math.max(LOOP_DELAY, 60000)
-        );
-
-        continue;
-      }
+      // Do not pause crawling on the old Neon content-storage threshold.
+      // R2 holds full content; Neon receives compact metadata only.
 
       const jobs = await getJobs();
 
@@ -919,4 +756,3 @@ main().catch(error => {
 
   process.exit(1);
 });
-```
