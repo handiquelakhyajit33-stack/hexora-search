@@ -1,4 +1,3 @@
-```js
 import "dotenv/config";
 import pg from "pg";
 
@@ -429,4 +428,3 @@ export async function shutdownDemand() {
     );
   }
 }
-```
