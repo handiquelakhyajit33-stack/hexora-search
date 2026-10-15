@@ -10,26 +10,38 @@ import {
 } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
-
 const env = process.env;
+
 const DATABASE_URL = env.DATABASE_URL || "";
 const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
 const CF_TOKEN = env.CLOUDFLARE_API_TOKEN || "";
 const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
 
-const NEON_PAUSE_MB = Number(env.NEON_PAUSE_MB || 900);
-const R2_PAUSE_GB = Number(env.R2_PAUSE_GB || 9);
+const NEON_PAUSE_MB = Number(env.NEON_PAUSE_MB || 950);
+const R2_PAUSE_GB = Number(env.R2_PAUSE_GB || 9.5);
+
 const BATCH_SIZE = Number(env.CRAWL_BATCH_SIZE || 5);
 const LOOP_DELAY = Number(env.CRAWL_DELAY_MS || 15000);
 const REQUEST_TIMEOUT = Number(env.CRAWL_TIMEOUT_MS || 15000);
 const MAX_CONTENT = Number(env.CRAWL_MAX_CONTENT || 50000);
 const MAX_LINKS = Number(env.CRAWL_MAX_LINKS || 50);
+
 const USER_AGENT =
   env.HEXORA_USER_AGENT ||
   "HEXORA-Bot/1.0 (+https://hexorasearch.com/)";
 
 if (!DATABASE_URL) {
   console.error("[HEXORA] DATABASE_URL missing.");
+  process.exit(1);
+}
+
+if (
+  !Number.isFinite(NEON_PAUSE_MB) ||
+  NEON_PAUSE_MB <= 0 ||
+  !Number.isFinite(R2_PAUSE_GB) ||
+  R2_PAUSE_GB <= 0
+) {
+  console.error("[HEXORA] Invalid storage protection settings.");
   process.exit(1);
 }
 
@@ -47,7 +59,8 @@ const s3 =
   env.R2_SECRET_ACCESS_KEY
     ? new S3Client({
         region: "auto",
-        endpoint: `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+        endpoint:
+          `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
         credentials: {
           accessKeyId: env.R2_ACCESS_KEY_ID,
           secretAccessKey: env.R2_SECRET_ACCESS_KEY
@@ -58,24 +71,35 @@ const s3 =
 const columnCache = new Map();
 const robotsCache = new Map();
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = ms =>
+  new Promise(resolve => setTimeout(resolve, ms));
 
 function hash(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex");
 }
 
 function normalizeUrl(value) {
   try {
     const u = new URL(value);
 
-    if (!["http:", "https:"].includes(u.protocol)) return null;
+    if (!["http:", "https:"].includes(u.protocol)) {
+      return null;
+    }
 
     u.hash = "";
     u.hostname = u.hostname.toLowerCase();
 
     for (const key of [
-      "utm_source", "utm_medium", "utm_campaign",
-      "utm_term", "utm_content", "fbclid", "gclid"
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "fbclid",
+      "gclid"
     ]) {
       u.searchParams.delete(key);
     }
@@ -93,8 +117,14 @@ function normalizeUrl(value) {
   }
 }
 
+// ============================================================
+// DATABASE SCHEMA HELPERS
+// ============================================================
+
 async function getColumns(table) {
-  if (columnCache.has(table)) return columnCache.get(table);
+  if (columnCache.has(table)) {
+    return columnCache.get(table);
+  }
 
   const result = await pool.query(
     `SELECT column_name
@@ -104,7 +134,9 @@ async function getColumns(table) {
     [table]
   );
 
-  const columns = new Set(result.rows.map(row => row.column_name));
+  const columns = new Set(
+    result.rows.map(row => row.column_name)
+  );
 
   if (columns.size === 0) {
     throw new Error(`Missing database table: public.${table}`);
@@ -116,8 +148,7 @@ async function getColumns(table) {
 
 // ============================================================
 // CLOUDFLARE R2 STORAGE USAGE
-// Uses a GraphQL filter OBJECT, not a string.
-// Unknown usage always pauses the crawler.
+// Unknown usage MUST pause crawling.
 // ============================================================
 
 async function getR2UsageGB() {
@@ -128,14 +159,17 @@ async function getR2UsageGB() {
   }
 
   const now = new Date();
-  const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const start = new Date(
+    now.getTime() - 7 * 24 * 60 * 60 * 1000
+  );
 
+  // Cloudflare's documented GraphQL scalar is lowercase string.
   const query = `
     query R2StorageUsage(
-      $accountTag: String!
+      $accountTag: string!
       $startDate: Time
       $endDate: Time
-      $bucketName: String
+      $bucketName: string
     ) {
       viewer {
         accounts(filter: { accountTag: $accountTag }) {
@@ -152,10 +186,10 @@ async function getR2UsageGB() {
               payloadSize
               metadataSize
               objectCount
+              uploadCount
             }
             dimensions {
               datetime
-              bucketName
             }
           }
         }
@@ -185,7 +219,9 @@ async function getR2UsageGB() {
   );
 
   if (!response.ok) {
-    throw new Error(`Cloudflare GraphQL HTTP ${response.status}`);
+    throw new Error(
+      `Cloudflare GraphQL HTTP ${response.status}`
+    );
   }
 
   const body = await response.json();
@@ -199,32 +235,34 @@ async function getR2UsageGB() {
 
   if (!Array.isArray(groups) || groups.length === 0) {
     throw new Error(
-      "R2 storage metrics unavailable; usage cannot be verified"
+      "R2 metrics unavailable; usage cannot be verified"
     );
   }
 
-  // Do not add every daily/hourly group together; that would
-  // count the same stored objects multiple times.
   const latest = groups.reduce((a, b) =>
     (b.dimensions?.datetime || "") >
-    (a.dimensions?.datetime || "") ? b : a
+    (a.dimensions?.datetime || "")
+      ? b
+      : a
   );
 
   const payload = Number(latest.max?.payloadSize);
   const metadata = Number(latest.max?.metadataSize ?? 0);
 
   if (
-    !Number.isFinite(payload) || payload < 0 ||
-    !Number.isFinite(metadata) || metadata < 0
+    !Number.isFinite(payload) ||
+    payload < 0 ||
+    !Number.isFinite(metadata) ||
+    metadata < 0
   ) {
-    throw new Error("Cloudflare returned invalid R2 usage values");
+    throw new Error("Invalid R2 storage usage values");
   }
 
   return (payload + metadata) / (1024 ** 3);
 }
 
 // ============================================================
-// NEON STORAGE
+// NEON DATABASE STORAGE USAGE
 // ============================================================
 
 async function getNeonUsageMB() {
@@ -241,8 +279,18 @@ async function getNeonUsageMB() {
     WHERE schemaname = 'public'
   `);
 
-  return Number(result.rows[0].bytes) / (1024 ** 2);
+  const bytes = Number(result.rows[0]?.bytes);
+
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    throw new Error("Invalid Neon storage usage");
+  }
+
+  return bytes / (1024 ** 2);
 }
+
+// ============================================================
+// STORAGE PROTECTION
+// ============================================================
 
 async function getStorageStatus() {
   let neonMB;
@@ -250,15 +298,31 @@ async function getStorageStatus() {
   try {
     neonMB = await getNeonUsageMB();
   } catch (error) {
-    console.error("[HEXORA] Neon usage check failed:", error.message);
-    return { safe: false, reason: "Neon usage unknown" };
+    console.error(
+      "[HEXORA] Neon storage check failed:",
+      error.message
+    );
+
+    return {
+      safe: false,
+      reason: "Neon usage unknown"
+    };
   }
 
+  console.log(
+    `[HEXORA] Neon storage: ${neonMB.toFixed(2)} MB`
+  );
+
   if (neonMB >= NEON_PAUSE_MB) {
-    console.log(
-      `[HEXORA] Storage: Neon=${neonMB.toFixed(2)}MB R2=not checked`
+    console.error(
+      `[HEXORA] Neon protection: ${neonMB.toFixed(2)} MB ` +
+      `reached ${NEON_PAUSE_MB} MB threshold.`
     );
-    return { safe: false, reason: "Neon storage threshold reached" };
+
+    return {
+      safe: false,
+      reason: "Neon storage threshold reached"
+    };
   }
 
   let r2GB;
@@ -266,28 +330,49 @@ async function getStorageStatus() {
   try {
     r2GB = await getR2UsageGB();
   } catch (error) {
-    console.error("[HEXORA] R2 usage check failed:", error.message);
-    console.log(
-      `[HEXORA] Storage: Neon=${neonMB.toFixed(2)}MB R2=unknown`
+    console.error(
+      "[HEXORA] R2 usage check failed:",
+      error.message
     );
-    return { safe: false, reason: "R2 usage unknown" };
+
+    console.log(
+      `[HEXORA] Storage: Neon=${neonMB.toFixed(2)} MB, ` +
+      "R2=unknown"
+    );
+
+    return {
+      safe: false,
+      reason: "R2 usage unknown"
+    };
   }
 
   console.log(
-    `[HEXORA] Storage: Neon=${neonMB.toFixed(2)}MB ` +
-    `R2=${r2GB.toFixed(3)}GB`
+    `[HEXORA] Storage: Neon=${neonMB.toFixed(2)} MB, ` +
+    `R2=${r2GB.toFixed(3)} GB`
   );
 
   if (r2GB >= R2_PAUSE_GB) {
-    return { safe: false, reason: "R2 storage threshold reached" };
+    console.error(
+      `[HEXORA] R2 protection: ${r2GB.toFixed(3)} GB ` +
+      `reached ${R2_PAUSE_GB} GB threshold.`
+    );
+
+    return {
+      safe: false,
+      reason: "R2 storage threshold reached"
+    };
   }
 
-  return { safe: true, neonMB, r2GB };
+  return {
+    safe: true,
+    neonMB,
+    r2GB
+  };
 }
 
 // ============================================================
 // OPTIONAL SUPABASE DUPLICATE CHECK
-// If configured, a failed check prevents saving to Neon.
+// If enabled, a failed check prevents saving to Neon.
 // ============================================================
 
 async function checkSupabaseDuplicate(url) {
@@ -295,10 +380,17 @@ async function checkSupabaseDuplicate(url) {
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
-    return { enabled: false, duplicate: false };
+    return {
+      enabled: false,
+      duplicate: false
+    };
   }
 
-  const endpoint = new URL("/rest/v1/pages", supabaseUrl);
+  const endpoint = new URL(
+    "/rest/v1/pages",
+    supabaseUrl
+  );
+
   endpoint.searchParams.set("url", `eq.${url}`);
   endpoint.searchParams.set("select", "url");
   endpoint.searchParams.set("limit", "1");
@@ -320,10 +412,15 @@ async function checkSupabaseDuplicate(url) {
   const rows = await response.json();
 
   if (!Array.isArray(rows)) {
-    throw new Error("Invalid Supabase duplicate-check response");
+    throw new Error(
+      "Invalid Supabase duplicate-check response"
+    );
   }
 
-  return { enabled: true, duplicate: rows.length > 0 };
+  return {
+    enabled: true,
+    duplicate: rows.length > 0
+  };
 }
 
 // ============================================================
@@ -337,21 +434,31 @@ async function canCrawl(url) {
   if (!robotsCache.has(robotsUrl)) {
     try {
       const response = await fetch(robotsUrl, {
-        headers: { "User-Agent": USER_AGENT },
+        headers: {
+          "User-Agent": USER_AGENT
+        },
         redirect: "follow",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT)
       });
 
       if (response.status === 404) {
-        robotsCache.set(robotsUrl, robotsParser(robotsUrl, ""));
+        robotsCache.set(
+          robotsUrl,
+          robotsParser(robotsUrl, "")
+        );
       } else {
         if (!response.ok) {
-          throw new Error(`robots.txt HTTP ${response.status}`);
+          throw new Error(
+            `robots.txt HTTP ${response.status}`
+          );
         }
 
         robotsCache.set(
           robotsUrl,
-          robotsParser(robotsUrl, await response.text())
+          robotsParser(
+            robotsUrl,
+            await response.text()
+          )
         );
       }
     } catch (error) {
@@ -359,11 +466,15 @@ async function canCrawl(url) {
         `[HEXORA] robots.txt unavailable for ${parsed.hostname}:`,
         error.message
       );
+
       return false;
     }
   }
 
-  return robotsCache.get(robotsUrl).isAllowed(url, "HEXORA-Bot") !== false;
+  return (
+    robotsCache.get(robotsUrl)
+      .isAllowed(url, "HEXORA-Bot") !== false
+  );
 }
 
 // ============================================================
@@ -380,9 +491,12 @@ async function fetchPage(url) {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT)
   });
 
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
 
-  const contentType = response.headers.get("content-type") || "";
+  const contentType =
+    response.headers.get("content-type") || "";
 
   if (
     !contentType.includes("text/html") &&
@@ -394,7 +508,9 @@ async function fetchPage(url) {
   const html = await response.text();
   const $ = cheerio.load(html);
 
-  $("script, style, noscript, iframe, svg, canvas, nav, footer").remove();
+  $(
+    "script, style, noscript, iframe, svg, canvas, nav, footer"
+  ).remove();
 
   const title = (
     $("title").first().text() ||
@@ -410,36 +526,49 @@ async function fetchPage(url) {
 
   let canonical = normalizeUrl(response.url);
 
-  const canonicalHref = $('link[rel="canonical"]').attr("href");
+  const canonicalHref =
+    $('link[rel="canonical"]').attr("href");
 
   if (canonicalHref) {
     try {
-      canonical = normalizeUrl(
-        new URL(canonicalHref, response.url).toString()
-      ) || canonical;
+      canonical =
+        normalizeUrl(
+          new URL(
+            canonicalHref,
+            response.url
+          ).toString()
+        ) || canonical;
     } catch {
-      // Ignore an invalid canonical URL.
+      // Ignore invalid canonical URLs.
     }
   }
 
-  const content = $("body").text()
+  const content = $("body")
+    .text()
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_CONTENT);
 
   const links = [];
+  const responseHost = new URL(response.url).hostname;
 
   $("a[href]").each((_, element) => {
-    if (links.length >= MAX_LINKS) return false;
+    if (links.length >= MAX_LINKS) {
+      return false;
+    }
 
     try {
-      const target = new URL($(element).attr("href"), response.url);
+      const target = new URL(
+        $(element).attr("href"),
+        response.url
+      );
+
       const normalized = normalizeUrl(target.toString());
 
-      // Limit automatic discovery to the current host.
+      // Discover same-host links only.
       if (
         normalized &&
-        target.hostname === new URL(response.url).hostname &&
+        target.hostname === responseHost &&
         !links.includes(normalized)
       ) {
         links.push(normalized);
@@ -455,16 +584,20 @@ async function fetchPage(url) {
     description,
     content,
     content_hash: hash(content),
-    word_count: content ? content.split(/\s+/u).length : 0,
-    language: ($("html").attr("lang") || "unknown").slice(0, 20),
+    word_count: content
+      ? content.split(/\s+/u).length
+      : 0,
+    language: (
+      $("html").attr("lang") || "unknown"
+    ).slice(0, 20),
     links
   };
 }
 
 // ============================================================
-// QUEUE
-// Requires crawl_queue.id, crawl_queue.url and crawl_queue.status.
-// Requires a UNIQUE constraint on crawl_queue.url.
+// QUEUE HELPERS
+// Requires crawl_queue.id, url and status.
+// crawl_queue.url must have a UNIQUE constraint.
 // ============================================================
 
 async function enqueueUrls(urls) {
@@ -484,10 +617,13 @@ async function enqueueUrls(urls) {
       values.push(new Date());
     }
 
-    const placeholders = values.map((_, i) => `$${i + 1}`);
+    const placeholders = values.map(
+      (_, i) => `$${i + 1}`
+    );
 
     await pool.query(
-      `INSERT INTO crawl_queue (${fields.map(c => `"${c}"`).join(",")})
+      `INSERT INTO crawl_queue
+        (${fields.map(c => `"${c}"`).join(",")})
        VALUES (${placeholders.join(",")})
        ON CONFLICT (url) DO NOTHING`,
       values
@@ -498,37 +634,51 @@ async function enqueueUrls(urls) {
 async function getJobs() {
   const columns = await getColumns("crawl_queue");
 
-  if (!columns.has("id") || !columns.has("url") ||
-      !columns.has("status")) {
-    throw new Error("crawl_queue needs id, url and status columns");
+  if (
+    !columns.has("id") ||
+    !columns.has("url") ||
+    !columns.has("status")
+  ) {
+    throw new Error(
+      "crawl_queue needs id, url and status columns"
+    );
   }
 
   let order = columns.has("priority")
     ? '"priority" DESC'
     : '"url" ASC';
 
-  if (columns.has("created_at")) order += ', "created_at" ASC';
+  if (columns.has("created_at")) {
+    order += ', "created_at" ASC';
+  }
 
-  const result = await pool.query(`
-    SELECT id, url
-    FROM crawl_queue
-    WHERE status IN ('queued', 'pending', 'retry')
-    ORDER BY ${order}
-    LIMIT $1
-  `, [BATCH_SIZE]);
+  const result = await pool.query(
+    `SELECT id, url
+       FROM crawl_queue
+      WHERE status IN ('queued', 'pending', 'retry')
+      ORDER BY ${order}
+      LIMIT $1`,
+    [BATCH_SIZE]
+  );
 
   return result.rows;
 }
 
 async function updateJob(id, status, message = null) {
   const columns = await getColumns("crawl_queue");
+
   const sets = ['"status" = $1'];
   const values = [status];
   let next = 2;
 
-  if (columns.has("updated_at")) sets.push('"updated_at" = NOW()');
+  if (columns.has("updated_at")) {
+    sets.push('"updated_at" = NOW()');
+  }
 
-  if (status === "done" && columns.has("last_crawled_at")) {
+  if (
+    status === "done" &&
+    columns.has("last_crawled_at")
+  ) {
     sets.push('"last_crawled_at" = NOW()');
   }
 
@@ -556,21 +706,25 @@ async function updateJob(id, status, message = null) {
 
 async function archiveToR2(page) {
   if (!s3) {
-    throw new Error("R2 S3 credentials are not configured");
+    throw new Error(
+      "R2 S3 credentials are not configured"
+    );
   }
 
   const host = new URL(page.url).hostname;
   const key = `pages/${host}/${hash(page.url)}.json`;
 
-  await s3.send(new PutObjectCommand({
-    Bucket: R2_BUCKET,
-    Key: key,
-    Body: JSON.stringify({
-      ...page,
-      crawled_at: new Date().toISOString()
-    }),
-    ContentType: "application/json"
-  }));
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+      Body: JSON.stringify({
+        ...page,
+        crawled_at: new Date().toISOString()
+      }),
+      ContentType: "application/json"
+    })
+  );
 
   return key;
 }
@@ -581,10 +735,15 @@ async function archiveToR2(page) {
 // ============================================================
 
 async function savePage(page) {
-  const duplicateCheck = await checkSupabaseDuplicate(page.url);
+  // If Supabase is configured but the duplicate check fails,
+  // the error propagates and this page is not saved to Neon.
+  const duplicateCheck =
+    await checkSupabaseDuplicate(page.url);
 
   if (duplicateCheck.duplicate) {
-    return { duplicate: true };
+    return {
+      duplicate: true
+    };
   }
 
   const columns = await getColumns("pages");
@@ -599,7 +758,9 @@ async function savePage(page) {
     language: page.language
   };
 
-  const fields = Object.keys(data).filter(key => columns.has(key));
+  const fields = Object.keys(data).filter(
+    key => columns.has(key)
+  );
 
   if (!fields.includes("url")) {
     throw new Error("pages.url column is missing");
@@ -611,45 +772,71 @@ async function savePage(page) {
   }
 
   const values = fields.map(key => data[key]);
-  const placeholders = fields.map((_, i) => `$${i + 1}`);
+
+  const placeholders = fields.map(
+    (_, i) => `$${i + 1}`
+  );
 
   const updates = fields
     .filter(key => key !== "url")
-    .map(key => `"${key}" = EXCLUDED."${key}"`);
+    .map(
+      key => `"${key}" = EXCLUDED."${key}"`
+    );
 
-  await pool.query(`
-    INSERT INTO pages (${fields.map(c => `"${c}"`).join(",")})
-    VALUES (${placeholders.join(",")})
-    ON CONFLICT (url) DO UPDATE SET
-      ${updates.length ? updates.join(",") : '"url" = EXCLUDED."url"'}
-  `, values);
+  await pool.query(
+    `INSERT INTO pages
+      (${fields.map(c => `"${c}"`).join(",")})
+     VALUES (${placeholders.join(",")})
+     ON CONFLICT (url) DO UPDATE SET
+       ${
+         updates.length
+           ? updates.join(",")
+           : '"url" = EXCLUDED."url"'
+       }`,
+    values
+  );
 
-  // Neon remains the primary searchable index.
-  // If the archive fails, record it; do not delete the Neon page.
+  // Neon is the searchable index.
+  // R2 archive failure is logged without deleting the Neon row.
   try {
     await archiveToR2(page);
   } catch (error) {
-    console.error("[HEXORA] R2 archive failed:", error.message);
+    console.error(
+      "[HEXORA] R2 archive failed:",
+      error.message
+    );
   }
 
-  return { duplicate: false };
+  return {
+    duplicate: false
+  };
 }
 
 // ============================================================
-// PROCESS JOB
+// PROCESS A QUEUED URL
 // ============================================================
 
 async function processJob(job) {
   const url = normalizeUrl(job.url);
 
   if (!url) {
-    await updateJob(job.id, "failed", "Invalid URL");
+    await updateJob(
+      job.id,
+      "failed",
+      "Invalid URL"
+    );
+
     return "failed";
   }
 
   try {
     if (!(await canCrawl(url))) {
-      await updateJob(job.id, "blocked", "Robots policy denied/unavailable");
+      await updateJob(
+        job.id,
+        "blocked",
+        "Robots policy denied or unavailable"
+      );
+
       return "blocked";
     }
 
@@ -664,15 +851,28 @@ async function processJob(job) {
     await enqueueUrls(page.links);
     await updateJob(job.id, "done");
 
-    console.log(`[HEXORA] Indexed: ${page.url}`);
+    console.log(
+      `[HEXORA] Indexed: ${page.url}`
+    );
+
     return "indexed";
   } catch (error) {
-    console.error(`[HEXORA] Failed ${url}:`, error.message);
+    console.error(
+      `[HEXORA] Failed ${url}:`,
+      error.message
+    );
 
     try {
-      await updateJob(job.id, "failed", error.message.slice(0, 1000));
+      await updateJob(
+        job.id,
+        "failed",
+        error.message.slice(0, 1000)
+      );
     } catch (updateError) {
-      console.error("[HEXORA] Queue update failed:", updateError.message);
+      console.error(
+        "[HEXORA] Queue update failed:",
+        updateError.message
+      );
     }
 
     return "failed";
@@ -684,16 +884,30 @@ async function processJob(job) {
 // ============================================================
 
 async function main() {
-  console.log("[HEXORA] Worldwide crawler starting...");
+  console.log(
+    "[HEXORA] Worldwide crawler starting..."
+  );
+
+  console.log(
+    `[HEXORA] Protection: Neon=${NEON_PAUSE_MB} MB, ` +
+    `R2=${R2_PAUSE_GB} GB`
+  );
 
   try {
     await pool.query("SELECT 1");
-    console.log("[HEXORA] Neon database connected.");
+
+    console.log(
+      "[HEXORA] Neon database connected."
+    );
 
     await getColumns("pages");
     await getColumns("crawl_queue");
   } catch (error) {
-    console.error("[HEXORA] Database/schema check failed:", error.message);
+    console.error(
+      "[HEXORA] Database/schema check failed:",
+      error.message
+    );
+
     process.exit(1);
   }
 
@@ -703,16 +917,24 @@ async function main() {
 
       if (!storage.safe) {
         console.error(
-          `[HEXORA] Storage protection active. Crawler paused: ${storage.reason}`
+          `[HEXORA] Storage protection active. ` +
+          `Crawler paused: ${storage.reason}`
         );
-        await sleep(Math.max(LOOP_DELAY, 60000));
+
+        await sleep(
+          Math.max(LOOP_DELAY, 60000)
+        );
+
         continue;
       }
 
       const jobs = await getJobs();
 
       if (!jobs.length) {
-        console.log("[HEXORA] No queued jobs.");
+        console.log(
+          "[HEXORA] No queued jobs."
+        );
+
         await sleep(LOOP_DELAY);
         continue;
       }
@@ -739,20 +961,56 @@ async function main() {
         `blocked=${blocked} duplicates=${duplicates}`
       );
     } catch (error) {
-      console.error("[HEXORA] Cycle error:", error.message);
+      console.error(
+        "[HEXORA] Cycle error:",
+        error.message
+      );
     }
 
     await sleep(LOOP_DELAY);
   }
 }
 
-main().catch(error => {
-  console.error("[HEXORA] Fatal error:", error);
-  process.exit(1);
-});
+// ============================================================
+// GRACEFUL SHUTDOWN
+// ============================================================
 
-process.on("SIGTERM", async () => {
-  console.log("[HEXORA] Shutdown requested.");
-  await pool.end();
+let shuttingDown = false;
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(
+    "[HEXORA] Shutdown requested."
+  );
+
+  try {
+    await pool.end();
+  } catch (error) {
+    console.error(
+      "[HEXORA] Database shutdown error:",
+      error.message
+    );
+  }
+
+  try {
+    s3?.destroy();
+  } catch {
+    // Ignore S3 client shutdown errors.
+  }
+
   process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+main().catch(error => {
+  console.error(
+    "[HEXORA] Fatal error:",
+    error
+  );
+
+  process.exit(1);
 });
