@@ -1,9 +1,10 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
 
@@ -867,6 +868,13 @@ async function searchDatabase(
 
     SELECT *
     FROM final_scored
+    WHERE
+      exact_title = 1
+      OR title_starts = 1
+      OR title_word_matches >= GREATEST(1, CEIL(array_length($3::text[], 1) * 0.6))
+      OR description_word_matches >= GREATEST(1, CEIL(array_length($3::text[], 1) * 0.6))
+      OR excerpt_word_matches >= GREATEST(1, CEIL(array_length($3::text[], 1) * 0.6))
+      OR fts_rank > 0
 
     ORDER BY
       relevance_tier DESC,
@@ -1296,6 +1304,31 @@ async function readR2ObjectJson(key) {
   return JSON.parse(await response.Body.transformToString());
 }
 
+// Search-driven discovery queue: R2 only; never writes to Neon.
+async function queueSearchDiscovery(query) {
+  if (!r2Client) return;
+  const normalized = normalizeQuery(query);
+  if (!normalized) return;
+  const digest = crypto.createHash("sha256").update(normalized.toLowerCase()).digest("hex");
+  const key = `discovery/queries/${digest}.json`;
+  try {
+    const existing = await readR2ObjectJson(key);
+    const last = Date.parse(existing.updated_at || existing.created_at || "");
+    // Avoid repeatedly enqueueing the same search and creating a crawl storm.
+    if (Number.isFinite(last) && Date.now() - last < 6 * 60 * 60 * 1000) return;
+  } catch (error) {
+    if (error?.$metadata?.httpStatusCode !== 404 && error?.name !== "NoSuchKey") {
+      console.warn("[HEXORA] Discovery read skipped:", error.message);
+      return;
+    }
+  }
+  await r2Client.send(new PutObjectCommand({
+    Bucket: R2_BUCKET_NAME, Key: key,
+    Body: JSON.stringify({ query: normalized, status: "pending", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    ContentType: "application/json"
+  }));
+}
+
 async function loadR2Index() {
   if (!r2Client) return [];
   if (Date.now() - r2IndexCache.loadedAt < R2_INDEX_CACHE_MS) return r2IndexCache.rows;
@@ -1319,34 +1352,43 @@ async function loadR2Index() {
   return rows;
 }
 
-async function searchR2Index(query, limit = 20) {
+async function searchR2Index(query, limit = 20, mode = "web") {
   const words = wordsOf(query);
   if (!words.length || !r2Client) return { total: 0, rows: [] };
   const docs = await loadR2Index();
   const q = normalizeQuery(query).toLowerCase();
+  const required = words.length === 1 ? 1 : Math.max(2, Math.ceil(words.length * 0.6));
   const ranked = [];
   for (const doc of docs) {
     const title = String(doc.title || "").toLowerCase();
     const description = String(doc.description || "").toLowerCase();
     const url = String(doc.url || "").toLowerCase();
     const body = String(doc.search_text || doc.excerpt || "").toLowerCase();
+    const imageItems = Array.isArray(doc.image_items) ? doc.image_items : [];
+    const videoItems = Array.isArray(doc.video_items) ? doc.video_items : [];
+    if (mode === "images" && !imageItems.length && !doc.image) continue;
+    if (mode === "videos" && !videoItems.length) continue;
+    if (mode === "news" && !doc.published_at) continue;
     const haystack = `${title} ${description} ${url} ${body}`;
-    let matched = 0;
-    for (const word of words) if (haystack.includes(word)) matched++;
-    if (!matched) continue;
+    const matchedWords = words.filter(word => haystack.includes(word)).length;
+    const phraseMatch = haystack.includes(q);
+    if (!phraseMatch && matchedWords < required) continue;
     const titleHits = words.filter(word => title.includes(word)).length;
-    const score = (title === q ? 10000 : 0) + (title.startsWith(q) ? 5000 : 0) + titleHits * 700 + matched * 100 + (description.includes(q) ? 300 : 0);
+    const descriptionHits = words.filter(word => description.includes(word)).length;
+    const score = (title === q ? 20000 : 0) + (title.startsWith(q) ? 9000 : 0) + (title.includes(q) ? 5000 : 0) + titleHits * 1200 + descriptionHits * 300 + matchedWords * 250 + (phraseMatch ? 1800 : 0);
+    const primaryImage = doc.image || imageItems[0]?.url || null;
     ranked.push({
       id: String(doc.id || doc.url), title: doc.title || doc.url || "Untitled page",
       url: doc.url || "", canonical_url: doc.canonical_url || doc.url || "",
       domain: doc.domain || "", source: doc.domain || "",
       description: doc.description || "", snippet: String(doc.excerpt || doc.description || doc.search_text || "").slice(0, 320),
-      language: doc.language || "unknown", date: doc.crawled_at || null,
-      published_at: null, score, image: null, image_items: null, video_items: null,
+      language: doc.language || "unknown", date: doc.published_at || doc.crawled_at || null,
+      published_at: doc.published_at || null, score, image: primaryImage,
+      image_url: primaryImage, image_items: imageItems, video_items: videoItems,
       _r2: true
     });
   }
-  ranked.sort((a, b) => b.score - a.score);
+  ranked.sort((a, b) => b.score - a.score || String(a.title).localeCompare(String(b.title)));
   return { total: ranked.length, rows: ranked.slice(0, Math.min(100, limit)) };
 }
 
@@ -1697,16 +1739,28 @@ const server =
               ? mode
               : "web";
 
+          // Queue the search phrase for R2-backed crawl-graph discovery.
+          queueSearchDiscovery(query).catch(error => {
+            console.warn("[HEXORA] Search discovery queue failed:", error.message);
+          });
+
           if (
             safeMode ===
             "images"
           ) {
-            const results =
-              await getMedia(
-                "images",
-                query,
-                limit
-              );
+            let dbResults = [];
+            try { dbResults = await getMedia("images", query, Math.min(100, limit * page)); }
+            catch (error) { console.warn("[HEXORA] Neon image search unavailable:", error.message); }
+            let r2Media = { rows: [], total: 0 };
+            try { r2Media = await searchR2Index(query, Math.min(100, limit * page), "images"); }
+            catch (error) { console.warn("[HEXORA] R2 image search unavailable:", error.message); }
+            const mediaByKey = new Map();
+            for (const row of [...dbResults, ...r2Media.rows]) {
+              const key = String(row.image || row.image_url || row.url || row.id || "");
+              if (key && !mediaByKey.has(key)) mediaByKey.set(key, row);
+            }
+            const allMedia = [...mediaByKey.values()];
+            const results = allMedia.slice((page - 1) * limit, page * limit);
 
             return sendJson(
               res,
@@ -1719,7 +1773,7 @@ const server =
                 page,
                 limit,
                 total:
-                  results.length,
+                  allMedia.length,
                 results
               }
             );
@@ -1729,12 +1783,19 @@ const server =
             safeMode ===
             "videos"
           ) {
-            const results =
-              await getMedia(
-                "videos",
-                query,
-                limit
-              );
+            let dbResults = [];
+            try { dbResults = await getMedia("videos", query, Math.min(100, limit * page)); }
+            catch (error) { console.warn("[HEXORA] Neon video search unavailable:", error.message); }
+            let r2Media = { rows: [], total: 0 };
+            try { r2Media = await searchR2Index(query, Math.min(100, limit * page), "videos"); }
+            catch (error) { console.warn("[HEXORA] R2 video search unavailable:", error.message); }
+            const mediaByKey = new Map();
+            for (const row of [...dbResults, ...r2Media.rows]) {
+              const key = String(row.url || row.id || "");
+              if (key && !mediaByKey.has(key)) mediaByKey.set(key, row);
+            }
+            const allMedia = [...mediaByKey.values()];
+            const results = allMedia.slice((page - 1) * limit, page * limit);
 
             return sendJson(
               res,
@@ -1747,7 +1808,7 @@ const server =
                 page,
                 limit,
                 total:
-                  results.length,
+                  allMedia.length,
                 results
               }
             );
@@ -1757,13 +1818,19 @@ const server =
             safeMode ===
             "news"
           ) {
-            const results =
-              await searchDatabase(
-                query,
-                "news",
-                page,
-                limit
-              );
+            let results = { total: 0, rows: [], suggestion: null };
+            try { results = await searchDatabase(query, "news", 1, Math.min(100, limit * page)); }
+            catch (error) { console.warn("[HEXORA] Neon news search unavailable:", error.message); }
+            let r2News = { total: 0, rows: [] };
+            try { r2News = await searchR2Index(query, Math.min(100, limit * page), "news"); }
+            catch (error) { console.warn("[HEXORA] R2 news search unavailable:", error.message); }
+            const newsByUrl = new Map();
+            for (const row of [...results.rows.map(row => resultFromRow(row, query)), ...r2News.rows]) {
+              const key = String(row.canonical_url || row.url || "");
+              if (key && !newsByUrl.has(key)) newsByUrl.set(key, row);
+            }
+            const allNews = [...newsByUrl.values()].sort((a, b) => Date.parse(b.published_at || b.date || 0) - Date.parse(a.published_at || a.date || 0) || Number(b.score || 0) - Number(a.score || 0));
+            const newsPage = allNews.slice((page - 1) * limit, page * limit);
 
             return sendJson(
               res,
@@ -1776,17 +1843,10 @@ const server =
                 page,
                 limit,
                 total:
-                  results.total,
+                  allNews.length,
                 suggestion:
                   results.suggestion,
-                results:
-                  results.rows.map(
-                    row =>
-                      resultFromRow(
-                        row,
-                        query
-                      )
-                  )
+                results: newsPage
               }
             );
           }
@@ -1850,7 +1910,7 @@ const server =
           const finalRows = combined.slice(start, start + limit);
           return sendJson(res, 200, {
             success: true, engine: "HEXORA", query, mode: "web", page, limit,
-            total: Number(neonResults.total || 0) + Number(r2Results.total || 0),
+            total: combined.length,
             suggestion: neonResults.suggestion || null,
             results: finalRows
           });
