@@ -278,8 +278,9 @@ async function fetchPage(url) {
   const html = await response.text();
   const $ = cheerio.load(html);
 
+  const jsonLdText = $('script[type="application/ld+json"]').first().text();
   $(
-    "script, style, noscript, iframe, svg, canvas, nav, footer"
+    "script, style, noscript, svg, canvas, nav, footer"
   ).remove();
 
   const title = (
@@ -320,47 +321,83 @@ async function fetchPage(url) {
     .slice(0, MAX_CONTENT);
 
   const links = [];
-  const responseHost = new URL(response.url).hostname;
-
+  const seenLinks = new Set();
+  const ignoredExtensions = /\.(?:jpg|jpeg|png|gif|webp|svg|ico|css|js|pdf|zip|rar|7z|mp3|mp4|webm|woff2?|ttf|xml|json)(?:$|\?)/i;
+  const ignoredHosts = new Set(["facebook.com", "instagram.com", "tiktok.com"]);
   $("a[href]").each((_, element) => {
-    if (links.length >= MAX_LINKS) {
-      return false;
-    }
-
+    if (links.length >= MAX_LINKS) return false;
     try {
-      const target = new URL(
-        $(element).attr("href"),
-        response.url
-      );
-
+      const target = new URL($(element).attr("href"), response.url);
       const normalized = normalizeUrl(target.toString());
-
-      // Discover same-host links only.
-      if (
-        normalized &&
-        target.hostname === responseHost &&
-        !links.includes(normalized)
-      ) {
+      const host = target.hostname.toLowerCase();
+      const hostBlocked = [...ignoredHosts].some(domain => host === domain || host.endsWith(`.${domain}`));
+      const path = `${target.pathname}${target.search}`;
+      if (normalized && !seenLinks.has(normalized) && !ignoredExtensions.test(path) && !hostBlocked && !target.username && !target.password && !/\/(?:logout|log-out|cart|checkout|wp-admin)(?:\/|$)/i.test(target.pathname) && target.search.length < 180) {
+        seenLinks.add(normalized);
         links.push(normalized);
       }
-    } catch {
-      // Ignore malformed links.
-    }
+    } catch { /* Ignore malformed links. */ }
   });
+
+  // Extract actual image URLs and article dates while the metadata is still available.
+  const imageItems = [];
+  const seenImages = new Set();
+  const addImage = (raw, alt = "") => {
+    if (!raw || imageItems.length >= 30) return;
+    try {
+      const imageUrl = new URL(raw, response.url);
+      if (!/^https?:$/.test(imageUrl.protocol)) return;
+      const normalizedImage = imageUrl.toString();
+      if (seenImages.has(normalizedImage) || /\.(?:svg|gif)(?:$|\?)/i.test(imageUrl.pathname)) return;
+      seenImages.add(normalizedImage);
+      imageItems.push({ url: normalizedImage, alt: String(alt || "").trim().slice(0, 250) });
+    } catch { /* Ignore malformed image URLs. */ }
+  };
+  addImage($('meta[property="og:image"]').attr("content"));
+  addImage($('meta[name="twitter:image"]').attr("content"));
+  addImage($('meta[property="og:image:url"]').attr("content"));
+  $("img[src], img[data-src]").each((_, element) => {
+    if (imageItems.length >= 30) return false;
+    addImage($(element).attr("src") || $(element).attr("data-src"), $(element).attr("alt"));
+  });
+
+  const videoItems = [];
+  const seenVideos = new Set();
+  const addVideo = raw => {
+    if (!raw || videoItems.length >= 10) return;
+    try {
+      const videoUrl = new URL(raw, response.url).toString();
+      if (!/^https?:/i.test(videoUrl) || seenVideos.has(videoUrl)) return;
+      seenVideos.add(videoUrl);
+      videoItems.push({ url: videoUrl, title });
+    } catch { /* Ignore malformed video URLs. */ }
+  };
+  addVideo($('meta[property="og:video"]').attr("content"));
+  addVideo($('meta[property="og:video:url"]').attr("content"));
+  $("video[src], video source[src]").each((_, element) => addVideo($(element).attr("src")));
+  $("iframe[src]").each((_, element) => {
+    const src = String($(element).attr("src") || "");
+    if (/youtube\.com|youtu\.be|vimeo\.com/i.test(src)) addVideo(src);
+  });
+
+  let publishedAt = $('meta[property="article:published_time"]').attr("content") || $('meta[name="datePublished"]').attr("content") || $('meta[property="og:updated_time"]').attr("content") || $("time[datetime]").first().attr("datetime") || null;
+  if (!publishedAt) {
+    try {
+      const parsed = JSON.parse(jsonLdText);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      publishedAt = items.map(item => item.datePublished || item.dateCreated).find(Boolean) || null;
+    } catch { /* No structured article date. */ }
+  }
+  if (publishedAt && !Number.isFinite(Date.parse(publishedAt))) publishedAt = null;
 
   return {
     url: canonical || normalizeUrl(response.url) || url,
-    title,
-    description,
-    content,
+    title, description, content,
     content_hash: hash(content),
-    word_count: content
-      ? content.split(/\s+/u).length
-      : 0,
-    language: (
-      $("html").attr("lang") || "unknown"
-    ).slice(0, 20),
-    links
+    word_count: content ? content.split(/\s+/u).length : 0,
+    language: ($("html").attr("lang") || "unknown").slice(0, 20),
+    links, image: imageItems[0]?.url || null, image_items: imageItems,
+    video_items: videoItems, published_at: publishedAt
   };
 }
 
@@ -468,8 +505,12 @@ async function archiveToR2(page) {
     title: page.title || "", description: page.description || "",
     excerpt: String(page.content || "").slice(0, 1800),
     language: page.language || "unknown", domain: host,
+    image: page.image || page.image_items?.[0]?.url || null,
+    image_items: Array.isArray(page.image_items) ? page.image_items : [],
+    video_items: Array.isArray(page.video_items) ? page.video_items : [],
+    published_at: page.published_at || null,
     r2_key: pageKey, crawled_at: crawledAt,
-    search_text: `${page.title || ""} ${page.description || ""} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
+    search_text: `${page.title || ""} ${page.description || ""} ${(page.image_items || []).map(item => item.alt || "").join(" ")} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
   };
   await putR2Json(`index/${host}/${hash(page.url)}.json`, indexDoc);
   console.log(`[HEXORA] R2 saved page + search index: ${page.url}`);
@@ -479,6 +520,54 @@ async function archiveToR2(page) {
 async function savePage(page) {
   const r2Key = await archiveToR2(page);
   return { duplicate: false, r2Key };
+}
+
+// ============================================================
+// SEARCH-DRIVEN DISCOVERY — use known relevant pages to discover links
+// Query requests and crawl queue remain in R2; Neon is never written.
+// ============================================================
+async function processDiscoveryQueries() {
+  if (!s3) return;
+  const listed = await s3.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "discovery/queries/", MaxKeys: 5 }));
+  for (const item of listed.Contents || []) {
+    if (!item.Key?.endsWith(".json")) continue;
+    const request = await readR2Json(item.Key);
+    if (!request?.query || request.status !== "pending") continue;
+    const words = request.query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length > 1);
+    let token;
+    let scanned = 0;
+    let queued = 0;
+    const seen = new Set();
+    try {
+      do {
+        const page = await s3.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "index/", MaxKeys: 500, ...(token ? { ContinuationToken: token } : {}) }));
+        for (const object of page.Contents || []) {
+          if (!object.Key?.endsWith(".json")) continue;
+          scanned++;
+          let doc;
+          try { doc = await readR2Json(object.Key); } catch { continue; }
+          const haystack = `${doc?.title || ""} ${doc?.description || ""} ${doc?.search_text || doc?.excerpt || ""}`.toLowerCase();
+          const hits = words.filter(word => haystack.includes(word)).length;
+          const needed = words.length <= 1 ? 1 : Math.max(2, Math.ceil(words.length * 0.6));
+          if (!hits || hits < needed || !doc?.r2_key) continue;
+          let saved;
+          try { saved = await readR2Json(doc.r2_key); } catch { continue; }
+          for (const link of (saved?.links || [])) {
+            if (queued >= 100 || seen.has(link)) continue;
+            seen.add(link);
+            await enqueueUrls([link]);
+            queued++;
+          }
+          if (queued >= 100) break;
+        }
+        token = page.NextContinuationToken;
+      } while (token && scanned < 3000 && queued < 100);
+      await putR2Json(item.Key, { ...request, status: "processed", scanned_index_documents: scanned, queued_links: queued, updated_at: new Date().toISOString() });
+      console.log(`[HEXORA] Search discovery processed: query="${request.query}" scanned=${scanned} queued=${queued}`);
+    } catch (error) {
+      console.warn(`[HEXORA] Search discovery failed for "${request.query}":`, error.message);
+    }
+  }
 }
 
 // ============================================================
@@ -523,6 +612,7 @@ async function main() {
   while (true) {
     try {
       await importLegacyNeonQueue();
+      await processDiscoveryQueries();
       const jobs = await getJobs();
       if (!jobs.length) {
         console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or wait for legacy queue import.");
