@@ -5,7 +5,10 @@ import robotsParser from "robots-parser";
 import crypto from "node:crypto";
 import {
   S3Client,
-  PutObjectCommand
+  PutObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectCommand
 } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
@@ -362,274 +365,142 @@ async function fetchPage(url) {
 }
 
 // ============================================================
-// QUEUE HELPERS
-// Requires crawl_queue.id, url and status.
-// crawl_queue.url must have a UNIQUE constraint.
+// R2 QUEUE HELPERS — crawler never writes to Neon
 // ============================================================
+async function readR2Json(key) {
+  if (!s3) return null;
+  try {
+    const response = await s3.send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+    return JSON.parse(await response.Body.transformToString());
+  } catch (error) {
+    if (error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return null;
+    throw error;
+  }
+}
+
+async function putR2Json(key, value) {
+  if (!s3) throw new Error("R2 S3 credentials are not configured");
+  await s3.send(new PutObjectCommand({
+    Bucket: R2_BUCKET, Key: key,
+    Body: JSON.stringify(value), ContentType: "application/json"
+  }));
+}
 
 async function enqueueUrls(urls) {
-  const columns = await getColumns("crawl_queue");
-
-  for (const url of [...new Set(urls)]) {
-    const fields = ["url", "status"];
-    const values = [url, "queued"];
-
-    if (columns.has("created_at")) {
-      fields.push("created_at");
-      values.push(new Date());
-    }
-
-    if (columns.has("updated_at")) {
-      fields.push("updated_at");
-      values.push(new Date());
-    }
-
-    const placeholders = values.map(
-      (_, i) => `$${i + 1}`
-    );
-
-    await pool.query(
-      `INSERT INTO crawl_queue
-        (${fields.map(c => `"${c}"`).join(",")})
-       VALUES (${placeholders.join(",")})
-       ON CONFLICT (url) DO NOTHING`,
-      values
-    );
+  for (const raw of [...new Set(urls)]) {
+    const url = normalizeUrl(raw);
+    if (!url) continue;
+    const key = `queue/pending/${hash(url)}.json`;
+    await putR2Json(key, { url, queued_at: new Date().toISOString(), attempts: 0 });
   }
 }
 
 async function getJobs() {
-  const columns = await getColumns("crawl_queue");
+  if (!s3) throw new Error("R2 S3 credentials are not configured");
+  const listed = await s3.send(new ListObjectsV2Command({
+    Bucket: R2_BUCKET, Prefix: "queue/pending/", MaxKeys: BATCH_SIZE
+  }));
+  const jobs = [];
+  for (const item of (listed.Contents || [])) {
+    if (!item.Key) continue;
+    const job = await readR2Json(item.Key);
+    if (job?.url) jobs.push({ ...job, key: item.Key });
+  }
+  return jobs;
+}
 
-  if (
-    !columns.has("id") ||
-    !columns.has("url") ||
-    !columns.has("status")
-  ) {
-    throw new Error(
-      "crawl_queue needs id, url and status columns"
+async function finishJob(job, status, message = null) {
+  if (!job?.key) return;
+  if (status === "done" || status === "blocked") {
+    await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: job.key }));
+    if (status === "blocked") {
+      await putR2Json(`queue/blocked/${hash(job.url)}.json`, {
+        url: job.url, status, message, updated_at: new Date().toISOString()
+      });
+    }
+    return;
+  }
+  await putR2Json(`queue/failed/${hash(job.url)}.json`, {
+    url: job.url, status, message, updated_at: new Date().toISOString()
+  });
+  await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: job.key }));
+}
+
+// Import a small batch of the old Neon queue into R2. This query is READ-ONLY;
+// an offset marker in R2 prevents re-importing the same rows on every restart.
+async function importLegacyNeonQueue() {
+  if (!DATABASE_URL || !s3) return;
+  const markerKey = "meta/neon-queue-import-offset.json";
+  const marker = await readR2Json(markerKey);
+  if (marker?.completed === true) return;
+  const offset = Math.max(0, Number(marker?.offset || 0));
+  try {
+    const result = await pool.query(
+      `SELECT url FROM crawl_queue WHERE status IN ('queued','pending','retry') ORDER BY id ASC LIMIT $1 OFFSET $2`,
+      [Math.max(100, Math.min(1000, Number(env.CRAWL_QUEUE_MIGRATE_BATCH || 500))), offset]
     );
+    for (const row of result.rows) await enqueueUrls([row.url]);
+    const nextOffset = offset + result.rows.length;
+    await putR2Json(markerKey, {
+      offset: result.rows.length ? nextOffset : 0,
+      last_batch_count: result.rows.length,
+      updated_at: new Date().toISOString(),
+      completed: result.rows.length === 0
+    });
+    if (result.rows.length) console.log(`[HEXORA] Imported ${result.rows.length} legacy queue URLs from Neon (read-only); offset=${nextOffset}`);
+  } catch (error) {
+    console.warn("[HEXORA] Legacy Neon queue import skipped (read-only):", error.message);
   }
-
-  let order = columns.has("priority")
-    ? '"priority" DESC'
-    : '"url" ASC';
-
-  if (columns.has("created_at")) {
-    order += ', "created_at" ASC';
-  }
-
-  const result = await pool.query(
-    `SELECT id, url
-       FROM crawl_queue
-      WHERE status IN ('queued', 'pending', 'retry')
-      ORDER BY ${order}
-      LIMIT $1`,
-    [BATCH_SIZE]
-  );
-
-  return result.rows;
-}
-
-async function updateJob(id, status, message = null) {
-  const columns = await getColumns("crawl_queue");
-
-  const sets = ['"status" = $1'];
-  const values = [status];
-  let next = 2;
-
-  if (columns.has("updated_at")) {
-    sets.push('"updated_at" = NOW()');
-  }
-
-  if (
-    status === "done" &&
-    columns.has("last_crawled_at")
-  ) {
-    sets.push('"last_crawled_at" = NOW()');
-  }
-
-  if (columns.has("last_error")) {
-    sets.push(`"last_error" = $${next++}`);
-    values.push(message);
-  } else if (columns.has("error")) {
-    sets.push(`"error" = $${next++}`);
-    values.push(message);
-  }
-
-  values.push(id);
-
-  await pool.query(
-    `UPDATE crawl_queue
-        SET ${sets.join(", ")}
-      WHERE id = $${next}`,
-    values
-  );
 }
 
 // ============================================================
-// R2 ARCHIVE
-// Writes a JSON copy of the crawled page to R2.
-// No R2 storage usage check is performed.
+// R2 ARCHIVE + SEARCH INDEX — no crawler writes to Neon
 // ============================================================
-
 async function archiveToR2(page) {
-  if (!s3) {
-    throw new Error(
-      "R2 S3 credentials are not configured"
-    );
-  }
-
+  if (!s3) throw new Error("R2 S3 credentials are not configured");
   const host = new URL(page.url).hostname;
-  const key = `pages/${host}/${hash(page.url)}.json`;
-
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: key,
-      Body: JSON.stringify({
-        ...page,
-        crawled_at: new Date().toISOString()
-      }),
-      ContentType: "application/json"
-    })
-  );
-
-  return key;
+  const pageKey = `pages/${host}/${hash(page.url)}.json`;
+  const crawledAt = new Date().toISOString();
+  const savedPage = { ...page, crawled_at: crawledAt };
+  await putR2Json(pageKey, savedPage);
+  const indexDoc = {
+    id: hash(page.url), url: page.url, canonical_url: page.url,
+    title: page.title || "", description: page.description || "",
+    excerpt: String(page.content || "").slice(0, 1800),
+    language: page.language || "unknown", domain: host,
+    r2_key: pageKey, crawled_at: crawledAt,
+    search_text: `${page.title || ""} ${page.description || ""} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
+  };
+  await putR2Json(`index/${host}/${hash(page.url)}.json`, indexDoc);
+  console.log(`[HEXORA] R2 saved page + search index: ${page.url}`);
+  return pageKey;
 }
-
-// ============================================================
-// SAVE TO NEON
-// Requires a UNIQUE constraint on pages.url.
-// ============================================================
 
 async function savePage(page) {
-  // First save the complete page body to R2. If R2 fails, do not pretend
-  // that the page was archived or mark the job complete.
   const r2Key = await archiveToR2(page);
-  const columns = await getColumns("pages");
-  const hostname = (() => {
-    try { return new URL(page.url).hostname.toLowerCase(); }
-    catch { return ""; }
-  })();
-
-  // Keep only a compact searchable excerpt in Neon. The full body stays in R2.
-  // Existing rows' content is deliberately excluded from UPDATE so old data
-  // is never erased by a new crawl.
-  const compactExcerpt = String(page.content || "").slice(0, 1800);
-  const compactDescription = String(
-    page.description || compactExcerpt || ""
-  ).slice(0, 3000);
-
-  const data = {
-    url: page.url,
-    canonical_url: page.canonical_url || page.url,
-    title: page.title,
-    description: compactDescription,
-    excerpt: compactExcerpt,
-    content: null,
-    content_hash: page.content_hash,
-    word_count: page.word_count,
-    language: page.language,
-    domain: hostname,
-    r2_key: r2Key,
-    last_crawled_at: new Date(),
-    updated_at: new Date(),
-    crawl_status: "indexed"
-  };
-
-  const fields = Object.keys(data).filter(key => columns.has(key));
-  if (!fields.includes("url")) {
-    throw new Error("pages.url column is missing");
-  }
-
-  const values = fields.map(key => data[key]);
-  const placeholders = fields.map((_, i) => `$${i + 1}`);
-  // Never overwrite the existing full content column on conflict.
-  const updates = fields
-    .filter(key => key !== "url" && key !== "content")
-    .map(key => `"${key}" = EXCLUDED."${key}"`);
-
-  await pool.query(
-    `INSERT INTO pages (${fields.map(c => `"${c}"`).join(",")})
-     VALUES (${placeholders.join(",")})
-     ON CONFLICT (url) DO UPDATE SET
-       ${updates.length ? updates.join(",") : '"url" = EXCLUDED."url"'}`,
-    values
-  );
-
-  console.log(`[HEXORA] R2 archived: ${r2Key}; compact metadata indexed in Neon`);
   return { duplicate: false, r2Key };
 }
 
 // ============================================================
-// PROCESS A QUEUED URL
+// PROCESS A QUEUED URL — queue/status are stored only in R2
 // ============================================================
-
 async function processJob(job) {
   const url = normalizeUrl(job.url);
-
-  if (!url) {
-    await updateJob(
-      job.id,
-      "failed",
-      "Invalid URL"
-    );
-
-    return "failed";
-  }
-
+  if (!url) { await finishJob(job, "failed", "Invalid URL"); return "failed"; }
   try {
     if (!(await canCrawl(url))) {
-      await updateJob(
-        job.id,
-        "blocked",
-        "Robots policy denied or unavailable"
-      );
-
+      await finishJob(job, "blocked", "Robots policy denied or unavailable");
       return "blocked";
     }
-
     const page = await fetchPage(url);
-    const saved = await savePage(page);
-
-    if (saved.duplicate) {
-      await updateJob(job.id, "done");
-
-      console.log(
-        `[HEXORA] Duplicate skipped: ${page.url}`
-      );
-
-      return "duplicate";
-    }
-
+    await savePage(page);
     await enqueueUrls(page.links);
-    await updateJob(job.id, "done");
-
-    console.log(
-      `[HEXORA] Indexed: ${page.url}`
-    );
-
+    await finishJob(job, "done");
+    console.log(`[HEXORA] Indexed to R2: ${page.url}`);
     return "indexed";
   } catch (error) {
-    console.error(
-      `[HEXORA] Failed ${url}:`,
-      error.message
-    );
-
-    try {
-      await updateJob(
-        job.id,
-        "failed",
-        error.message.slice(0, 1000)
-      );
-    } catch (updateError) {
-      console.error(
-        "[HEXORA] Queue update failed:",
-        updateError.message
-      );
-    }
-
+    console.error(`[HEXORA] Failed ${url}:`, error.message);
+    try { await finishJob(job, "failed", error.message.slice(0, 1000)); } catch {}
     return "failed";
   }
 }
@@ -637,78 +508,36 @@ async function processJob(job) {
 // ============================================================
 // MAIN
 // ============================================================
-
 async function main() {
-  console.log(
-    "[HEXORA] Worldwide crawler starting..."
-  );
-
-  console.log(
-    "[HEXORA] Storage mode: full page bodies in R2; compact search metadata in Neon."
-  );
-
-  try {
-    await pool.query("SELECT 1");
-
-    console.log(
-      "[HEXORA] Neon database connected."
-    );
-
-    await getColumns("pages");
-    await getColumns("crawl_queue");
-  } catch (error) {
-    console.error(
-      "[HEXORA] Database/schema check failed:",
-      error.message
-    );
-
-    process.exit(1);
+  console.log("[HEXORA] Worldwide crawler starting...");
+  console.log("[HEXORA] Storage mode: R2-only writes (page data, search index, and queue). Neon is read-only for legacy queue import.");
+  if (!s3) { console.error("[HEXORA] R2 credentials missing. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME."); process.exit(1); }
+  if (DATABASE_URL) {
+    try { await pool.query("SELECT 1"); console.log("[HEXORA] Neon read-only connection available for legacy queue import."); }
+    catch (error) { console.warn("[HEXORA] Neon unavailable; continuing with R2 queue only:", error.message); }
+  } else {
+    console.log("[HEXORA] DATABASE_URL not set; using only R2 queue/seeds.");
   }
-
+  const seeds = String(env.CRAWL_SEED_URLS || "").split(/[\s,]+/).filter(Boolean);
+  if (seeds.length) { await enqueueUrls(seeds); console.log(`[HEXORA] Seed URLs queued in R2: ${seeds.length}`); }
   while (true) {
     try {
-      // Do not pause crawling on the old Neon content-storage threshold.
-      // R2 holds full content; Neon receives compact metadata only.
-
+      await importLegacyNeonQueue();
       const jobs = await getJobs();
-
       if (!jobs.length) {
-        console.log(
-          "[HEXORA] No queued jobs."
-        );
-
-        await sleep(LOOP_DELAY);
-        continue;
+        console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or wait for legacy queue import.");
+        await sleep(LOOP_DELAY); continue;
       }
-
-      let indexed = 0;
-      let failed = 0;
-      let blocked = 0;
-      let duplicates = 0;
-
+      let indexed = 0, failed = 0, blocked = 0;
       for (const job of jobs) {
         const result = await processJob(job);
-
         if (result === "indexed") indexed++;
         else if (result === "failed") failed++;
         else if (result === "blocked") blocked++;
-        else if (result === "duplicate") duplicates++;
-
         await sleep(1000);
       }
-
-      console.log(
-        `[HEXORA] Cycle complete: jobs=${jobs.length} ` +
-        `indexed=${indexed} failed=${failed} ` +
-        `blocked=${blocked} duplicates=${duplicates}`
-      );
-    } catch (error) {
-      console.error(
-        "[HEXORA] Cycle error:",
-        error.message
-      );
-    }
-
+      console.log(`[HEXORA] Cycle complete: jobs=${jobs.length} indexed=${indexed} failed=${failed} blocked=${blocked}`);
+    } catch (error) { console.error("[HEXORA] Cycle error:", error.message); }
     await sleep(LOOP_DELAY);
   }
 }
