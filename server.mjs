@@ -1,172 +1,93 @@
-// ============================================================
-// HEXORA SEARCH ENGINE
-// Complete server.mjs
-// Neon/Postgres + Search + Demand + Ads + PayPal
-// ============================================================
-
-import "dotenv/config";
 import http from "node:http";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { createClient } from "@supabase/supabase-js";
+import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
-
-// ============================================================
-// BASIC CONFIG
-// ============================================================
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 8080);
-const HOST = "0.0.0.0";
+const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 
-const DATABASE_URL = process.env.DATABASE_URL || "";
+const DB_POOL_MAX = Number(process.env.DB_POOL_MAX || 10);
+const R2_ACCOUNT_ID = String(process.env.R2_ACCOUNT_ID || "").trim();
+const R2_BUCKET_NAME = String(process.env.R2_BUCKET_NAME || "hexora").trim();
+const r2Client = R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY
+  ? new S3Client({
+      region: "auto",
+      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY }
+    })
+  : null;
+let r2IndexCache = { loadedAt: 0, rows: [] };
+const R2_INDEX_CACHE_MS = Math.max(15000, Number(process.env.R2_INDEX_CACHE_MS || 60000));
+const R2_INDEX_MAX_OBJECTS = Math.max(100, Math.min(50000, Number(process.env.R2_INDEX_MAX_OBJECTS || 10000)));
 
-if (!DATABASE_URL) {
-  console.error("[HEXORA] DATABASE_URL is missing.");
-  process.exit(1);
-}
+
+const MAX_QUERY_LENGTH = 300;
+const MAX_PAGE = 10000;
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 50;
+const SEARCH_CANDIDATE_LIMIT = 2500;
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: Number(process.env.DB_POOL_MAX || 10),
+  max: DB_POOL_MAX,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000,
+  connectionTimeoutMillis: 10000,
   ssl: DATABASE_URL.includes("localhost")
     ? false
-    : { rejectUnauthorized: false },
+    : { rejectUnauthorized: false }
 });
 
-console.log("[HEXORA] Neon database configured.");
-
-// ============================================================
-// SUPABASE CONFIG (keeps Neon as the primary search database)
-// ============================================================
-
-const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
-const SUPABASE_SERVICE_ROLE_KEY = String(
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-).trim();
-
-let supabase = null;
-
-if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  try {
-    supabase = createClient(
-      SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE_KEY,
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      }
-    );
-    console.log("[HEXORA] Supabase client configured.");
-  } catch (error) {
-    console.error("[HEXORA] Supabase client setup failed:", error.message);
-  }
-} else {
-  console.warn(
-    "[HEXORA] Supabase not configured: check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
-  );
-}
-
-async function checkSupabaseEndpoint() {
-  if (!supabase || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return "missing";
-  }
-
-  try {
-    const base = SUPABASE_URL.replace(/\/+$/, "");
-    const response = await fetch(`${base}/auth/v1/health`, {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      },
-      signal: AbortSignal.timeout(5000),
-    });
-
-    return response.ok ? "ok" : `http_${response.status}`;
-  } catch (error) {
-    console.error("[HEXORA] Supabase endpoint check failed:", error.message);
-    return "error";
-  }
-}
-
-// ============================================================
-// PAYPAL CONFIG
-// ============================================================
-
-const PAYPAL_CLIENT_ID =
-  process.env.PAYPAL_CLIENT_ID || "";
-
-const PAYPAL_CLIENT_SECRET =
-  process.env.PAYPAL_CLIENT_SECRET || "";
-
-const PAYPAL_MODE =
-  String(process.env.PAYPAL_MODE || "sandbox")
-    .trim()
-    .toLowerCase();
-
-const PAYPAL_BASE_URL =
-  PAYPAL_MODE === "live"
-    ? "https://api-m.paypal.com"
-    : "https://api-m.sandbox.paypal.com";
-
-const PAYPAL_WEBHOOK_ID =
-  process.env.PAYPAL_WEBHOOK_ID || "";
-
-function paypalConfigured() {
-  return Boolean(
-    PAYPAL_CLIENT_ID &&
-    PAYPAL_CLIENT_SECRET
-  );
-}
-
-// ============================================================
-// ADMIN / SECURITY
-// ============================================================
-
-const HEXORA_ADS_ADMIN_KEY =
-  process.env.HEXORA_ADS_ADMIN_KEY || "";
-
-const SEARCH_CANDIDATE_LIMIT = 10000;
-
-// ============================================================
-// HELPERS
-// ============================================================
-
-function json(res, status, data) {
+function sendJson(res, status, data) {
   const body = JSON.stringify(data);
 
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers":
-      "Content-Type, X-HEXORA-ADVERTISER-KEY, X-HEXORA-ADMIN-KEY",
-    "Access-Control-Allow-Methods":
-      "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, OPTIONS"
   });
 
   res.end(body);
 }
 
-function text(res, status, body, contentType = "text/plain") {
+function sendText(
+  res,
+  status,
+  text,
+  type = "text/plain; charset=utf-8"
+) {
   res.writeHead(status, {
-    "Content-Type": `${contentType}; charset=utf-8`,
+    "Content-Type": type,
     "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*"
   });
 
-  res.end(body);
+  res.end(text);
+}
+
+function normalizeQuery(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_QUERY_LENGTH);
+}
+
+function wordsOf(value) {
+  return normalizeQuery(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .split(/\s+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter((x, i, arr) => arr.indexOf(x) === i);
 }
 
 function safeInt(value, fallback, min, max) {
@@ -176,2657 +97,2022 @@ function safeInt(value, fallback, min, max) {
     return fallback;
   }
 
-  return Math.min(
-    max,
-    Math.max(min, n)
-  );
+  return Math.max(min, Math.min(max, n));
 }
 
-function normalizeQuery(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .slice(0, 500);
-}
-
-function wordsOf(value) {
-  return normalizeQuery(value)
-    .toLowerCase()
-    .split(/[^a-z0-9\u00C0-\uFFFF]+/i)
-    .filter(Boolean)
-    .slice(0, 32);
-}
-
-function safeUrl(value) {
-  try {
-    const u = new URL(value);
-
-    if (
-      u.protocol !== "http:" &&
-      u.protocol !== "https:"
-    ) {
-      return null;
-    }
-
-    return u.toString();
-  } catch {
-    return null;
-  }
-}
-
-function cleanText(value, max = 1000) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-}
-
-function cleanSnippet(value, max = 320) {
-  return cleanText(
-    value
-      ?.replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " "),
-    max
-  );
-}
-
-function parseCookies(req) {
-  const header = req.headers.cookie || "";
-
-  const result = {};
-
-  for (const part of header.split(";")) {
-    const index = part.indexOf("=");
-
-    if (index === -1) continue;
-
-    const key = part
-      .slice(0, index)
-      .trim();
-
-    const value = part
-      .slice(index + 1)
-      .trim();
-
-    result[key] = decodeURIComponent(value);
-  }
-
-  return result;
-}
-
-async function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-
-    let size = 0;
-
-    req.on("data", chunk => {
-      size += chunk.length;
-
-      if (size > 2 * 1024 * 1024) {
-        reject(
-          new Error("Request body too large")
-        );
-
-        req.destroy();
-
-        return;
-      }
-
-      body += chunk.toString("utf8");
-    });
-
-    req.on("end", () => {
-      if (!body) {
-        resolve({});
-        return;
-      }
-
-      try {
-        resolve(JSON.parse(body));
-      } catch {
-        reject(
-          new Error("Invalid JSON body")
-        );
-      }
-    });
-
-    req.on("error", reject);
-  });
-}
-
-function randomKey(prefix = "hx") {
-  return `${prefix}_${crypto.randomBytes(32).toString("hex")}`;
-}
-
-function sha256(value) {
-  return crypto
-    .createHash("sha256")
-    .update(String(value))
-    .digest("hex");
-}
-
-function makeAdvertiserKey() {
-  return randomKey("hxadv");
-}
-
-// ============================================================
-// DATABASE INITIALIZATION
-// ============================================================
-
-async function ensureDatabase() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS search_queries (
-      id BIGSERIAL PRIMARY KEY,
-      query TEXT NOT NULL,
-      normalized_query TEXT NOT NULL UNIQUE,
-      search_count BIGINT NOT NULL DEFAULT 1,
-      crawl_priority DOUBLE PRECISION NOT NULL DEFAULT 1,
-      first_searched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_searched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_crawled_at TIMESTAMPTZ,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS search_queries_priority_idx
-    ON search_queries (
-      crawl_priority DESC,
-      search_count DESC,
-      last_searched_at DESC
-    )
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS search_queries_status_idx
-    ON search_queries(status)
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS advertisers (
-      id BIGSERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      company_name TEXT,
-      website TEXT,
-      balance NUMERIC(14,2) NOT NULL DEFAULT 0,
-      total_spent NUMERIC(14,2) NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ad_campaigns (
-      id BIGSERIAL PRIMARY KEY,
-      advertiser_id BIGINT NOT NULL
-        REFERENCES advertisers(id)
-        ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      daily_budget NUMERIC(14,2) NOT NULL DEFAULT 0,
-      total_budget NUMERIC(14,2) NOT NULL DEFAULT 0,
-      spent NUMERIC(14,2) NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'draft',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ads (
-      id BIGSERIAL PRIMARY KEY,
-      campaign_id BIGINT NOT NULL
-        REFERENCES ad_campaigns(id)
-        ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      description TEXT,
-      destination_url TEXT NOT NULL,
-      keywords TEXT[] NOT NULL DEFAULT '{}',
-      bid_per_click NUMERIC(14,2) NOT NULL DEFAULT 0.10,
-      impressions BIGINT NOT NULL DEFAULT 0,
-      clicks BIGINT NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ad_events (
-      id BIGSERIAL PRIMARY KEY,
-      ad_id BIGINT NOT NULL
-        REFERENCES ads(id)
-        ON DELETE CASCADE,
-      event_type TEXT NOT NULL,
-      query TEXT,
-      cost NUMERIC(14,2) NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ad_transactions (
-      id BIGSERIAL PRIMARY KEY,
-      advertiser_id BIGINT NOT NULL
-        REFERENCES advertisers(id)
-        ON DELETE CASCADE,
-      amount NUMERIC(14,2) NOT NULL,
-      transaction_type TEXT NOT NULL,
-      reference TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      payment_provider TEXT,
-      payment_id TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    ALTER TABLE advertisers
-    ADD COLUMN IF NOT EXISTS api_key_hash TEXT
-  `);
-
-  await pool.query(`
-    ALTER TABLE advertisers
-    ADD COLUMN IF NOT EXISTS api_key_prefix TEXT
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS advertisers_api_key_hash_idx
-    ON advertisers(api_key_hash)
-    WHERE api_key_hash IS NOT NULL
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ad_payment_orders (
-      id BIGSERIAL PRIMARY KEY,
-      advertiser_id BIGINT NOT NULL
-        REFERENCES advertisers(id)
-        ON DELETE CASCADE,
-      provider TEXT NOT NULL,
-      provider_order_id TEXT NOT NULL UNIQUE,
-      amount NUMERIC(14,2) NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'USD',
-      status TEXT NOT NULL DEFAULT 'created',
-      credited BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ad_webhook_events (
-      id BIGSERIAL PRIMARY KEY,
-      provider TEXT NOT NULL,
-      event_id TEXT NOT NULL,
-      event_type TEXT,
-      payload JSONB NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(provider, event_id)
-    )
-  `);
-
-  console.log(
-    "[HEXORA] Ads payment tables ready."
-  );
-}
-
-// ============================================================
-// SEARCH DEMAND
-// ============================================================
-
-async function recordSearchDemand(query) {
-  const original = normalizeQuery(query);
-
-  if (!original) return;
-
-  const normalized = original.toLowerCase();
-
-  try {
-    await pool.query(
-      `
-      INSERT INTO search_queries (
-        query,
-        normalized_query,
-        search_count,
-        crawl_priority,
-        first_searched_at,
-        last_searched_at,
-        updated_at,
-        status
-      )
-      VALUES (
-        $1,
-        $2,
-        1,
-        1,
-        NOW(),
-        NOW(),
-        NOW(),
-        'pending'
-      )
-      ON CONFLICT (normalized_query)
-      DO UPDATE SET
-        query = EXCLUDED.query,
-        search_count =
-          search_queries.search_count + 1,
-        crawl_priority =
-          LEAST(
-            1000000,
-            GREATEST(
-              search_queries.crawl_priority,
-              1
-            ) +
-            1 +
-            LN(
-              GREATEST(
-                1,
-                search_queries.search_count + 1
-              )
-            )
-          ),
-        last_searched_at = NOW(),
-        updated_at = NOW()
-      `,
-      [original, normalized]
-    );
-  } catch (error) {
-    console.error(
-      "[HEXORA] demand tracking failed:",
-      error?.message || error
-    );
-  }
-}
-
-// ============================================================
-// SEARCH
-// ============================================================
-
-function buildTsQuery(query) {
-  const words = wordsOf(query)
-    .map(word => word.replace(/[^a-zA-Z0-9\u00C0-\uFFFF]/g, ""))
-    .filter(Boolean);
-  return words.length ? words.join(" | ") : null;
-}
-
-async function searchDatabase(query, mode = "web", page = 1, limit = 10) {
-  const q = normalizeQuery(query);
-  const safePage = safeInt(page, 1, 1, 100000);
-  const safeLimit = safeInt(limit, 10, 1, 50);
-  const offset = (safePage - 1) * safeLimit;
-  if (!q) return { results: [], total: 0, suggestions: [] };
-
-  const escaped = q.replace(/[\\%_]/g, "\\$&");
-  const phrasePattern = `%${escaped}%`;
-  const terms = [...new Set(wordsOf(q))].slice(0, 12);
-  const tsQuery = buildTsQuery(q) || q;
-  const matchWhere = `
-    COALESCE(p.crawl_status, '') NOT IN ('deleted', 'blocked')
-    AND (
-      COALESCE(p.title, '') ILIKE $1 ESCAPE '\\'
-      OR COALESCE(p.description, '') ILIKE $1 ESCAPE '\\'
-      OR COALESCE(p.content, '') ILIKE $1 ESCAPE '\\'
-      OR COALESCE(p.excerpt, '') ILIKE $1 ESCAPE '\\'
-      OR COALESCE(p.url, '') ILIKE $1 ESCAPE '\\'
-      OR EXISTS (
-        SELECT 1 FROM unnest($2::text[]) AS term
-        WHERE COALESCE(p.title, '') ILIKE ('%' || term || '%')
-           OR COALESCE(p.description, '') ILIKE ('%' || term || '%')
-           OR COALESCE(p.content, '') ILIKE ('%' || term || '%')
-           OR COALESCE(p.excerpt, '') ILIKE ('%' || term || '%')
-           OR COALESCE(p.url, '') ILIKE ('%' || term || '%')
-      )
-      OR (p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple', $3))
-    )`;
-
-  try {
-    const count = await pool.query(
-      `SELECT COUNT(*)::bigint AS total FROM pages p WHERE ${matchWhere}`,
-      [phrasePattern, terms, tsQuery]
-    );
-    const total = Number(count.rows[0]?.total || 0);
-    const result = await pool.query(
-      `SELECT p.id, p.url, p.canonical_url, p.title, p.description, p.content,
-        p.domain, p.language, p.author, p.image_url, p.published_at, p.updated_at,
-        p.last_crawled_at, p.authority_score, p.popularity_score, p.quality_score,
-        p.inbound_links, p.excerpt, p.r2_key,
-        (CASE WHEN lower(COALESCE(p.title,'')) = lower($4) THEN 1000 ELSE 0 END
-        + CASE WHEN COALESCE(p.title,'') ILIKE $1 ESCAPE '\\' THEN 450 ELSE 0 END
-        + CASE WHEN COALESCE(p.description,'') ILIKE $1 ESCAPE '\\' THEN 180 ELSE 0 END
-        + CASE WHEN COALESCE(p.url,'') ILIKE $1 ESCAPE '\\' THEN 100 ELSE 0 END
-        + CASE WHEN COALESCE(p.content,'') ILIKE $1 ESCAPE '\\' THEN 35 ELSE 0 END
-        + CASE WHEN COALESCE(p.excerpt,'') ILIKE $1 ESCAPE '\\' THEN 28 ELSE 0 END
-        + COALESCE((SELECT SUM(CASE
-            WHEN COALESCE(p.title,'') ILIKE ('%'||term||'%') THEN 40
-            WHEN COALESCE(p.description,'') ILIKE ('%'||term||'%') THEN 18
-            WHEN COALESCE(p.url,'') ILIKE ('%'||term||'%') THEN 12
-            WHEN COALESCE(p.content,'') ILIKE ('%'||term||'%') THEN 4
-            WHEN COALESCE(p.excerpt,'') ILIKE ('%'||term||'%') THEN 3 ELSE 0 END)
-          FROM unnest($2::text[]) AS term),0)
-        + CASE WHEN p.search_vector IS NOT NULL AND p.search_vector @@ websearch_to_tsquery('simple',$3)
-          THEN LEAST(100, ts_rank_cd(p.search_vector, websearch_to_tsquery('simple',$3))*100) ELSE 0 END
-        + LEAST(30,GREATEST(0,COALESCE(p.authority_score,0)))
-        + LEAST(15,GREATEST(0,COALESCE(p.popularity_score,0))*0.15)
-        + LEAST(15,GREATEST(0,COALESCE(p.quality_score,0))*0.15)
-        + LEAST(20,GREATEST(0,COALESCE(p.inbound_links,0))*0.1)
-        + CASE WHEN COALESCE(p.published_at,p.updated_at,p.last_crawled_at) >= NOW()-INTERVAL '7 days' THEN 8
-               WHEN COALESCE(p.published_at,p.updated_at,p.last_crawled_at) >= NOW()-INTERVAL '30 days' THEN 4 ELSE 0 END
-        ) AS relevance_score
-       FROM pages p WHERE ${matchWhere}
-       ORDER BY relevance_score DESC, p.authority_score DESC NULLS LAST,
-         p.quality_score DESC NULLS LAST, p.last_crawled_at DESC NULLS LAST
-       LIMIT $5 OFFSET $6`,
-      [phrasePattern, terms, tsQuery, q, safeLimit, offset]
-    );
-
-    const results = [];
-    const seenUrls = new Set();
-    const domainCounts = new Map();
-    for (const row of result.rows) {
-      const url = safeUrl(row.canonical_url || row.url);
-      if (!url) continue;
-      const canonical = url.toLowerCase().replace(/#.*$/, "").replace(/\/$/, "");
-      if (seenUrls.has(canonical)) continue;
-      const domain = cleanText(row.domain, 255) || (() => { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } })();
-      if (domain && (domainCounts.get(domain) || 0) >= 3) continue;
-      seenUrls.add(canonical);
-      if (domain) domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
-      const description = cleanSnippet(row.excerpt || row.description || row.content || "", 360);
-      results.push({
-        id: row.id, url, title: cleanText(row.title || url, 250),
-        description, snippet: description, domain, language: row.language || null,
-        author: row.author || null, image_url: safeUrl(row.image_url || "") || null,
-        published_at: row.published_at || null,
-        updated_at: row.updated_at || row.last_crawled_at || null,
-        relevance_score: Number(row.relevance_score || 0)
-      });
-    }
-    return { results, total, suggestions: terms.slice(0, 5) };
-  } catch (error) {
-    console.error("[HEXORA] search query failed:", error?.message || error);
-    return { results: [], total: 0, suggestions: terms.slice(0, 5), error: "Search temporarily unavailable" };
-  }
-}
-
-function mediaValues(value) {
-  if (Array.isArray(value)) return value;
-  if (value && typeof value === "object") return [value];
-  if (typeof value === "string") {
-    try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" ? [parsed] : []; }
-    catch { return []; }
-  }
-  return [];
-}
-
-async function searchMedia(query, kind = "images", limit = 40) {
-  const q = normalizeQuery(query);
-  if (!q) return [];
-  const terms = [...new Set(wordsOf(q))].slice(0, 8);
-  const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
-  const column = kind === "videos" ? "video_items" : "image_items";
-  const rows = await pool.query(
-    `SELECT id,url,title,domain,description,image_url,${column} AS media_items
-     FROM pages p
-     WHERE COALESCE(crawl_status,'') NOT IN ('deleted','blocked')
-       AND (COALESCE(p.title,'') ILIKE $1 ESCAPE '\\'
-         OR COALESCE(p.description,'') ILIKE $1 ESCAPE '\\'
-         OR COALESCE(p.content,'') ILIKE $1 ESCAPE '\\'
-         OR EXISTS (SELECT 1 FROM unnest($2::text[]) term WHERE
-           COALESCE(p.title,'') ILIKE ('%'||term||'%') OR COALESCE(p.description,'') ILIKE ('%'||term||'%') OR COALESCE(p.url,'') ILIKE ('%'||term||'%')))
-       AND (${column} IS NOT NULL)
-     ORDER BY quality_score DESC NULLS LAST, authority_score DESC NULLS LAST, last_crawled_at DESC NULLS LAST
-     LIMIT 300`, [like, terms]);
-  const output = [];
-  const seen = new Set();
-  for (const row of rows.rows) {
-    const items = mediaValues(row.media_items);
-    if (kind === "images" && row.image_url) items.unshift({ image_url: row.image_url, title: row.title, page_url: row.url });
-    for (const item of items) {
-      if (!item || typeof item !== "object") continue;
-      const mediaUrl = safeUrl(item.image_url || item.url || item.src || item.thumbnail_url || item.thumbnail || item.embed_url || item.video_url || "");
-      if (!mediaUrl || seen.has(mediaUrl)) continue;
-      const itemText = `${item.title || item.alt || item.name || ""} ${row.title || ""} ${row.description || ""} ${row.url || ""}`.toLowerCase();
-      if (terms.length && !terms.some(term => itemText.includes(term.toLowerCase()))) continue;
-      seen.add(mediaUrl);
-      output.push({
-        url: mediaUrl,
-        title: cleanText(item.title || item.alt || row.title || mediaUrl, 250),
-        thumbnail_url: safeUrl(item.thumbnail_url || item.thumbnail || item.image_url || (kind === "images" ? mediaUrl : "")) || null,
-        page_url: safeUrl(item.page_url || item.source_url || row.url || "") || null,
-        domain: cleanText(row.domain, 255),
-        type: kind === "videos" ? "video" : "image"
-      });
-      if (output.length >= limit) return output;
-    }
-  }
-  return output;
-}
-
-// ============================================================
-// ADS AUTH
-// ============================================================
-
-async function getAdvertiserFromKey(req) {
-  const key =
-    req.headers[
-      "x-hexora-advertiser-key"
-    ];
-
-  if (!key) {
-    return null;
-  }
-
-  const hash = sha256(key);
-
-  const result =
-    await pool.query(
-      `
-      SELECT *
-      FROM advertisers
-      WHERE api_key_hash = $1
-      AND status = 'active'
-      LIMIT 1
-      `,
-      [hash]
-    );
-
-  return result.rows[0] || null;
-}
-
-function adminAuthorized(req) {
-  if (!HEXORA_ADS_ADMIN_KEY) {
-    return false;
-  }
-
-  const key =
-    req.headers[
-      "x-hexora-admin-key"
-    ];
-
-  return Boolean(
-    key &&
-    crypto.timingSafeEqual(
-      Buffer.from(String(key)),
-      Buffer.from(
-        String(HEXORA_ADS_ADMIN_KEY)
-      )
-    )
-  );
-}
-
-// ============================================================
-// AD SERVING
-// ============================================================
-
-async function getSponsoredAds(query) {
-  const words =
-    wordsOf(query)
-      .map(x => x.toLowerCase())
-      .slice(0, 20);
-
-  if (!words.length) {
-    return [];
-  }
-
-  const result =
-    await pool.query(`
-      SELECT
-        a.id,
-        a.title,
-        a.description,
-        a.destination_url,
-        a.keywords,
-        a.bid_per_click,
-        c.id AS campaign_id,
-        c.name AS campaign_name
-      FROM ads a
-      JOIN ad_campaigns c
-        ON c.id = a.campaign_id
-      JOIN advertisers adv
-        ON adv.id = c.advertiser_id
-      WHERE
-        a.status = 'approved'
-        AND c.status = 'active'
-        AND adv.status = 'active'
-        AND adv.balance > 0
-        AND c.spent < c.total_budget
-      ORDER BY
-        a.bid_per_click DESC,
-        a.impressions ASC
-      LIMIT 20
-    `);
-
-  const matched = [];
-
-  for (const ad of result.rows) {
-    const keywords =
-      Array.isArray(ad.keywords)
-        ? ad.keywords.map(x =>
-            String(x).toLowerCase()
-          )
-        : [];
-
-    const score =
-      words.reduce(
-        (sum, word) =>
-          sum +
-          keywords.some(k =>
-            k.includes(word) ||
-            word.includes(k)
-          )
-            ? 1
-            : 0,
-        0
-      );
-
-    if (score > 0) {
-      matched.push({
-        ...ad,
-        match_score: score,
-      });
-    }
-  }
-
-  matched.sort(
-    (a, b) =>
-      b.match_score - a.match_score ||
-      Number(b.bid_per_click) -
-        Number(a.bid_per_click)
-  );
-
-  return matched.slice(0, 3);
-}
-
-// ============================================================
-// PAYPAL API
-// ============================================================
-
-async function getPayPalAccessToken() {
-  if (!paypalConfigured()) {
-    throw new Error(
-      "PayPal is not configured"
-    );
-  }
-
-  const credentials =
-    Buffer.from(
-      `${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`
-    ).toString("base64");
-
-  const response =
-    await fetch(
-      `${PAYPAL_BASE_URL}/v1/oauth2/token`,
-      {
-        method: "POST",
-        headers: {
-          Authorization:
-            `Basic ${credentials}`,
-          "Content-Type":
-            "application/x-www-form-urlencoded",
-        },
-        body:
-          "grant_type=client_credentials",
-      }
-    );
-
-  const data =
-    await response.json();
-
-  if (!response.ok) {
-    throw new Error(
-      data?.error_description ||
-      data?.error ||
-      "PayPal authentication failed"
-    );
-  }
-
-  return data.access_token;
-}
-
-async function paypalRequest(
-  endpoint,
-  options = {}
-) {
-  const token =
-    await getPayPalAccessToken();
-
-  const headers = {
-    Authorization:
-      `Bearer ${token}`,
-    "Content-Type":
-      "application/json",
-  };
-
-  if (options.requestId) {
-    headers["PayPal-Request-Id"] =
-      options.requestId;
-  }
-
-  const response =
-    await fetch(
-      `${PAYPAL_BASE_URL}${endpoint}`,
-      {
-        method:
-          options.method || "GET",
-        headers,
-        body:
-          options.body === undefined
-            ? undefined
-            : JSON.stringify(
-                options.body
-              ),
-      }
-    );
-
-  const raw =
-    await response.text();
-
-  let data = {};
-
-  try {
-    data =
-      raw ? JSON.parse(raw) : {};
-  } catch {
-    data = {
-      raw,
-    };
-  }
-
-  if (!response.ok) {
-    const message =
-      data?.message ||
-      data?.details?.[0]?.description ||
-      data?.error_description ||
-      `PayPal error ${response.status}`;
-
-    throw new Error(message);
-  }
-
-  return data;
-}
-
-async function createPayPalOrder({
-  amount,
-  currency = "USD",
-  description = "HEXORA Ads balance",
-}) {
-  const numericAmount =
-    Number(amount);
+function detectIntent(query) {
+  const q = query.toLowerCase();
 
   if (
-    !Number.isFinite(
-      numericAmount
-    ) ||
-    numericAmount <= 0
+    /\b(news|latest|today|breaking|recent|updates|update)\b/i.test(q)
   ) {
-    throw new Error(
-      "Invalid payment amount"
-    );
+    return "news";
   }
 
-  const code =
-    String(currency)
-      .trim()
-      .toUpperCase();
-
-  if (!/^[A-Z]{3}$/.test(code)) {
-    throw new Error(
-      "Invalid currency"
-    );
+  if (
+    /\b(image|images|photo|photos|picture|pictures|wallpaper)\b/i.test(q)
+  ) {
+    return "images";
   }
 
-  return paypalRequest(
-    "/v2/checkout/orders",
-    {
-      method: "POST",
-      requestId:
-        randomKey("paypal"),
-      body: {
-        intent: "CAPTURE",
+  if (
+    /\b(video|videos|watch|youtube)\b/i.test(q)
+  ) {
+    return "videos";
+  }
 
-        purchase_units: [
-          {
-            description:
-              String(description)
-                .slice(0, 127),
+  if (
+    /\b(map|maps|location|directions|where is)\b/i.test(q)
+  ) {
+    return "maps";
+  }
 
-            amount: {
-              currency_code: code,
-              value:
-                numericAmount.toFixed(2),
-            },
-          },
-        ],
+  return "web";
+}
 
-        application_context: {
-          brand_name: "HEXORA",
-          user_action: "PAY_NOW",
-          shipping_preference:
-            "NO_SHIPPING",
-        },
-      },
+/*
+ * Current Neon schema does not have is_news/content_type.
+ *
+ * For now news mode uses published_at / recent crawl data
+ * instead of requiring a news-specific column.
+ */
+function modeCondition(mode) {
+  if (mode === "news") {
+    return `
+      AND p.published_at IS NOT NULL
+    `;
+  }
+
+  return "";
+}
+
+function cleanSnippetText(value) {
+  let text = String(value || "");
+
+  text = text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\{\{[^{}]*\}\}/g, " ")
+    .replace(/\\["']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return text;
+}
+
+function makeSnippet(row, query) {
+  const source = [
+    row.description,
+    row.excerpt,
+    row.content
+  ]
+    .map(cleanSnippetText)
+    .filter(Boolean)
+    .join(" ");
+
+  if (!source) {
+    return "";
+  }
+
+  const qWords = wordsOf(query);
+
+  let bestPosition = -1;
+
+  for (const word of qWords) {
+    const pos = source.toLowerCase().indexOf(word);
+
+    if (
+      pos >= 0 &&
+      (bestPosition === -1 || pos < bestPosition)
+    ) {
+      bestPosition = pos;
     }
-  );
-}
-
-async function capturePayPalOrder(
-  orderId
-) {
-  if (!orderId) {
-    throw new Error(
-      "PayPal order ID is required"
-    );
   }
 
-  return paypalRequest(
-    `/v2/checkout/orders/${encodeURIComponent(
-      orderId
-    )}/capture`,
-    {
-      method: "POST",
-      requestId:
-        `hexora-capture-${orderId}`,
-      body: {},
+  let start = 0;
+
+  if (bestPosition > 0) {
+    start = Math.max(0, bestPosition - 140);
+  }
+
+  let snippet = source
+    .slice(start, start + 320)
+    .trim();
+
+  if (start > 0) {
+    snippet = "… " + snippet;
+  }
+
+  if (start + 320 < source.length) {
+    snippet += " …";
+  }
+
+  return snippet;
+}
+
+function resultFromRow(row, query) {
+  return {
+    id: String(row.id),
+    title: row.title || "",
+    url: row.url || "",
+    canonical_url:
+      row.canonical_url ||
+      row.url ||
+      "",
+    domain: row.domain || "",
+    source:
+      row.domain ||
+      "",
+    description:
+      row.description ||
+      "",
+    snippet:
+      makeSnippet(row, query),
+    language:
+      row.language ||
+      "unknown",
+    date:
+      row.updated_at ||
+      row.last_crawled_at ||
+      row.created_at ||
+      null,
+    published_at:
+      row.published_at ||
+      null,
+    score:
+      Number(
+        Number(row.final_score || 0).toFixed(5)
+      ),
+    image:
+      row.image_url ||
+      null,
+    image_items:
+      row.image_items ||
+      null,
+    video_items:
+      row.video_items ||
+      null
+  };
+}
+
+function suggestQuery(rows, query) {
+  const q = normalizeQuery(query);
+
+  if (!q || q.length < 3) {
+    return null;
+  }
+
+  const candidate = rows.find(row => {
+    const title = String(row.title || "").trim();
+
+    if (!title) {
+      return false;
     }
-  );
-}
 
-// ============================================================
-// PAYPAL WEBHOOK VERIFICATION
-// ============================================================
-
-async function verifyPayPalWebhook(
-  headers,
-  webhookEvent
-) {
-  if (!PAYPAL_WEBHOOK_ID) {
-    return false;
-  }
-
-  const token =
-    await getPayPalAccessToken();
-
-  const response =
-    await fetch(
-      `${PAYPAL_BASE_URL}/v1/notifications/verify-webhook-signature`,
-      {
-        method: "POST",
-        headers: {
-          Authorization:
-            `Bearer ${token}`,
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          auth_algo:
-            headers["paypal-auth-algo"],
-          cert_url:
-            headers["paypal-cert-url"],
-          transmission_id:
-            headers[
-              "paypal-transmission-id"
-            ],
-          transmission_sig:
-            headers[
-              "paypal-transmission-sig"
-            ],
-          transmission_time:
-            headers[
-              "paypal-transmission-time"
-            ],
-          webhook_id:
-            PAYPAL_WEBHOOK_ID,
-          webhook_event:
-            webhookEvent,
-        }),
-      }
+    const similarity = Number(
+      row.title_sim || 0
     );
 
-  const data =
-    await response.json();
+    if (similarity < 0.55) {
+      return false;
+    }
 
-  return (
-    response.ok &&
-    data?.verification_status ===
-      "SUCCESS"
-  );
+    const titleWords = wordsOf(title);
+    const queryWords = wordsOf(q);
+
+    if (!queryWords.length) {
+      return false;
+    }
+
+    const matched = queryWords.filter(word =>
+      titleWords.includes(word)
+    ).length;
+
+    return (
+      matched >=
+      Math.max(
+        1,
+        Math.ceil(queryWords.length / 2)
+      )
+    );
+  });
+
+  return candidate
+    ? candidate.title
+    : null;
 }
 
-// ============================================================
-// CREDIT PAYPAL PAYMENT
-// ============================================================
-
-async function creditPayPalPayment(
-  orderId,
-  captureId,
-  advertiserId,
-  amount,
-  currency
+async function searchDatabase(
+  query,
+  mode,
+  page,
+  limit
 ) {
-  const client =
-    await pool.connect();
+  const offset = (page - 1) * limit;
+
+  const queryWords = wordsOf(query);
+
+  if (!queryWords.length) {
+    return {
+      total: 0,
+      rows: [],
+      suggestion: null
+    };
+  }
+
+  const intent = detectIntent(query);
+
+  /*
+   * Main ranking query.
+   *
+   * IMPORTANT:
+   * Only columns that actually exist in the
+   * current Neon pages table are used.
+   */
+  const sql = `
+    WITH params AS (
+      SELECT
+        lower(trim($1::text)) AS q,
+        $2::text AS mode_param,
+        $4::text AS intent_param,
+        websearch_to_tsquery(
+          'simple',
+          $1::text
+        ) AS tsq
+    ),
+
+    base AS (
+      SELECT
+        p.*,
+
+        ts_rank_cd(
+          COALESCE(
+            p.search_vector,
+            ''::tsvector
+          ),
+          params.tsq
+        ) AS fts_rank,
+
+        similarity(
+          lower(COALESCE(p.title, '')),
+          lower(params.q)
+        ) AS title_sim,
+
+        similarity(
+          lower(COALESCE(p.domain, '')),
+          lower(params.q)
+        ) AS domain_sim,
+
+        similarity(
+          lower(COALESCE(p.url, '')),
+          lower(params.q)
+        ) AS url_sim,
+
+        CASE
+          WHEN lower(
+            trim(COALESCE(p.title, ''))
+          ) = lower(params.q)
+          THEN 1
+          ELSE 0
+        END AS exact_title,
+
+        CASE
+          WHEN lower(
+            trim(COALESCE(p.domain, ''))
+          ) = lower(params.q)
+          THEN 1
+          ELSE 0
+        END AS exact_domain,
+
+        CASE
+          WHEN lower(
+            COALESCE(p.title, '')
+          ) LIKE lower(params.q) || '%'
+          THEN 1
+          ELSE 0
+        END AS title_starts,
+
+        CASE
+          WHEN strpos(
+            lower(COALESCE(p.title, '')),
+            lower(params.q)
+          ) > 0
+          THEN 1
+          ELSE 0
+        END AS title_contains,
+
+        CASE
+          WHEN lower(COALESCE(p.title, '')) ~
+            ('\\([^)]*' ||
+             regexp_replace(
+               lower(params.q),
+               '[^[:alnum:] ]',
+               '',
+               'g'
+             ) ||
+             '[^)]*\\)')
+          THEN 1
+          ELSE 0
+        END AS secondary_title_match,
+
+        strpos(
+          lower(COALESCE(p.title, '')),
+          lower(params.q)
+        ) AS title_position,
+
+        CASE
+          WHEN lower(
+            COALESCE(p.description, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+          THEN 1
+          ELSE 0
+        END AS description_phrase,
+
+        CASE
+          WHEN lower(
+            COALESCE(p.url, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+          THEN 1
+          ELSE 0
+        END AS url_contains,
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS qw(word)
+          WHERE
+            lower(
+              COALESCE(p.title, '')
+            ) ~ (
+              '(^|[^[:alnum:]])' ||
+              regexp_replace(
+                lower(qw.word),
+                '[^[:alnum:]]',
+                '',
+                'g'
+              ) ||
+              '([^[:alnum:]]|$)'
+            )
+        ) AS title_word_matches,
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS qw(word)
+          WHERE
+            lower(
+              COALESCE(p.description, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+        ) AS description_word_matches,
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS qw(word)
+          WHERE
+            lower(
+              COALESCE(p.excerpt, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+        ) AS excerpt_word_matches,
+
+        (
+          SELECT count(*)
+          FROM unnest($3::text[]) AS qw(word)
+          WHERE
+            lower(
+              COALESCE(p.content, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+        ) AS content_word_matches
+
+      FROM pages p
+
+      CROSS JOIN params
+
+      WHERE
+        (
+          COALESCE(
+            p.search_vector,
+            ''::tsvector
+          ) @@ params.tsq
+
+          OR lower(
+            COALESCE(p.title, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+
+          OR lower(
+            COALESCE(p.description, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+
+          OR lower(
+            COALESCE(p.excerpt, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+
+          OR lower(
+            COALESCE(p.url, '')
+          ) LIKE
+            '%' || lower(params.q) || '%'
+
+          OR EXISTS (
+            SELECT 1
+            FROM unnest($3::text[]) AS qw(word)
+            WHERE
+              lower(
+                COALESCE(p.title, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.description, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.excerpt, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+
+              OR lower(
+                COALESCE(p.content, '')
+              ) LIKE
+                '%' || lower(qw.word) || '%'
+          )
+        )
+
+        ${modeCondition(mode)}
+    ),
+
+    scored AS (
+      SELECT
+        base.*,
+
+        GREATEST(
+          0.0,
+          LEAST(
+            1.0,
+
+            CASE
+              WHEN title_position > 0
+              THEN
+                1.0 -
+                (
+                  (
+                    title_position - 1
+                  )::double precision
+                  /
+                  GREATEST(
+                    length(
+                      COALESCE(
+                        title,
+                        ''
+                      )
+                    ),
+                    1
+                  )::double precision
+                )
+
+              ELSE 0.0
+            END
+          )
+        ) AS title_focus,
+
+        CASE
+
+          /*
+           * TIER 6
+           * Exact title match.
+           */
+          WHEN exact_title = 1
+          THEN 6
+
+          /*
+           * TIER 5
+           * Query starts the title.
+           */
+          WHEN title_starts = 1
+          THEN 5
+
+          /*
+           * TIER 4
+           * All / most query words are exact words in title.
+           * A parenthetical-only match is kept below this tier.
+           */
+          WHEN title_word_matches >=
+            GREATEST(
+              1,
+              CEIL(
+                array_length(
+                  $3::text[],
+                  1
+                ) * 0.75
+              )
+            )
+            AND NOT (
+              title_contains = 1
+              AND title_starts = 0
+              AND exact_title = 0
+              AND lower(COALESCE(title, '')) ~
+                ('(^|[[:space:]])' ||
+                 '[[(]' ||
+                 '[^)]*' ||
+                 regexp_replace(
+                   lower(params.q),
+                   '[^[:alnum:]]',
+                   '',
+                   'g'
+                 ) ||
+                 '[^)]*[)]]')
+            )
+            AND secondary_title_match = 0
+          THEN 4
+
+          /*
+           * TIER 3
+           * Strong title phrase/word match.
+           */
+          WHEN (title_contains = 1 OR title_word_matches > 0)
+            AND secondary_title_match = 0
+          THEN 3
+
+          /*
+           * TIER 2
+           * Query appears only as a secondary parenthetical title match.
+           */
+          WHEN secondary_title_match = 1
+          THEN 2
+
+          /*
+           * TIER 2
+           * Description or excerpt relevance.
+           */
+          WHEN
+            description_phrase = 1
+            OR description_word_matches > 0
+            OR excerpt_word_matches > 0
+          THEN 2
+
+          /*
+           * TIER 1
+           * Full-text content relevance.
+           */
+          WHEN fts_rank > 0
+          THEN 1
+
+          /*
+           * TIER 0
+           * Weak/body-only matches.
+           */
+          ELSE 0
+
+        END AS relevance_tier
+
+      FROM base
+
+      CROSS JOIN params
+    ),
+
+    final_scored AS (
+      SELECT
+        scored.*,
+
+        (
+          CASE
+            WHEN relevance_tier = 6
+            THEN 9000
+
+            WHEN relevance_tier = 5
+            THEN 7000
+
+            WHEN relevance_tier = 4
+            THEN 5000
+
+            WHEN relevance_tier = 3
+            THEN 3200
+
+            WHEN relevance_tier = 2
+            THEN 1600
+
+            WHEN relevance_tier = 1
+            THEN 500
+
+            ELSE 50
+          END
+
+          +
+
+          CASE
+            WHEN exact_title = 1
+            THEN 5000
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN title_starts = 1
+            THEN 2200
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN relevance_tier >= 2
+            THEN title_word_matches * 500
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN relevance_tier >= 2
+            THEN LEAST(
+              title_focus * 700,
+              700
+            )
+            ELSE 0
+          END
+
+          +
+
+          LEAST(
+            fts_rank * 300,
+            300
+          )
+
+          +
+
+          LEAST(
+            title_sim * 250,
+            250
+          )
+
+          +
+
+          CASE
+            WHEN exact_domain = 1
+            THEN 400
+            ELSE 0
+          END
+
+          +
+
+          CASE
+            WHEN url_contains = 1
+            THEN 100
+            ELSE 0
+          END
+
+          +
+
+          LEAST(
+            COALESCE(
+              authority_score,
+              0
+            ) * 2,
+            100
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              quality_score,
+              0
+            ) * 2,
+            80
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              popularity_score,
+              0
+            ) * 2,
+            60
+          )
+
+          +
+
+          LEAST(
+            COALESCE(
+              inbound_links,
+              0
+            ) * 1.5,
+            50
+          )
+
+          /*
+           * Body/reference-only penalty.
+           */
+          +
+
+          CASE
+            WHEN relevance_tier = 0
+              AND title_word_matches = 0
+              AND description_word_matches = 0
+              AND excerpt_word_matches = 0
+            THEN -1000
+            ELSE 0
+          END
+
+          /*
+           * Secondary title match penalty.
+           *
+           * Example:
+           * "Punjabi (India) translation..."
+           */
+          +
+
+          CASE
+            WHEN secondary_title_match = 1
+            THEN -1200
+            ELSE 0
+          END
+
+          /*
+           * Long title / weak focus penalty.
+           */
+          +
+
+          CASE
+            WHEN
+              array_length(
+                $3::text[],
+                1
+              ) = 1
+
+              AND title_word_matches > 0
+
+              AND title_focus < 0.45
+
+            THEN -700
+            ELSE 0
+          END
+
+        ) AS final_score
+
+      FROM scored
+    )
+
+    SELECT *
+    FROM final_scored
+
+    ORDER BY
+      relevance_tier DESC,
+
+      final_score DESC,
+
+      exact_title DESC,
+
+      title_starts DESC,
+
+      title_word_matches DESC,
+
+      title_focus DESC,
+
+      description_word_matches DESC,
+
+      fts_rank DESC,
+
+      title_sim DESC,
+
+      exact_domain DESC,
+
+      authority_score DESC,
+
+      quality_score DESC,
+
+      popularity_score DESC,
+
+      inbound_links DESC,
+
+      id DESC
+
+    LIMIT $5
+    OFFSET $6
+  `;
+
+  /*
+   * Count query.
+   */
+  const countSql = `
+    WITH params AS (
+      SELECT
+        lower(trim($1::text)) AS q,
+
+        websearch_to_tsquery(
+          'simple',
+          $1::text
+        ) AS tsq
+    )
+
+    SELECT COUNT(*)::int AS total
+
+    FROM pages p
+
+    CROSS JOIN params
+
+    WHERE
+      (
+        COALESCE(
+          p.search_vector,
+          ''::tsvector
+        ) @@ params.tsq
+
+        OR lower(
+          COALESCE(p.title, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
+
+        OR lower(
+          COALESCE(p.description, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
+
+        OR lower(
+          COALESCE(p.excerpt, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
+
+        OR lower(
+          COALESCE(p.url, '')
+        ) LIKE
+          '%' || lower(params.q) || '%'
+
+        OR EXISTS (
+          SELECT 1
+
+          FROM unnest($2::text[]) AS qw(word)
+
+          WHERE
+            lower(
+              COALESCE(p.title, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.description, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.excerpt, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+
+            OR lower(
+              COALESCE(p.content, '')
+            ) LIKE
+              '%' || lower(qw.word) || '%'
+        )
+      )
+
+      ${modeCondition(mode)}
+  `;
+
+  const client = await pool.connect();
 
   try {
-    await client.query(
-      "BEGIN"
-    );
-
-    const existing =
-      await client.query(
-        `
-        SELECT *
-        FROM ad_payment_orders
-        WHERE provider = 'paypal'
-        AND provider_order_id = $1
-        FOR UPDATE
-        `,
-        [orderId]
-      );
-
-    if (!existing.rows.length) {
-      throw new Error(
-        "PayPal order was not found"
-      );
-    }
-
-    const payment =
-      existing.rows[0];
-
-    if (
-      Number(payment.advertiser_id) !==
-      Number(advertiserId)
-    ) {
-      throw new Error(
-        "Payment does not belong to advertiser"
-      );
-    }
-
-    if (payment.credited) {
-      await client.query(
-        "COMMIT"
-      );
-
-      return {
-        alreadyCredited: true,
-      };
-    }
-
-    const dbAmount =
-      Number(payment.amount);
-
-    if (
-      Math.abs(
-        dbAmount - Number(amount)
-      ) > 0.01
-    ) {
-      throw new Error(
-        "Payment amount mismatch"
-      );
-    }
-
-    if (
-      String(payment.currency)
-        .toUpperCase() !==
-      String(currency)
-        .toUpperCase()
-    ) {
-      throw new Error(
-        "Payment currency mismatch"
-      );
-    }
-
-    await client.query(
-      `
-      UPDATE advertisers
-      SET
-        balance =
-          balance + $1,
-        updated_at = NOW()
-      WHERE id = $2
-      `,
+    const countResult = await client.query(
+      countSql,
       [
-        dbAmount,
-        advertiserId,
+        query,
+        queryWords
       ]
     );
 
-    await client.query(
-      `
-      UPDATE ad_payment_orders
-      SET
-        status = 'completed',
-        credited = TRUE,
-        updated_at = NOW()
-      WHERE id = $1
-      `,
-      [payment.id]
+    const total = Number(
+      countResult.rows[0]?.total || 0
     );
 
-    await client.query(
-      `
-      INSERT INTO ad_transactions (
-        advertiser_id,
-        amount,
-        transaction_type,
-        reference,
-        status,
-        payment_provider,
-        payment_id
-      )
-      VALUES (
-        $1,
-        $2,
-        'deposit',
-        $3,
-        'completed',
-        'paypal',
-        $4
-      )
-      `,
-      [
-        advertiserId,
-        dbAmount,
-        orderId,
-        captureId,
-      ]
-    );
+    /*
+     * Suggestion candidates.
+     */
+    const candidateSql = `
+      SELECT
+        p.id,
+        p.title,
 
-    await client.query(
-      "COMMIT"
-    );
+        similarity(
+          lower(COALESCE(p.title, '')),
+          lower($1)
+        ) AS title_sim
+
+      FROM pages p
+
+      WHERE
+        lower(
+          COALESCE(p.title, '')
+        ) LIKE
+          '%' || lower($1) || '%'
+
+      ORDER BY
+        similarity(
+          lower(COALESCE(p.title, '')),
+          lower($1)
+        ) DESC
+
+      LIMIT 50
+    `;
+
+    const candidateResult =
+      await client.query(
+        candidateSql,
+        [query]
+      );
+
+    const suggestion =
+      suggestQuery(
+        candidateResult.rows,
+        query
+      );
+
+    const dataResult =
+      await client.query(
+        sql,
+        [
+          query,
+          mode,
+          queryWords,
+          intent,
+          Math.min(
+            SEARCH_CANDIDATE_LIMIT,
+            limit
+          ),
+          offset
+        ]
+      );
+
+    /*
+     * Domain diversification.
+     *
+     * Maximum 3 results per domain.
+     */
+    const diversified = [];
+    const domainCounts = new Map();
+
+    for (
+      const row of dataResult.rows
+    ) {
+      let domain =
+        String(
+          row.domain || ""
+        ).toLowerCase();
+
+      if (!domain) {
+        try {
+          domain =
+            new URL(
+              row.url || ""
+            ).hostname.toLowerCase();
+        } catch {
+          domain = "unknown";
+        }
+      }
+
+      const count =
+        domainCounts.get(domain) || 0;
+
+      if (count >= 3) {
+        continue;
+      }
+
+      domainCounts.set(
+        domain,
+        count + 1
+      );
+
+      diversified.push(row);
+
+      if (
+        diversified.length >= limit
+      ) {
+        break;
+      }
+    }
 
     return {
-      alreadyCredited: false,
-      amount: dbAmount,
+      total,
+      rows: diversified,
+      suggestion
     };
-  } catch (error) {
-    await client.query(
-      "ROLLBACK"
-    );
 
-    throw error;
   } finally {
     client.release();
   }
 }
 
-// ============================================================
-// SERVER
-// ============================================================
+async function getNews(limit = 20) {
+  /*
+   * No is_news/content_type column exists.
+   *
+   * Use pages having published_at as the current
+   * news candidate source.
+   */
+  const sql = `
+    SELECT *
+    FROM pages
+
+    WHERE
+      published_at IS NOT NULL
+
+    ORDER BY
+      published_at DESC NULLS LAST,
+
+      updated_at DESC NULLS LAST,
+
+      COALESCE(
+        quality_score,
+        0
+      ) DESC
+
+    LIMIT $1
+  `;
+
+  const result =
+    await pool.query(
+      sql,
+      [limit]
+    );
+
+  return result.rows.map(
+    row =>
+      resultFromRow(
+        row,
+        ""
+      )
+  );
+}
+
+async function getMedia(
+  type,
+  query,
+  limit
+) {
+  const q =
+    normalizeQuery(query);
+
+  if (!q) {
+    return [];
+  }
+
+  let condition = "";
+
+  if (type === "images") {
+    condition = `
+      AND (
+        COALESCE(
+          image_url,
+          ''
+        ) <> ''
+
+        OR image_items IS NOT NULL
+      )
+    `;
+  }
+
+  if (type === "videos") {
+    condition = `
+      AND video_items IS NOT NULL
+    `;
+  }
+
+  const sql = `
+    SELECT *
+    FROM pages
+
+    WHERE
+      (
+        lower(
+          COALESCE(title, '')
+        ) LIKE
+          '%' || lower($1) || '%'
+
+        OR lower(
+          COALESCE(description, '')
+        ) LIKE
+          '%' || lower($1) || '%'
+
+        OR lower(
+          COALESCE(content, '')
+        ) LIKE
+          '%' || lower($1) || '%'
+      )
+
+      ${condition}
+
+    ORDER BY
+
+      CASE
+        WHEN lower(
+          COALESCE(title, '')
+        ) = lower($1)
+        THEN 1
+        ELSE 0
+      END DESC,
+
+      COALESCE(
+        quality_score,
+        0
+      ) DESC,
+
+      COALESCE(
+        popularity_score,
+        0
+      ) DESC,
+
+      COALESCE(
+        authority_score,
+        0
+      ) DESC
+
+    LIMIT $2
+  `;
+
+  const result =
+    await pool.query(
+      sql,
+      [
+        q,
+        limit
+      ]
+    );
+
+  return result.rows.map(
+    row => ({
+      id: String(row.id),
+
+      title:
+        row.title || "",
+
+      url:
+        row.url || "",
+
+      canonical_url:
+        row.canonical_url ||
+        row.url ||
+        "",
+
+      domain:
+        row.domain || "",
+
+      description:
+        row.description || "",
+
+      image:
+        row.image_url ||
+        null,
+
+      image_items:
+        row.image_items ||
+        null,
+
+      video_items:
+        row.video_items ||
+        null,
+
+      date:
+        row.updated_at ||
+        row.last_crawled_at ||
+        row.created_at ||
+        null
+    })
+  );
+}
+
+async function readR2ObjectJson(key) {
+  const response = await r2Client.send(new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
+  return JSON.parse(await response.Body.transformToString());
+}
+
+async function loadR2Index() {
+  if (!r2Client) return [];
+  if (Date.now() - r2IndexCache.loadedAt < R2_INDEX_CACHE_MS) return r2IndexCache.rows;
+  const rows = [];
+  let continuationToken;
+  do {
+    const page = await r2Client.send(new ListObjectsV2Command({
+      Bucket: R2_BUCKET_NAME, Prefix: "index/", MaxKeys: 1000,
+      ...(continuationToken ? { ContinuationToken: continuationToken } : {})
+    }));
+    for (const object of (page.Contents || [])) {
+      if (!object.Key || !object.Key.endsWith(".json")) continue;
+      try { rows.push(await readR2ObjectJson(object.Key)); }
+      catch (error) { console.warn("[HEXORA] R2 index object skipped:", object.Key, error.message); }
+      if (rows.length >= R2_INDEX_MAX_OBJECTS) break;
+    }
+    continuationToken = rows.length >= R2_INDEX_MAX_OBJECTS ? undefined : page.NextContinuationToken;
+  } while (continuationToken);
+  r2IndexCache = { loadedAt: Date.now(), rows };
+  console.log(`[HEXORA] R2 search index loaded: ${rows.length} documents`);
+  return rows;
+}
+
+async function searchR2Index(query, limit = 20) {
+  const words = wordsOf(query);
+  if (!words.length || !r2Client) return { total: 0, rows: [] };
+  const docs = await loadR2Index();
+  const q = normalizeQuery(query).toLowerCase();
+  const ranked = [];
+  for (const doc of docs) {
+    const title = String(doc.title || "").toLowerCase();
+    const description = String(doc.description || "").toLowerCase();
+    const url = String(doc.url || "").toLowerCase();
+    const body = String(doc.search_text || doc.excerpt || "").toLowerCase();
+    const haystack = `${title} ${description} ${url} ${body}`;
+    let matched = 0;
+    for (const word of words) if (haystack.includes(word)) matched++;
+    if (!matched) continue;
+    const titleHits = words.filter(word => title.includes(word)).length;
+    const score = (title === q ? 10000 : 0) + (title.startsWith(q) ? 5000 : 0) + titleHits * 700 + matched * 100 + (description.includes(q) ? 300 : 0);
+    ranked.push({
+      id: String(doc.id || doc.url), title: doc.title || doc.url || "Untitled page",
+      url: doc.url || "", canonical_url: doc.canonical_url || doc.url || "",
+      domain: doc.domain || "", source: doc.domain || "",
+      description: doc.description || "", snippet: String(doc.excerpt || doc.description || doc.search_text || "").slice(0, 320),
+      language: doc.language || "unknown", date: doc.crawled_at || null,
+      published_at: null, score, image: null, image_items: null, video_items: null,
+      _r2: true
+    });
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return { total: ranked.length, rows: ranked.slice(0, Math.min(100, limit)) };
+}
+
+async function healthCheck() {
+  try {
+    await pool.query(
+      "SELECT 1"
+    );
+
+    return {
+      success: true,
+      status: "ok",
+      engine:
+        "HEXORA Independent Search Engine",
+      database:
+        "Neon PostgreSQL",
+      database_status:
+        "connected",
+      index_source:
+        "HEXORA indexed data in Neon",
+      raw_storage:
+        "Cloudflare R2"
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      status: "error",
+      engine:
+        "HEXORA Independent Search Engine",
+      database:
+        "Neon PostgreSQL",
+      database_status:
+        "disconnected",
+      error:
+        error.message
+    };
+  }
+}
+
+function safeFilePath(
+  urlPath
+) {
+  let pathname =
+    decodeURIComponent(
+      urlPath
+    );
+
+  if (pathname === "/") {
+    pathname =
+      "/index.html";
+  }
+
+  pathname =
+    pathname.replace(
+      /\0/g,
+      ""
+    );
+
+  const filePath =
+    path.normalize(
+      path.join(
+        __dirname,
+        pathname
+      )
+    );
+
+  const root =
+    path.normalize(
+      __dirname
+    );
+
+  if (
+    filePath !== root &&
+    !filePath.startsWith(
+      root + path.sep
+    )
+  ) {
+    return null;
+  }
+
+  return filePath;
+}
+
+function contentType(
+  filePath
+) {
+  const ext =
+    path.extname(
+      filePath
+    ).toLowerCase();
+
+  const types = {
+    ".html":
+      "text/html; charset=utf-8",
+
+    ".js":
+      "text/javascript; charset=utf-8",
+
+    ".mjs":
+      "text/javascript; charset=utf-8",
+
+    ".css":
+      "text/css; charset=utf-8",
+
+    ".json":
+      "application/json; charset=utf-8",
+
+    ".svg":
+      "image/svg+xml",
+
+    ".png":
+      "image/png",
+
+    ".jpg":
+      "image/jpeg",
+
+    ".jpeg":
+      "image/jpeg",
+
+    ".webp":
+      "image/webp",
+
+    ".gif":
+      "image/gif",
+
+    ".ico":
+      "image/x-icon",
+
+    ".txt":
+      "text/plain; charset=utf-8"
+  };
+
+  return (
+    types[ext] ||
+    "application/octet-stream"
+  );
+}
+
+async function serveStatic(
+  req,
+  res,
+  pathname
+) {
+  const filePath =
+    safeFilePath(
+      pathname
+    );
+
+  if (!filePath) {
+    return sendText(
+      res,
+      403,
+      "Forbidden"
+    );
+  }
+
+  try {
+    const stat =
+      await fs.promises.stat(
+        filePath
+      );
+
+    if (!stat.isFile()) {
+      return sendText(
+        res,
+        404,
+        "Not Found"
+      );
+    }
+
+    res.writeHead(
+      200,
+      {
+        "Content-Type":
+          contentType(filePath),
+
+        "Cache-Control":
+          "public, max-age=300",
+
+        "Access-Control-Allow-Origin":
+          "*"
+      }
+    );
+
+    fs.createReadStream(
+      filePath
+    ).pipe(res);
+
+  } catch {
+    const indexPath =
+      path.join(
+        __dirname,
+        "index.html"
+      );
+
+    try {
+      const data =
+        await fs.promises.readFile(
+          indexPath
+        );
+
+      res.writeHead(
+        200,
+        {
+          "Content-Type":
+            "text/html; charset=utf-8",
+
+          "Cache-Control":
+            "no-cache",
+
+          "Access-Control-Allow-Origin":
+            "*"
+        }
+      );
+
+      res.end(data);
+
+    } catch {
+      sendText(
+        res,
+        404,
+        "HEXORA page not found"
+      );
+    }
+  }
+}
 
 const server =
   http.createServer(
     async (req, res) => {
       try {
         if (
-          req.method === "OPTIONS"
+          req.method ===
+          "OPTIONS"
         ) {
-          res.writeHead(204, {
-            "Access-Control-Allow-Origin":
-              "*",
-            "Access-Control-Allow-Headers":
-              "Content-Type, X-HEXORA-ADVERTISER-KEY, X-HEXORA-ADMIN-KEY",
-            "Access-Control-Allow-Methods":
-              "GET,POST,OPTIONS",
-          });
+          res.writeHead(
+            204,
+            {
+              "Access-Control-Allow-Origin":
+                "*",
 
-          res.end();
+              "Access-Control-Allow-Headers":
+                "Content-Type",
 
-          return;
+              "Access-Control-Allow-Methods":
+                "GET, OPTIONS"
+            }
+          );
+
+          return res.end();
         }
 
-        const parsed =
+        const requestUrl =
           new URL(
-            req.url,
+            req.url || "/",
             `http://${req.headers.host || "localhost"}`
           );
 
         const pathname =
-          parsed.pathname;
+          requestUrl.pathname;
 
-        // ======================================================
-        // HEALTH
-        // ======================================================
-
+        /*
+         * HEALTH
+         */
         if (
-          req.method === "GET" &&
-          pathname === "/health"
+          pathname === "/health" ||
+          pathname === "/api/health"
         ) {
-          let database = "unknown";
+          const health =
+            await healthCheck();
 
-          try {
-            await pool.query(
-              "SELECT 1"
-            );
-
-            database = "ok";
-          } catch {
-            database = "error";
-          }
-
-          const supabaseStatus = await checkSupabaseEndpoint();
-
-          return json(res, 200, {
-            ok: database === "ok",
-            service: "HEXORA",
-            database,
-            supabase: supabaseStatus,
-            supabaseClientConfigured: Boolean(supabase),
-            paypal:
-              paypalConfigured(),
-            mode: PAYPAL_MODE,
-            timestamp:
-              new Date().toISOString(),
-          });
+          return sendJson(
+            res,
+            health.success
+              ? 200
+              : 503,
+            health
+          );
         }
 
-        // ======================================================
-        // PAYPAL CONFIG
-        // ======================================================
-
+        /*
+         * SEARCH
+         */
         if (
-          req.method === "GET" &&
-          pathname ===
-            "/api/ads/paypal/config"
-        ) {
-          return json(res, 200, {
-            ok: true,
-            provider: "paypal",
-            configured:
-              paypalConfigured(),
-            mode: PAYPAL_MODE,
-            currency: "USD",
-          });
-        }
-
-        // ======================================================
-        // SEARCH
-        // ======================================================
-
-        if (
-          req.method === "GET" &&
-          pathname === "/search"
+          pathname === "/search" ||
+          pathname === "/api/search"
         ) {
           const query =
             normalizeQuery(
-              parsed.searchParams.get(
+              requestUrl.searchParams.get(
                 "q"
-              )
+              ) ||
+              requestUrl.searchParams.get(
+                "query"
+              ) ||
+              ""
             );
 
           const mode =
-            parsed.searchParams.get(
-              "mode"
-            ) || "web";
+            String(
+              requestUrl.searchParams.get(
+                "mode"
+              ) ||
+              "web"
+            ).toLowerCase();
 
           const page =
             safeInt(
-              parsed.searchParams.get(
+              requestUrl.searchParams.get(
                 "page"
               ),
               1,
               1,
-              10000
+              MAX_PAGE
             );
 
           const limit =
             safeInt(
-              parsed.searchParams.get(
+              requestUrl.searchParams.get(
                 "limit"
               ),
-              10,
+              DEFAULT_LIMIT,
               1,
-              50
+              MAX_LIMIT
             );
 
           if (!query) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Search query is required",
-            });
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "Search query is required"
+              }
+            );
           }
 
-          recordSearchDemand(
-            query
-          ).catch(() => {});
+          const safeMode =
+            [
+              "web",
+              "news",
+              "images",
+              "videos",
+              "maps"
+            ].includes(mode)
+              ? mode
+              : "web";
 
-          const search =
-            await searchDatabase(
-              query,
-              mode,
-              page,
+          if (
+            safeMode ===
+            "images"
+          ) {
+            const results =
+              await getMedia(
+                "images",
+                query,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "images",
+                page,
+                limit,
+                total:
+                  results.length,
+                results
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "videos"
+          ) {
+            const results =
+              await getMedia(
+                "videos",
+                query,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "videos",
+                page,
+                limit,
+                total:
+                  results.length,
+                results
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "news"
+          ) {
+            const results =
+              await searchDatabase(
+                query,
+                "news",
+                page,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "news",
+                page,
+                limit,
+                total:
+                  results.total,
+                suggestion:
+                  results.suggestion,
+                results:
+                  results.rows.map(
+                    row =>
+                      resultFromRow(
+                        row,
+                        query
+                      )
+                  )
+              }
+            );
+          }
+
+          if (
+            safeMode ===
+            "maps"
+          ) {
+            const results =
+              await searchDatabase(
+                query,
+                "web",
+                page,
+                limit
+              );
+
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                engine: "HEXORA",
+                query,
+                mode: "maps",
+                page,
+                limit,
+                total:
+                  results.total,
+                suggestion:
+                  results.suggestion,
+                results:
+                  results.rows.map(
+                    row =>
+                      resultFromRow(
+                        row,
+                        query
+                      )
+                  )
+              }
+            );
+          }
+
+          let neonResults = { total: 0, rows: [], suggestion: null };
+          try {
+            neonResults = await searchDatabase(query, "web", 1, Math.min(SEARCH_CANDIDATE_LIMIT, Math.max(limit * page, 50)));
+          } catch (error) {
+            console.warn("[HEXORA] Neon search unavailable; using R2 results:", error.message);
+          }
+          let r2Results = { total: 0, rows: [] };
+          try { r2Results = await searchR2Index(query, Math.min(100, limit * page)); }
+          catch (error) { console.warn("[HEXORA] R2 search unavailable:", error.message); }
+          const combined = [];
+          const seenUrls = new Set();
+          for (const row of [...neonResults.rows.map(row => resultFromRow(row, query)), ...r2Results.rows]) {
+            const key = String(row.canonical_url || row.url || "").toLowerCase();
+            if (!key || seenUrls.has(key)) continue;
+            seenUrls.add(key); combined.push(row);
+          }
+          combined.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+          const start = (page - 1) * limit;
+          const finalRows = combined.slice(start, start + limit);
+          return sendJson(res, 200, {
+            success: true, engine: "HEXORA", query, mode: "web", page, limit,
+            total: Number(neonResults.total || 0) + Number(r2Results.total || 0),
+            suggestion: neonResults.suggestion || null,
+            results: finalRows
+          });
+        }
+
+        /*
+         * NEWS
+         */
+        if (
+          pathname === "/news" ||
+          pathname === "/api/news"
+        ) {
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getNews(
               limit
             );
 
-          let sponsored_ads = [];
-
-          try {
-            sponsored_ads =
-              await getSponsoredAds(
-                query
-              );
-          } catch (error) {
-            console.error(
-              "[HEXORA] ad serving error:",
-              error?.message ||
-                error
-            );
-          }
-
-          return json(res, 200, {
-            ok: true,
-            query,
-            mode,
-            page,
-            limit,
-            total:
-              search.total,
-            results:
-              search.results,
-            suggestions:
-              search.suggestions,
-            sponsored_ads,
-          });
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "news",
+              total:
+                results.length,
+              results
+            }
+          );
         }
 
-        // ======================================================
-        // NEWS
-        // ======================================================
-
+        /*
+         * IMAGES
+         */
         if (
-          req.method === "GET" &&
-          pathname === "/api/news"
-        ) {
-          return json(res, 200, {
-            ok: true,
-            results: [],
-            message:
-              "HEXORA news index is being built.",
-          });
-        }
-
-        // ======================================================
-        // IMAGES
-        // ======================================================
-
-        if (
-          req.method === "GET" &&
+          pathname === "/images" ||
           pathname === "/api/images"
         ) {
           const query =
             normalizeQuery(
-              parsed.searchParams.get(
+              requestUrl.searchParams.get(
                 "q"
-              )
+              ) || ""
             );
 
-          try {
-            const results = await searchMedia(query, "images", 40);
-            return json(res, 200, { ok: true, query, results });
-          } catch (error) {
-            console.error("[HEXORA] image search failed:", error?.message || error);
-            return json(res, 200, { ok: true, query, results: [], message: "No indexed images found yet." });
-          }
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getMedia(
+              "images",
+              query,
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "images",
+              query,
+              total:
+                results.length,
+              results
+            }
+          );
         }
 
-        // ======================================================
-        // VIDEOS
-        // ======================================================
-
+        /*
+         * VIDEOS
+         */
         if (
-          req.method === "GET" &&
+          pathname === "/videos" ||
           pathname === "/api/videos"
         ) {
           const query =
             normalizeQuery(
-              parsed.searchParams.get(
+              requestUrl.searchParams.get(
                 "q"
-              )
+              ) || ""
             );
 
-          try {
-            const results = await searchMedia(query, "videos", 40);
-            return json(res, 200, { ok: true, query, results });
-          } catch (error) {
-            console.error("[HEXORA] video search failed:", error?.message || error);
-            return json(res, 200, { ok: true, query, results: [], message: "No indexed videos found yet." });
-          }
+          const limit =
+            safeInt(
+              requestUrl.searchParams.get(
+                "limit"
+              ),
+              DEFAULT_LIMIT,
+              1,
+              MAX_LIMIT
+            );
+
+          const results =
+            await getMedia(
+              "videos",
+              query,
+              limit
+            );
+
+          return sendJson(
+            res,
+            200,
+            {
+              success: true,
+              engine: "HEXORA",
+              mode: "videos",
+              query,
+              total:
+                results.length,
+              results
+            }
+          );
         }
 
-        // ======================================================
-        // MAPS
-        // ======================================================
-
+        /*
+         * MAPS
+         */
         if (
-          req.method === "GET" &&
+          pathname === "/maps" ||
           pathname === "/api/maps"
         ) {
-          return json(res, 200, {
-            ok: true,
-            results: [],
-          });
-        }
-
-        // ======================================================
-        // CREATE ADVERTISER
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/advertisers"
-        ) {
-          const body =
-            await readBody(req);
-
-          const name =
-            cleanText(body.name, 150);
-
-          const email =
-            cleanText(
-              body.email,
-              250
-            ).toLowerCase();
-
-          const companyName =
-            cleanText(
-              body.company_name,
-              200
-            );
-
-          const website =
-            safeUrl(
-              body.website || ""
-            );
-
-          if (
-            !name ||
-            !email
-          ) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "name and email are required",
-            });
-          }
-
-          const apiKey =
-            makeAdvertiserKey();
-
-          const hash =
-            sha256(apiKey);
-
-          try {
-            const result =
-              await pool.query(
-                `
-                INSERT INTO advertisers (
-                  name,
-                  email,
-                  company_name,
-                  website,
-                  api_key_hash,
-                  api_key_prefix,
-                  status
-                )
-                VALUES (
-                  $1,$2,$3,$4,$5,$6,'active'
-                )
-                RETURNING
-                  id,
-                  name,
-                  email,
-                  company_name,
-                  website,
-                  balance,
-                  status
-                `,
-                [
-                  name,
-                  email,
-                  companyName ||
-                    null,
-                  website,
-                  hash,
-                  apiKey.slice(
-                    0,
-                    12
-                  ),
-                ]
-              );
-
-            return json(res, 201, {
-              ok: true,
-              advertiser:
-                result.rows[0],
-              api_key:
-                apiKey,
-              warning:
-                "Save this API key. It will not be shown again.",
-            });
-          } catch (error) {
-            if (
-              String(
-                error?.message || ""
-              ).includes(
-                "duplicate"
-              )
-            ) {
-              return json(res, 409, {
-                ok: false,
-                error:
-                  "Advertiser email already exists",
-              });
-            }
-
-            throw error;
-          }
-        }
-
-        // ======================================================
-        // CREATE CAMPAIGN
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/campaigns"
-        ) {
-          const advertiser =
-            await getAdvertiserFromKey(
-              req
-            );
-
-          if (!advertiser) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid advertiser API key",
-            });
-          }
-
-          const body =
-            await readBody(req);
-
-          const name =
-            cleanText(
-              body.name,
-              200
-            );
-
-          const dailyBudget =
-            Number(
-              body.daily_budget || 0
-            );
-
-          const totalBudget =
-            Number(
-              body.total_budget || 0
-            );
-
-          if (
-            !name ||
-            dailyBudget < 0 ||
-            totalBudget <= 0
-          ) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Invalid campaign details",
-            });
-          }
-
-          const result =
-            await pool.query(
-              `
-              INSERT INTO ad_campaigns (
-                advertiser_id,
-                name,
-                daily_budget,
-                total_budget,
-                status
-              )
-              VALUES (
-                $1,$2,$3,$4,'draft'
-              )
-              RETURNING *
-              `,
-              [
-                advertiser.id,
-                name,
-                dailyBudget,
-                totalBudget,
-              ]
-            );
-
-          return json(res, 201, {
-            ok: true,
-            campaign:
-              result.rows[0],
-          });
-        }
-
-        // ======================================================
-        // CREATE AD
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname === "/api/ads"
-        ) {
-          const advertiser =
-            await getAdvertiserFromKey(
-              req
-            );
-
-          if (!advertiser) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid advertiser API key",
-            });
-          }
-
-          const body =
-            await readBody(req);
-
-          const campaignId =
-            Number(
-              body.campaign_id
-            );
-
-          const title =
-            cleanText(
-              body.title,
-              200
-            );
-
-          const description =
-            cleanText(
-              body.description,
-              1000
-            );
-
-          const destination =
-            safeUrl(
-              body.destination_url
-            );
-
-          const bid =
-            Number(
-              body.bid_per_click ||
-                0.1
-            );
-
-          let keywords =
-            Array.isArray(
-              body.keywords
-            )
-              ? body.keywords
-                  .map(x =>
-                    cleanText(
-                      x,
-                      80
-                    ).toLowerCase()
-                  )
-                  .filter(Boolean)
-                  .slice(0, 50)
-              : [];
-
-          if (
-            !campaignId ||
-            !title ||
-            !destination ||
-            !Number.isFinite(
-              bid
-            ) ||
-            bid <= 0
-          ) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Invalid ad details",
-            });
-          }
-
-          const campaign =
-            await pool.query(
-              `
-              SELECT id
-              FROM ad_campaigns
-              WHERE id = $1
-              AND advertiser_id = $2
-              `,
-              [
-                campaignId,
-                advertiser.id,
-              ]
-            );
-
-          if (!campaign.rows.length) {
-            return json(res, 404, {
-              ok: false,
-              error:
-                "Campaign not found",
-            });
-          }
-
-          const result =
-            await pool.query(
-              `
-              INSERT INTO ads (
-                campaign_id,
-                title,
-                description,
-                destination_url,
-                keywords,
-                bid_per_click,
-                status
-              )
-              VALUES (
-                $1,$2,$3,$4,$5,$6,'pending'
-              )
-              RETURNING *
-              `,
-              [
-                campaignId,
-                title,
-                description ||
-                  null,
-                destination,
-                keywords,
-                bid,
-              ]
-            );
-
-          return json(res, 201, {
-            ok: true,
-            ad:
-              result.rows[0],
-          });
-        }
-
-        // ======================================================
-        // APPROVE AD
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/approve"
-        ) {
-          if (
-            !adminAuthorized(req)
-          ) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid admin key",
-            });
-          }
-
-          const body =
-            await readBody(req);
-
-          const adId =
-            Number(body.ad_id);
-
-          if (!adId) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "ad_id is required",
-            });
-          }
-
-          const result =
-            await pool.query(
-              `
-              UPDATE ads
-              SET
-                status = 'approved',
-                updated_at = NOW()
-              WHERE id = $1
-              RETURNING *
-              `,
-              [adId]
-            );
-
-          return json(res, 200, {
-            ok: true,
-            ad:
-              result.rows[0] || null,
-          });
-        }
-
-        // ======================================================
-        // AD DASHBOARD
-        // ======================================================
-
-        if (
-          req.method === "GET" &&
-          pathname ===
-            "/api/ads/dashboard"
-        ) {
-          const advertiser =
-            await getAdvertiserFromKey(
-              req
-            );
-
-          if (!advertiser) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid advertiser API key",
-            });
-          }
-
-          const campaigns =
-            await pool.query(
-              `
-              SELECT *
-              FROM ad_campaigns
-              WHERE advertiser_id = $1
-              ORDER BY id DESC
-              `,
-              [advertiser.id]
-            );
-
-          return json(res, 200, {
-            ok: true,
-            advertiser: {
-              id:
-                advertiser.id,
-              name:
-                advertiser.name,
-              email:
-                advertiser.email,
-              company_name:
-                advertiser.company_name,
-              balance:
-                advertiser.balance,
-              total_spent:
-                advertiser.total_spent,
-            },
-            campaigns:
-              campaigns.rows,
-          });
-        }
-
-        // ======================================================
-        // PAYPAL CREATE ORDER
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/paypal/order"
-        ) {
-          const advertiser =
-            await getAdvertiserFromKey(
-              req
-            );
-
-          if (!advertiser) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid advertiser API key",
-            });
-          }
-
-          if (!paypalConfigured()) {
-            return json(res, 503, {
-              ok: false,
-              error:
-                "PayPal is not configured",
-            });
-          }
-
-          const body =
-            await readBody(req);
-
-          const amount =
-            Number(body.amount);
-
-          const currency =
-            String(
-              body.currency ||
-                "USD"
-            )
-              .trim()
-              .toUpperCase();
-
-          if (
-            !Number.isFinite(
-              amount
-            ) ||
-            amount <= 0
-          ) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Valid amount is required",
-            });
-          }
-
-          if (
-            !/^[A-Z]{3}$/.test(
-              currency
-            )
-          ) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Invalid currency",
-            });
-          }
-
-          const order =
-            await createPayPalOrder({
-              amount,
-              currency,
-              description:
-                "HEXORA Ads balance",
-            });
-
-          await pool.query(
-            `
-            INSERT INTO ad_payment_orders (
-              advertiser_id,
-              provider,
-              provider_order_id,
-              amount,
-              currency,
-              status,
-              credited
-            )
-            VALUES (
-              $1,
-              'paypal',
-              $2,
-              $3,
-              $4,
-              'created',
-              FALSE
-            )
-            `,
-            [
-              advertiser.id,
-              order.id,
-              amount,
-              currency,
-            ]
-          );
-
-          return json(res, 200, {
-            ok: true,
-            provider: "paypal",
-            mode:
-              PAYPAL_MODE,
-            order_id:
-              order.id,
-            status:
-              order.status,
-            links:
-              order.links || [],
-          });
-        }
-
-        // ======================================================
-        // PAYPAL CAPTURE
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/paypal/capture"
-        ) {
-          const advertiser =
-            await getAdvertiserFromKey(
-              req
-            );
-
-          if (!advertiser) {
-            return json(res, 401, {
-              ok: false,
-              error:
-                "Invalid advertiser API key",
-            });
-          }
-
-          if (!paypalConfigured()) {
-            return json(res, 503, {
-              ok: false,
-              error:
-                "PayPal is not configured",
-            });
-          }
-
-          const body =
-            await readBody(req);
-
-          const orderId =
-            cleanText(
-              body.order_id,
-              200
-            );
-
-          if (!orderId) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "order_id is required",
-            });
-          }
-
-          const local =
-            await pool.query(
-              `
-              SELECT *
-              FROM ad_payment_orders
-              WHERE provider = 'paypal'
-              AND provider_order_id = $1
-              AND advertiser_id = $2
-              LIMIT 1
-              `,
-              [
-                orderId,
-                advertiser.id,
-              ]
-            );
-
-          if (!local.rows.length) {
-            return json(res, 404, {
-              ok: false,
-              error:
-                "Payment order not found",
-            });
-          }
-
-          const result =
-            await capturePayPalOrder(
-              orderId
-            );
-
-          const capture =
-            result
-              ?.purchase_units?.[0]
-              ?.payments
-              ?.captures?.[0];
-
-          const completed =
-            result.status ===
-              "COMPLETED" &&
-            capture?.status ===
-              "COMPLETED";
-
-          if (
-            completed &&
-            capture
-          ) {
-            const amount =
-              Number(
-                capture.amount
-                  ?.value
-              );
-
-            const currency =
-              capture.amount
-                ?.currency_code;
-
-            await creditPayPalPayment(
-              orderId,
-              capture.id,
-              advertiser.id,
-              amount,
-              currency
-            );
-          }
-
-          return json(res, 200, {
-            ok: true,
-            provider: "paypal",
-            order_id:
-              result.id,
-            status:
-              result.status,
-            completed,
-            capture_id:
-              capture?.id ||
-              null,
-            amount:
-              capture?.amount ||
-              null,
-          });
-        }
-
-        // ======================================================
-        // PAYPAL WEBHOOK
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/paypal/webhook"
-        ) {
-          const body =
-            await readBody(req);
-
-          const verified =
-            await verifyPayPalWebhook(
-              req.headers,
-              body
-            );
-
-          if (!verified) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "Invalid PayPal webhook",
-            });
-          }
-
-          const eventId =
-            cleanText(
-              body.id,
-              250
-            );
-
-          const eventType =
-            cleanText(
-              body.event_type,
-              250
-            );
-
-          if (eventId) {
-            await pool.query(
-              `
-              INSERT INTO ad_webhook_events (
-                provider,
-                event_id,
-                event_type,
-                payload
-              )
-              VALUES (
-                'paypal',
-                $1,
-                $2,
-                $3
-              )
-              ON CONFLICT (
-                provider,
-                event_id
-              )
-              DO NOTHING
-              `,
-              [
-                eventId,
-                eventType ||
-                  null,
-                body,
-              ]
-            );
-          }
-
-          return json(res, 200, {
-            ok: true,
-            received: true,
-          });
-        }
-
-        // ======================================================
-        // AD IMPRESSION
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/impression"
-        ) {
-          const body =
-            await readBody(req);
-
-          const adId =
-            Number(body.ad_id);
-
           const query =
-            cleanText(
-              body.query,
-              500
+            normalizeQuery(
+              requestUrl.searchParams.get(
+                "q"
+              ) || ""
             );
 
-          if (!adId) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "ad_id is required",
-            });
+          if (!query) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "Search query is required"
+              }
+            );
           }
 
-          await pool.query(
-            `
-            UPDATE ads
-            SET
-              impressions =
-                impressions + 1,
-              updated_at = NOW()
-            WHERE id = $1
-            `,
-            [adId]
-          );
-
-          await pool.query(
-            `
-            INSERT INTO ad_events (
-              ad_id,
-              event_type,
+          const results =
+            await searchDatabase(
               query,
-              cost
-            )
-            VALUES (
-              $1,
-              'impression',
-              $2,
-              0
-            )
-            `,
-            [adId, query || null]
-          );
-
-          return json(res, 200, {
-            ok: true,
-          });
-        }
-
-        // ======================================================
-        // AD CLICK / CPC
-        // ======================================================
-
-        if (
-          req.method === "POST" &&
-          pathname ===
-            "/api/ads/click"
-        ) {
-          const body =
-            await readBody(req);
-
-          const adId =
-            Number(body.ad_id);
-
-          const query =
-            cleanText(
-              body.query,
-              500
+              "web",
+              1,
+              20
             );
 
-          if (!adId) {
-            return json(res, 400, {
-              ok: false,
-              error:
-                "ad_id is required",
-            });
-          }
-
-          const client =
-            await pool.connect();
-
-          try {
-            await client.query(
-              "BEGIN"
-            );
-
-            const adResult =
-              await client.query(
-                `
-                SELECT
-                  a.*,
-                  c.advertiser_id,
-                  c.total_budget,
-                  c.spent AS campaign_spent
-                FROM ads a
-                JOIN ad_campaigns c
-                  ON c.id = a.campaign_id
-                WHERE a.id = $1
-                FOR UPDATE
-                `,
-                [adId]
-              );
-
-            if (
-              !adResult.rows.length
-            ) {
-              await client.query(
-                "ROLLBACK"
-              );
-
-              return json(res, 404, {
-                ok: false,
-                error:
-                  "Ad not found",
-              });
-            }
-
-            const ad =
-              adResult.rows[0];
-
-            const cost =
-              Number(
-                ad.bid_per_click
-              );
-
-            const advertiserResult =
-              await client.query(
-                `
-                SELECT *
-                FROM advertisers
-                WHERE id = $1
-                FOR UPDATE
-                `,
-                [ad.advertiser_id]
-              );
-
-            if (
-              !advertiserResult
-                .rows.length
-            ) {
-              throw new Error(
-                "Advertiser not found"
-              );
-            }
-
-            const advertiser =
-              advertiserResult
-                .rows[0];
-
-            if (
-              Number(
-                advertiser.balance
-              ) < cost
-            ) {
-              await client.query(
-                "ROLLBACK"
-              );
-
-              return json(res, 402, {
-                ok: false,
-                error:
-                  "Insufficient advertiser balance",
-              });
-            }
-
-            if (
-              Number(
-                ad.campaign_spent
-              ) + cost >
-              Number(
-                ad.total_budget
-              )
-            ) {
-              await client.query(
-                "ROLLBACK"
-              );
-
-              return json(res, 402, {
-                ok: false,
-                error:
-                  "Campaign budget exhausted",
-              });
-            }
-
-            await client.query(
-              `
-              UPDATE advertisers
-              SET
-                balance =
-                  balance - $1,
-                total_spent =
-                  total_spent + $1,
-                updated_at = NOW()
-              WHERE id = $2
-              `,
-              [
-                cost,
-                advertiser.id,
-              ]
-            );
-
-            await client.query(
-              `
-              UPDATE ad_campaigns
-              SET
-                spent =
-                  spent + $1,
-                updated_at = NOW()
-              WHERE id = $2
-              `,
-              [
-                cost,
-                ad.campaign_id,
-              ]
-            );
-
-            await client.query(
-              `
-              UPDATE ads
-              SET
-                clicks =
-                  clicks + 1,
-                updated_at = NOW()
-              WHERE id = $1
-              `,
-              [adId]
-            );
-
-            await client.query(
-              `
-              INSERT INTO ad_events (
-                ad_id,
-                event_type,
-                query,
-                cost
-              )
-              VALUES (
-                $1,
-                'click',
-                $2,
-                $3
-              )
-              `,
-              [
-                adId,
-                query || null,
-                cost,
-              ]
-            );
-
-            await client.query(
-              `
-              INSERT INTO ad_transactions (
-                advertiser_id,
-                amount,
-                transaction_type,
-                reference,
-                status,
-                payment_provider,
-                payment_id
-              )
-              VALUES (
-                $1,
-                $2,
-                'ad_click',
-                $3,
-                'completed',
-                'internal',
-                $4
-              )
-              `,
-              [
-                advertiser.id,
-                cost,
-                query || null,
-                String(adId),
-              ]
-            );
-
-            await client.query(
-              "COMMIT"
-            );
-
-            return json(res, 200, {
-              ok: true,
-              charged:
-                cost,
-              destination_url:
-                ad.destination_url,
-            });
-          } catch (error) {
-            try {
-              await client.query(
-                "ROLLBACK"
-              );
-            } catch {}
-
-            console.error(
-              "[HEXORA] ad click error:",
-              error?.message ||
-                error
-            );
-
-            return json(res, 500, {
-              ok: false,
-              error:
-                "Unable to process ad click",
-            });
-          } finally {
-            client.release();
-          }
-        }
-
-        // ======================================================
-        // STATIC FILES
-        // ======================================================
-
-        let requestedPath =
-          pathname === "/"
-            ? "/index.html"
-            : pathname;
-
-        try {
-          requestedPath =
-            decodeURIComponent(
-              requestedPath
-            );
-          } catch {}
-
-        const publicPath =
-          path.join(
-            __dirname,
-            requestedPath
-          );
-
-        const safeRoot =
-          path.resolve(
-            __dirname
-          );
-
-        const safePath =
-          path.resolve(
-            publicPath
-          );
-
-        if (
-          safePath.startsWith(
-            safeRoot
-          ) &&
-          fs.existsSync(safePath) &&
-          fs.statSync(safePath).isFile()
-        ) {
-          const ext =
-            path.extname(
-              safePath
-            ).toLowerCase();
-
-          const types = {
-            ".html":
-              "text/html",
-            ".js":
-              "text/javascript",
-            ".mjs":
-              "text/javascript",
-            ".css":
-              "text/css",
-            ".json":
-              "application/json",
-            ".svg":
-              "image/svg+xml",
-            ".png":
-              "image/png",
-            ".jpg":
-              "image/jpeg",
-            ".jpeg":
-              "image/jpeg",
-            ".webp":
-              "image/webp",
-            ".ico":
-              "image/x-icon",
-            ".txt":
-              "text/plain",
-          };
-
-          res.writeHead(
+          return sendJson(
+            res,
             200,
             {
-              "Content-Type":
-                `${types[ext] || "application/octet-stream"}; charset=utf-8`,
+              success: true,
+              engine: "HEXORA",
+              mode: "maps",
+              query,
+              total:
+                results.total,
+              results:
+                results.rows.map(
+                  row =>
+                    resultFromRow(
+                      row,
+                      query
+                    )
+                )
             }
           );
-
-          fs.createReadStream(
-            safePath
-          ).pipe(res);
-
-          return;
         }
 
-        // SPA fallback
-        const indexPath =
-          path.join(
-            __dirname,
-            "index.html"
-          );
-
-        if (
-          fs.existsSync(indexPath)
-        ) {
-          res.writeHead(
-            200,
-            {
-              "Content-Type":
-                "text/html; charset=utf-8",
-            }
-          );
-
-          fs.createReadStream(
-            indexPath
-          ).pipe(res);
-
-          return;
-        }
-
-        return text(
+        /*
+         * STATIC FRONTEND
+         */
+        return await serveStatic(
+          req,
           res,
-          404,
-          "HEXORA: Not Found"
+          pathname
         );
+
       } catch (error) {
         console.error(
-          "[HEXORA] request error:",
-          error?.stack ||
-            error
+          "HEXORA SERVER ERROR:",
+          error
         );
 
-        if (!res.headersSent) {
-          return json(
-            res,
-            500,
-            {
-              ok: false,
-              error:
-                "Internal server error",
-            }
-          );
-        }
-
-        res.end();
+        return sendJson(
+          res,
+          500,
+          {
+            success: false,
+            engine: "HEXORA",
+            error:
+              "Internal server error",
+            message:
+              error.message
+          }
+        );
       }
     }
   );
 
-// ============================================================
-// STARTUP
-// ============================================================
-
-async function start() {
-  try {
-    await ensureDatabase();
-
-    server.listen(
-      PORT,
-      HOST,
-      () => {
-        console.log(
-          `HEXORA server running on port ${PORT}`
-        );
-
-        console.log(
-          "[HEXORA] Search-demand tracking enabled"
-        );
-
-        console.log(
-          "[HEXORA] Ads / Income API enabled"
-        );
-
-        console.log(
-          `[HEXORA] PayPal configured: ${paypalConfigured()}`
-        );
-
-        console.log(
-          `[HEXORA] PayPal mode: ${PAYPAL_MODE}`
-        );
-      }
+server.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      `HEXORA server running on port ${PORT}`
     );
-  } catch (error) {
-    console.error(
-      "[HEXORA] Startup failed:",
-      error?.stack ||
-        error
-    );
-
-    process.exit(1);
   }
-}
-
-// ============================================================
-// SHUTDOWN
-// ============================================================
-
-async function shutdown(
-  signal
-) {
-  console.log(
-    `[HEXORA] ${signal} received`
-  );
-
-  server.close(
-    async () => {
-      try {
-        await pool.end();
-      } catch {}
-
-      process.exit(0);
-    }
-  );
-
-  setTimeout(
-    () => process.exit(1),
-    10000
-  ).unref();
-}
+);
 
 process.on(
   "SIGTERM",
-  () => shutdown("SIGTERM")
+  async () => {
+    console.log(
+      "SIGTERM received"
+    );
+
+    try { await pool.end(); } catch {}
+    try { r2Client?.destroy(); } catch {}
+
+    server.close(
+      () => {
+        process.exit(0);
+      }
+    );
+  }
 );
 
 process.on(
   "SIGINT",
-  () => shutdown("SIGINT")
-);
+  async () => {
+    console.log(
+      "SIGINT received"
+    );
 
-start();
+    try { await pool.end(); } catch {}
+    try { r2Client?.destroy(); } catch {}
+
+    server.close(
+      () => {
+        process.exit(0);
+      }
+    );
+  }
+);
