@@ -1249,7 +1249,7 @@ async function getMedia(
       ]
     );
 
-  return result.rows.map(
+  const neonMediaRows = result.rows.map(
     row => ({
       id: String(row.id),
 
@@ -1289,6 +1289,37 @@ async function getMedia(
         null
     })
   );
+
+  // Search media metadata saved by the R2-only crawlers as well as old Neon rows.
+  let r2MediaRows = [];
+  try {
+    const docs = await loadR2Index();
+    const words = wordsOf(q).map(word => String(word).toLowerCase());
+    r2MediaRows = docs.filter(doc => {
+      const items = type === "images" ? doc.image_items : doc.video_items;
+      if (!Array.isArray(items) || !items.length) return false;
+      const haystack = `${doc.title || ""} ${doc.description || ""} ${doc.search_text || doc.excerpt || ""}`.toLowerCase();
+      return words.some(word => haystack.includes(word));
+    }).map(doc => ({
+      id: String(doc.id || doc.url), title: doc.title || doc.url || "Media result",
+      url: doc.url || "", canonical_url: doc.canonical_url || doc.url || "",
+      domain: doc.domain || "", description: doc.description || "",
+      image: Array.isArray(doc.image_items) && doc.image_items[0] ? (doc.image_items[0].image_url || doc.image_items[0].url || null) : null,
+      image_items: Array.isArray(doc.image_items) ? doc.image_items : [],
+      video_items: Array.isArray(doc.video_items) ? doc.video_items : [],
+      published_at: doc.published_at || null, date: doc.crawled_at || null, _r2: true
+    }));
+  } catch (error) {
+    console.warn("[HEXORA] R2 media search unavailable:", error.message);
+  }
+  const merged = [];
+  const seen = new Set();
+  for (const row of [...neonMediaRows, ...r2MediaRows]) {
+    const key = String(row.canonical_url || row.url || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key); merged.push(row);
+  }
+  return merged.slice(0, limit);
 }
 
 async function readR2ObjectJson(key) {
@@ -1347,8 +1378,11 @@ async function searchR2Index(query, limit = 20) {
       domain: doc.domain || "", source: doc.domain || "",
       description: doc.description || "", snippet: String(doc.excerpt || doc.description || doc.search_text || "").slice(0, 320),
       language: doc.language || "unknown", date: doc.crawled_at || null,
-      published_at: null, score, image: null, image_items: null, video_items: null,
-      _r2: true
+      published_at: doc.published_at || null, score,
+      image: Array.isArray(doc.image_items) && doc.image_items[0] ? (doc.image_items[0].image_url || doc.image_items[0].url || null) : null,
+      image_items: Array.isArray(doc.image_items) ? doc.image_items : [],
+      video_items: Array.isArray(doc.video_items) ? doc.video_items : [],
+      is_news: Boolean(doc.is_news), content_type: doc.content_type || "web", _r2: true
     });
   }
   ranked.sort((a, b) => b.score - a.score);
@@ -1769,6 +1803,22 @@ const server =
                 page,
                 limit
               );
+            let r2NewsRows = [];
+            try {
+              const r2News = await searchR2Index(query, Math.min(100, limit * page));
+              r2NewsRows = r2News.rows.filter(row => row.is_news || row.content_type === "news");
+            } catch (error) {
+              console.warn("[HEXORA] R2 news search unavailable:", error.message);
+            }
+            const newsSeen = new Set();
+            const mergedNews = [...results.rows.map(row => resultFromRow(row, query)), ...r2NewsRows]
+              .filter(row => {
+                const key = String(row.canonical_url || row.url || "").toLowerCase();
+                if (!key || newsSeen.has(key)) return false;
+                newsSeen.add(key); return true;
+              })
+              .sort((a, b) => new Date(b.published_at || b.date || 0).getTime() - new Date(a.published_at || a.date || 0).getTime())
+              .slice(0, limit);
 
             return sendJson(
               res,
@@ -1781,17 +1831,10 @@ const server =
                 page,
                 limit,
                 total:
-                  results.total,
+                  Math.max(results.total || 0, mergedNews.length),
                 suggestion:
                   results.suggestion,
-                results:
-                  results.rows.map(
-                    row =>
-                      resultFromRow(
-                        row,
-                        query
-                      )
-                  )
+                results: mergedNews
               }
             );
           }
