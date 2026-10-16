@@ -439,8 +439,20 @@ async function downloadWarcRecord(
       headers: {
         "User-Agent": USER_AGENT,
         Range: `bytes=${start}-${end}`,
+        "Accept-Encoding": "identity",
       },
     });
+
+  // Common Crawl must return the requested byte range. If a proxy/server
+  // ignores Range and sends a whole WARC file, do not buffer a huge file.
+  if (response.status !== 206) {
+    const declaredLength = Number(response.headers.get("content-length") || 0);
+    if (response.status !== 200 || declaredLength !== length) {
+      throw new Error(
+        `Common Crawl range request expected HTTP 206; got HTTP ${response.status}`
+      );
+    }
+  }
 
   const buffer =
     Buffer.from(
@@ -450,6 +462,12 @@ async function downloadWarcRecord(
   if (!buffer.length) {
     throw new Error(
       "Empty WARC response"
+    );
+  }
+
+  if (buffer.length > length) {
+    throw new Error(
+      `WARC range returned too much data (${buffer.length} bytes; expected ${length})`
     );
   }
 
@@ -943,11 +961,7 @@ async function pageExists(
   const result =
     await pool.query(
       `
-      SELECT
-        id,
-        url,
-        content_hash,
-        r2_key
+      SELECT id, url
       FROM pages
       WHERE url = $1
       LIMIT 1
@@ -971,53 +985,62 @@ async function savePage({
   contentHash,
   r2Key,
 }) {
-  const result =
-    await pool.query(
-      `
-      INSERT INTO pages
-      (
-        url,
-        title,
-        description,
-        content,
-        content_hash,
-        language,
-        r2_key,
-        updated_at
-      )
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        NOW()
-      )
-      ON CONFLICT (url)
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        description = EXCLUDED.description,
-        content = EXCLUDED.content,
-        content_hash = EXCLUDED.content_hash,
-        language = EXCLUDED.language,
-        r2_key = EXCLUDED.r2_key,
-        updated_at = NOW()
-      RETURNING id
-      `,
-      [
-        url,
-        title,
-        description,
-        content,
-        contentHash,
-        language,
-        r2Key,
-      ]
-    );
+  // Common Crawl's full HTML is already saved to R2. Keep Neon compact:
+  // store only an excerpt when supported, not the full page body.
+  const columnsResult = await pool.query(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'pages'`
+  );
+  const available = new Set(columnsResult.rows.map((row) => row.column_name));
 
+  if (!available.has("url")) {
+    throw new Error("pages.url column is missing from Neon");
+  }
+
+  const excerpt = safeString(content).slice(0, 1800);
+  const hostname = (() => {
+    try { return new URL(url).hostname.toLowerCase(); }
+    catch { return ""; }
+  })();
+
+  const data = {
+    url,
+    canonical_url: url,
+    title: safeString(title).slice(0, 500),
+    description: safeString(description || excerpt).slice(0, 3000),
+    excerpt,
+    content: null,
+    content_hash: contentHash,
+    word_count: safeString(content).split(/\s+/).filter(Boolean).length,
+    language,
+    domain: hostname,
+    r2_key: r2Key,
+    crawl_status: "indexed",
+    last_crawled_at: new Date(),
+    updated_at: new Date(),
+  };
+
+  const fields = Object.keys(data).filter((field) => available.has(field));
+  // Older schemas may not have an excerpt column. Keep a small searchable
+  // fallback in content instead of putting the full page body into Neon.
+  if (!available.has("excerpt") && available.has("content")) {
+    data.content = excerpt;
+    if (!fields.includes("content")) fields.push("content");
+  }
+
+  const values = fields.map((field) => data[field]);
+  const placeholders = fields.map((_, index) => `$${index + 1}`);
+  const updates = fields
+    .filter((field) => field !== "url")
+    .map((field) => `\"${field}\" = EXCLUDED.\"${field}\"`);
+
+  const query = `INSERT INTO pages (${fields.map((field) => `\"${field}\"`).join(", ")})
+    VALUES (${placeholders.join(", ")})
+    ON CONFLICT (url) DO UPDATE SET ${updates.length ? updates.join(", ") : '\"url\" = EXCLUDED.\"url\"'}
+    RETURNING id`;
+
+  const result = await pool.query(query, values);
   return result.rows[0];
 }
 
