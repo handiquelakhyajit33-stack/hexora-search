@@ -8,7 +8,8 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
   DeleteObjectCommand,
-  HeadObjectCommand
+  HeadObjectCommand,
+  HeadBucketCommand
 } from "@aws-sdk/client-s3";
 
 const env = process.env;
@@ -19,8 +20,8 @@ const env = process.env;
 // Existing Neon data is not modified by this crawler.
 // ============================================================
 
-const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
-const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
+const CF_ACCOUNT_ID = String(env.R2_ACCOUNT_ID || "").trim();
+const R2_BUCKET = String(env.R2_BUCKET_NAME || "hexora").trim();
 
 const BATCH_SIZE = Math.max(
   1,
@@ -59,15 +60,15 @@ const USER_AGENT =
 
 const s3 =
   CF_ACCOUNT_ID &&
-  env.R2_ACCESS_KEY_ID &&
-  env.R2_SECRET_ACCESS_KEY
+  String(env.R2_ACCESS_KEY_ID || "").trim() &&
+  String(env.R2_SECRET_ACCESS_KEY || "").trim()
     ? new S3Client({
         region: "auto",
         endpoint:
           `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
         credentials: {
-          accessKeyId: env.R2_ACCESS_KEY_ID,
-          secretAccessKey: env.R2_SECRET_ACCESS_KEY
+          accessKeyId: String(env.R2_ACCESS_KEY_ID || "").trim(),
+          secretAccessKey: String(env.R2_SECRET_ACCESS_KEY || "").trim()
         }
       })
     : null;
@@ -453,8 +454,36 @@ async function main() {
   console.log("[HEXORA] Worldwide crawler starting...");
   console.log("[HEXORA] Storage mode: R2-only. No Neon connection or writes.");
   if (!s3) { console.error("[HEXORA] R2 credentials missing. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME."); process.exit(1); }
-  const seeds = String(env.CRAWL_SEED_URLS || "").split(/[\s,]+/).filter(Boolean);
-  if (seeds.length) { await enqueueUrls(seeds); console.log(`[HEXORA] Seed URLs queued in R2: ${seeds.length}`); }
+  const defaultSeeds = [
+    "https://www.wikipedia.org/", "https://www.britannica.com/", "https://www.bbc.com/",
+    "https://www.reuters.com/", "https://apnews.com/", "https://www.theguardian.com/",
+    "https://www.npr.org/", "https://www.nationalgeographic.com/", "https://www.nasa.gov/",
+    "https://www.noaa.gov/", "https://www.un.org/", "https://www.who.int/",
+    "https://www.worldbank.org/", "https://www.imf.org/", "https://www.oecd.org/",
+    "https://www.gov.uk/", "https://www.usa.gov/", "https://www.india.gov.in/",
+    "https://www.pib.gov.in/", "https://www.isro.gov.in/", "https://www.incredibleindia.gov.in/",
+    "https://www.thehindu.com/", "https://indianexpress.com/", "https://www.ndtv.com/",
+    "https://www.hindustantimes.com/", "https://www.indiatoday.in/", "https://www.livemint.com/",
+    "https://www.assam.gov.in/", "https://assamtribune.com/", "https://nenow.in/",
+    "https://github.com/", "https://developer.mozilla.org/", "https://docs.python.org/",
+    "https://nodejs.org/", "https://www.w3.org/", "https://www.rfc-editor.org/",
+    "https://arxiv.org/", "https://pubmed.ncbi.nlm.nih.gov/", "https://www.nature.com/",
+    "https://www.science.org/", "https://www.khanacademy.org/", "https://www.openstreetmap.org/",
+    "https://www.unesco.org/", "https://www.unicef.org/", "https://www.fao.org/",
+    "https://www.bbc.co.uk/", "https://www.dw.com/", "https://www.france24.com/",
+    "https://www.aljazeera.com/", "https://www.cbc.ca/", "https://www.abc.net.au/"
+  ];
+  const configuredSeeds = String(env.CRAWL_SEED_URLS || "").split(/[\s,]+/).filter(Boolean);
+  const seeds = configuredSeeds.length ? configuredSeeds : defaultSeeds;
+  try {
+    await s3.send(new HeadBucketCommand({ Bucket: R2_BUCKET }));
+    console.log(`[HEXORA] R2 connection verified for bucket: ${R2_BUCKET}`);
+  } catch (error) {
+    console.error(`[HEXORA] R2 preflight failed. Check account ID, bucket and API key pair. ${error.message}`);
+    process.exit(1);
+  }
+  await enqueueUrls(seeds);
+  console.log(`[HEXORA] Seed URLs submitted to R2 queue: ${seeds.length}`);
   while (true) {
     try {
       const jobs = await getJobs();
