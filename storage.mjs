@@ -17,18 +17,18 @@ import {
 // ============================================================
 
 const R2_ACCOUNT_ID =
-  process.env.R2_ACCOUNT_ID || "";
+  String(process.env.R2_ACCOUNT_ID || "").trim();
 
 const R2_ACCESS_KEY_ID =
-  process.env.R2_ACCESS_KEY_ID || "";
+  String(process.env.R2_ACCESS_KEY_ID || "").trim();
 
 const R2_SECRET_ACCESS_KEY =
-  process.env.R2_SECRET_ACCESS_KEY || "";
+  String(process.env.R2_SECRET_ACCESS_KEY || "").trim();
 
 // IMPORTANT:
 // Cloudflare R2 bucket name must match exactly.
 const BUCKET_NAME =
-  process.env.R2_BUCKET_NAME || "hexora";
+  String(process.env.R2_BUCKET_NAME || "hexora").trim();
 
 // ============================================================
 // VALIDATE CONFIG
