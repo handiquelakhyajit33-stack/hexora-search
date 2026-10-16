@@ -123,6 +123,21 @@ function log(...args) {
   console.log("[HEXORA]", ...args);
 }
 
+function describeError(error) {
+  if (error == null) return "Unknown error (no error object)";
+  const name = error.name || error.Code || error.code || "Error";
+  const message = error.message || error.Message || String(error);
+  const status = error.$metadata?.httpStatusCode || error.statusCode || error.status;
+  const requestId = error.$metadata?.requestId || error.$metadata?.extendedRequestId;
+  const cause = error.cause?.message;
+  return [
+    `${name}: ${message}`,
+    status ? `HTTP ${status}` : "",
+    requestId ? `requestId=${requestId}` : "",
+    cause ? `cause=${cause}` : "",
+  ].filter(Boolean).join(" | ");
+}
+
 // ============================================================
 // SLEEP
 // ============================================================
@@ -209,7 +224,7 @@ async function fetchRetry(
       );
 
       log(
-        `Reason: ${error.message}`
+        `Reason: ${describeError(error)}`
       );
 
       if (attempt < retries) {
@@ -295,9 +310,13 @@ async function queryIndex(
   // A wildcard pattern such as *.com/* must be sent directly to the
   // Common Crawl Index API. For a plain domain, check both schemes and
   // subdomains as before.
-  const queries = domain.includes("*") || domain.includes("/")
-    ? [domain]
-    : [`https://${domain}/*`, `http://${domain}/*`, `*.${domain}/*`];
+  // Very broad suffix-only wildcard queries (for example *.com/*) often
+  // time out on the public index. Split HTTP and HTTPS into separate scans.
+  const queries = domain.startsWith("*.") && domain.endsWith("/*")
+    ? [`https://${domain}`, `http://${domain}`]
+    : (domain.includes("*") || domain.includes("/"))
+      ? [domain]
+      : [`https://${domain}/*`, `http://${domain}/*`, `*.${domain}/*`];
 
   let records = [];
 
@@ -322,10 +341,7 @@ async function queryIndex(
     params.set(
       "pageSize",
       String(
-        Math.max(
-          PAGES_PER_DOMAIN * 2,
-          50
-        )
+        Math.min(20, Math.max(PAGES_PER_DOMAIN, 10))
       )
     );
 
@@ -374,7 +390,7 @@ async function queryIndex(
       }
     } catch (error) {
       log(
-        `Index query failed: ${error.message}`
+        `Index query failed for ${pattern}: ${describeError(error)}`
       );
     }
   }
@@ -436,6 +452,11 @@ async function downloadWarcRecord(
         Range: `bytes=${start}-${end}`,
       },
     });
+
+  if (response.status !== 206) {
+    try { await response.body?.cancel(); } catch {}
+    throw new Error(`WARC range request expected HTTP 206, got HTTP ${response.status}`);
+  }
 
   const buffer =
     Buffer.from(
@@ -982,8 +1003,12 @@ async function r2ObjectExists(key) {
     await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
     return true;
   } catch (error) {
-    if (error?.name === "NotFound" || error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return false;
-    throw error;
+    const status = error?.$metadata?.httpStatusCode || error?.statusCode || error?.status;
+    const code = error?.name || error?.Code || error?.code;
+    if (code === "NotFound" || code === "NoSuchKey" || status === 404) return false;
+    // Keep the real SDK metadata in logs; do not mislabel access/configuration
+    // errors as a missing object.
+    throw new Error(`R2 HeadObject failed for ${key}: ${describeError(error)}`);
   }
 }
 
@@ -1348,7 +1373,7 @@ async function main() {
         );
 
         log(
-          `Reason: ${error.message}`
+          `Reason: ${describeError(error)}`
         );
       }
 
