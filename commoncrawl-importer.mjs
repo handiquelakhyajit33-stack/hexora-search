@@ -30,25 +30,26 @@ const R2_BUCKET_NAME =
 const COMMONCRAWL_COLLECTION =
   process.env.COMMONCRAWL_COLLECTION || "";
 
-const TARGET_DOMAINS = (
-  process.env.COMMONCRAWL_TARGET_DOMAINS ||
-  [
-    "wikipedia.org",
-    "github.com",
-    "mozilla.org",
-    "python.org",
-    "nodejs.org",
-    "apache.org",
-    "bbc.com",
-    "reuters.com",
-    "ndtv.com",
-    "thehindu.com",
-    "indianexpress.com",
-  ].join(",")
-)
-  .split(",")
-  .map((x) => x.trim())
-  .filter(Boolean);
+// Broad Common Crawl URL patterns by public suffix. These are discovery
+// patterns, not a claim that every URL on the live web is covered. The
+// environment variable can optionally override them with comma-separated
+// domains or Common Crawl wildcard patterns.
+const DEFAULT_TARGET_PATTERNS = [
+  "*.com/*", "*.org/*", "*.net/*", "*.edu/*", "*.gov/*",
+  "*.in/*", "*.uk/*", "*.de/*", "*.jp/*", "*.fr/*",
+  "*.au/*", "*.ca/*", "*.br/*", "*.cn/*", "*.io/*",
+  "*.co/*", "*.info/*", "*.biz/*", "*.app/*", "*.dev/*",
+  "*.ai/*", "*.me/*", "*.us/*", "*.eu/*", "*.ru/*",
+  "*.za/*", "*.ng/*", "*.ke/*", "*.id/*", "*.sg/*",
+  "*.nz/*", "*.mx/*", "*.es/*", "*.it/*", "*.nl/*",
+  "*.se/*", "*.no/*", "*.ch/*", "*.pl/*", "*.tr/*",
+  "*.kr/*", "*.tw/*", "*.hk/*", "*.ar/*", "*.cl/*",
+  "*.pk/*", "*.bd/*", "*.lk/*", "*.np/*", "*.gov.in/*",
+  "*.ac.uk/*", "*.com.au/*", "*.co.in/*"
+];
+const TARGET_DOMAINS = String(
+  process.env.COMMONCRAWL_TARGET_DOMAINS || DEFAULT_TARGET_PATTERNS.join(",")
+).split(",").map((x) => x.trim()).filter(Boolean);
 
 const PAGES_PER_DOMAIN = Math.max(
   1,
@@ -280,11 +281,12 @@ async function queryIndex(
   const indexBase =
     `https://index.commoncrawl.org/${collection}-index`;
 
-  const queries = [
-    `https://${domain}/*`,
-    `http://${domain}/*`,
-    `*.${domain}/*`,
-  ];
+  // A wildcard pattern such as *.com/* must be sent directly to the
+  // Common Crawl Index API. For a plain domain, check both schemes and
+  // subdomains as before.
+  const queries = domain.includes("*") || domain.includes("/")
+    ? [domain]
+    : [`https://${domain}/*`, `http://${domain}/*`, `*.${domain}/*`];
 
   let records = [];
 
@@ -669,18 +671,19 @@ function detectLanguage(
 // CLEAN URL
 // ============================================================
 
-function normalizeUrl(
-  value
-) {
+function normalizeUrl(value) {
   try {
-    const url =
-      new URL(value);
-
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
     url.hash = "";
-
+    url.hostname = url.hostname.toLowerCase();
+    for (const key of ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"]) {
+      url.searchParams.delete(key);
+    }
+    if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
     return url.toString();
   } catch {
-    return value;
+    return null;
   }
 }
 
@@ -1034,10 +1037,8 @@ async function importRecord(
   const originalUrl =
     safeString(record.url);
 
-  const url =
-    normalizeUrl(
-      originalUrl
-    );
+  const url = normalizeUrl(originalUrl);
+  if (!url) throw new Error("Invalid or unsupported URL from Common Crawl");
 
   log(
     `Processing: ${url}`
@@ -1220,7 +1221,7 @@ async function main() {
   );
 
   log(
-    `Target domains: ${TARGET_DOMAINS.join(",")}`
+    `Worldwide Common Crawl patterns: ${TARGET_DOMAINS.length}`
   );
 
   // ----------------------------------------------------------
@@ -1268,7 +1269,7 @@ async function main() {
     }
 
     log(
-      `DOMAIN: ${domain}`
+      `WORLDWIDE URL PATTERN: ${domain}`
     );
 
     let records = [];
@@ -1281,11 +1282,11 @@ async function main() {
         );
 
       log(
-        `Found ${records.length} records for ${domain}`
+        `Found ${records.length} records for pattern ${domain}`
       );
     } catch (error) {
       log(
-        `Index ${domain} failed: ${error.message}`
+        `Index pattern ${domain} failed: ${error.message}`
       );
 
       continue;
