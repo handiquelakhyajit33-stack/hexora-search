@@ -123,21 +123,6 @@ function log(...args) {
   console.log("[HEXORA]", ...args);
 }
 
-function describeError(error) {
-  if (error == null) return "Unknown error (no error object)";
-  const name = error.name || error.Code || error.code || "Error";
-  const message = error.message || error.Message || String(error);
-  const status = error.$metadata?.httpStatusCode || error.statusCode || error.status;
-  const requestId = error.$metadata?.requestId || error.$metadata?.extendedRequestId;
-  const cause = error.cause?.message;
-  return [
-    `${name}: ${message}`,
-    status ? `HTTP ${status}` : "",
-    requestId ? `requestId=${requestId}` : "",
-    cause ? `cause=${cause}` : "",
-  ].filter(Boolean).join(" | ");
-}
-
 // ============================================================
 // SLEEP
 // ============================================================
@@ -212,10 +197,18 @@ async function fetchRetry(
         }
       }
 
-      // Release error response resources before retrying.
-      try { await response.body?.cancel(); } catch {}
+      // Common Crawl commonly uses HTTP 404 when a valid pattern has no
+      // matching captures. Do not waste all retries on a no-match response.
+      let responseDetail = "";
+      if (status === 404) {
+        try { responseDetail = (await response.text()).slice(0, 300).replace(/\s+/g, " "); } catch {}
+      } else {
+        try { await response.body?.cancel(); } catch {}
+      }
 
-      throw new Error(`HTTP ${status}`);
+      const httpError = new Error(`HTTP ${status}${responseDetail ? `: ${responseDetail}` : ""}`);
+      httpError.status = status;
+      throw httpError;
     } catch (error) {
       lastError = error;
 
@@ -224,8 +217,12 @@ async function fetchRetry(
       );
 
       log(
-        `Reason: ${describeError(error)}`
+        `Reason: ${error.message}`
       );
+
+      if (error?.status === 404) {
+        break;
+      }
 
       if (attempt < retries) {
         // Common Crawl may temporarily return 503. Use longer exponential
@@ -307,16 +304,12 @@ async function queryIndex(
   const indexBase =
     `https://index.commoncrawl.org/${collection}-index`;
 
-  // A wildcard pattern such as *.com/* must be sent directly to the
-  // Common Crawl Index API. For a plain domain, check both schemes and
-  // subdomains as before.
-  // Very broad suffix-only wildcard queries (for example *.com/*) often
-  // time out on the public index. Split HTTP and HTTPS into separate scans.
-  const queries = domain.startsWith("*.") && domain.endsWith("/*")
-    ? [`https://${domain}`, `http://${domain}`]
-    : (domain.includes("*") || domain.includes("/"))
-      ? [domain]
-      : [`https://${domain}/*`, `http://${domain}/*`, `*.${domain}/*`];
+  // Common Crawl accepts URL patterns directly (for example *.ca/*).
+  // Do not expand a wildcard into https://*.ca/* and http://*.ca/*:
+  // those broad scheme-specific queries are expensive and may time out.
+  const queries = domain.includes("*") || domain.includes("/")
+    ? [domain]
+    : [`${domain}/*`, `*.${domain}/*`];
 
   let records = [];
 
@@ -341,7 +334,10 @@ async function queryIndex(
     params.set(
       "pageSize",
       String(
-        Math.min(20, Math.max(PAGES_PER_DOMAIN, 10))
+        Math.max(
+          PAGES_PER_DOMAIN * 2,
+          50
+        )
       )
     );
 
@@ -389,9 +385,11 @@ async function queryIndex(
         }
       }
     } catch (error) {
-      log(
-        `Index query failed for ${pattern}: ${describeError(error)}`
-      );
+      if (error?.status === 404 || /HTTP 404\b/.test(String(error?.message || ""))) {
+        log(`No matching captures for pattern ${pattern} in ${collection}`);
+      } else {
+        log(`Index query failed for ${pattern}: ${error.message}`);
+      }
     }
   }
 
@@ -453,9 +451,8 @@ async function downloadWarcRecord(
       },
     });
 
-  if (response.status !== 206) {
-    try { await response.body?.cancel(); } catch {}
-    throw new Error(`WARC range request expected HTTP 206, got HTTP ${response.status}`);
+  if (response.status !== 206 && response.status !== 200) {
+    throw new Error(`WARC download returned HTTP ${response.status} for ${record.filename}`);
   }
 
   const buffer =
@@ -980,6 +977,9 @@ async function uploadToR2(
         "public, max-age=31536000",
     })
   );
+
+  // Confirm the object exists before reporting the page as saved.
+  await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
 }
 
 // ============================================================
@@ -1003,12 +1003,8 @@ async function r2ObjectExists(key) {
     await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
     return true;
   } catch (error) {
-    const status = error?.$metadata?.httpStatusCode || error?.statusCode || error?.status;
-    const code = error?.name || error?.Code || error?.code;
-    if (code === "NotFound" || code === "NoSuchKey" || status === 404) return false;
-    // Keep the real SDK metadata in logs; do not mislabel access/configuration
-    // errors as a missing object.
-    throw new Error(`R2 HeadObject failed for ${key}: ${describeError(error)}`);
+    if (error?.name === "NotFound" || error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return false;
+    throw error;
   }
 }
 
@@ -1373,7 +1369,7 @@ async function main() {
         );
 
         log(
-          `Reason: ${describeError(error)}`
+          `Reason: ${error.message}`
         );
       }
 
