@@ -1,3 +1,4 @@
+import "dotenv/config";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,11 +17,11 @@ const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const DB_POOL_MAX = Number(process.env.DB_POOL_MAX || 10);
 const R2_ACCOUNT_ID = String(process.env.R2_ACCOUNT_ID || "").trim();
 const R2_BUCKET_NAME = String(process.env.R2_BUCKET_NAME || "hexora").trim();
-const r2Client = R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY
+const r2Client = R2_ACCOUNT_ID && String(process.env.R2_ACCESS_KEY_ID || "").trim() && String(process.env.R2_SECRET_ACCESS_KEY || "").trim()
   ? new S3Client({
       region: "auto",
       endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-      credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY }
+      credentials: { accessKeyId: String(process.env.R2_ACCESS_KEY_ID || "").trim(), secretAccessKey: String(process.env.R2_SECRET_ACCESS_KEY || "").trim() }
     })
   : null;
 let r2IndexCache = { loadedAt: 0, rows: [] };
