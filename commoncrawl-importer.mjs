@@ -814,6 +814,49 @@ function parseHtml(
       `${title} ${description} ${content}`
     );
 
+  const absoluteUrl = value => {
+    try {
+      const u = new URL(value, sourceUrl);
+      return ["http:", "https:"].includes(u.protocol) ? u.toString() : null;
+    } catch { return null; }
+  };
+  const imageSet = new Set();
+  for (const value of [
+    $('meta[property="og:image"]').attr('content'),
+    $('meta[name="twitter:image"]').attr('content'),
+    $('meta[property="og:image:url"]').attr('content')
+  ]) {
+    const u = value && absoluteUrl(value);
+    if (u) imageSet.add(u);
+  }
+  $('img[src]').each((_, el) => {
+    if (imageSet.size >= 12) return false;
+    const u = absoluteUrl($(el).attr('src'));
+    if (u) imageSet.add(u);
+  });
+  const videoSet = new Set();
+  for (const value of [
+    $('meta[property="og:video"]').attr('content'),
+    $('meta[property="og:video:url"]').attr('content'),
+    $('meta[name="twitter:player:stream"]').attr('content')
+  ]) {
+    const u = value && absoluteUrl(value);
+    if (u) videoSet.add(u);
+  }
+  $('video[src], video source[src], iframe[src]').each((_, el) => {
+    if (videoSet.size >= 8) return false;
+    const u = absoluteUrl($(el).attr('src'));
+    if (u && (/\.(mp4|webm|m3u8)(?:$|[?#])/i.test(u) || /youtube|youtu\.be|vimeo|dailymotion/i.test(u))) videoSet.add(u);
+  });
+  const publishedAt = (
+    $('meta[property="article:published_time"]').attr('content') ||
+    $('meta[name="pubdate"]').attr('content') ||
+    $('meta[name="date"]').attr('content') ||
+    $('time[datetime]').first().attr('datetime') || ''
+  ).trim().slice(0, 100);
+  const articleType = String($('meta[property="og:type"]').attr('content') || '').toLowerCase();
+  const isNews = /article|news/i.test(articleType) || /news|press-release|journalism/i.test(String($('meta[name="section"]').attr('content') || ''));
+
   // ----------------------------------------------------------
   // LINKS
   // ----------------------------------------------------------
@@ -868,6 +911,11 @@ function parseHtml(
     description,
     content,
     language,
+    image_items: [...imageSet].map(url => ({ url, image_url: url, source_url })),
+    video_items: [...videoSet].map(url => ({ url, video_url: url, source_url })),
+    published_at: publishedAt || null,
+    is_news: isNews,
+    content_type: isNews ? "news" : (videoSet.size ? "video" : (imageSet.size ? "image" : "web")),
     links,
   };
 }
@@ -942,7 +990,7 @@ async function pageExists(url) {
   return await r2ObjectExists(indexKeyForUrl(url));
 }
 
-async function savePage({ url, title, description, content, language, contentHash, r2Key, html }) {
+async function savePage({ url, title, description, content, language, contentHash, r2Key, html, published_at, is_news, content_type, image_items, video_items }) {
   const host = new URL(url).hostname.toLowerCase();
   const pageKey = `pages/${host}/${sha256(url)}.html`;
   const indexKey = indexKeyForUrl(url);
@@ -953,6 +1001,11 @@ async function savePage({ url, title, description, content, language, contentHas
     description: description || "", excerpt: String(content || "").slice(0, 1800),
     language: language || "unknown", domain: host, r2_key: pageKey,
     content_hash: contentHash, crawled_at: new Date().toISOString(),
+    published_at: published_at || null,
+    is_news: Boolean(is_news),
+    content_type: content_type || "web",
+    image_items: Array.isArray(image_items) ? image_items : [],
+    video_items: Array.isArray(video_items) ? video_items : [],
     search_text: `${title || ""} ${description || ""} ${String(content || "").slice(0, 5000)}`.slice(0, 7000)
   });
   return { duplicate: false, r2Key: pageKey };
@@ -1096,6 +1149,11 @@ async function importRecord(
     url, title: parsed.title, description: parsed.description,
     content: parsed.content, language: parsed.language,
     contentHash, r2Key, html,
+    published_at: parsed.published_at,
+    is_news: parsed.is_news,
+    content_type: parsed.content_type,
+    image_items: parsed.image_items,
+    video_items: parsed.video_items,
   });
   if (saved.duplicate) {
     log(`Duplicate URL skipped: ${url}`);
