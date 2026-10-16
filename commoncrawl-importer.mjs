@@ -1,10 +1,9 @@
 // ============================================================
 // HEXORA SEARCH ENGINE
 // COMMON CRAWL IMPORTER
-// Neon + Cloudflare R2
+// R2-only Common Crawl importer
 // ============================================================
 
-import pg from "pg";
 import crypto from "crypto";
 import zlib from "zlib";
 import * as cheerio from "cheerio";
@@ -13,15 +12,13 @@ import {
   S3Client,
   PutObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 
-const { Pool } = pg;
 
 // ============================================================
 // CONFIG
 // ============================================================
-
-const DATABASE_URL = process.env.DATABASE_URL || "";
 
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
@@ -91,10 +88,6 @@ const USER_AGENT =
 // VALIDATION
 // ============================================================
 
-if (!DATABASE_URL) {
-  throw new Error("[HEXORA] DATABASE_URL is missing");
-}
-
 if (
   !R2_ACCOUNT_ID ||
   !R2_ACCESS_KEY_ID ||
@@ -104,17 +97,6 @@ if (
     "[HEXORA] R2 credentials are missing"
   );
 }
-
-// ============================================================
-// NEON
-// ============================================================
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 30000,
-});
 
 // ============================================================
 // R2
@@ -439,20 +421,8 @@ async function downloadWarcRecord(
       headers: {
         "User-Agent": USER_AGENT,
         Range: `bytes=${start}-${end}`,
-        "Accept-Encoding": "identity",
       },
     });
-
-  // Common Crawl must return the requested byte range. If a proxy/server
-  // ignores Range and sends a whole WARC file, do not buffer a huge file.
-  if (response.status !== 206) {
-    const declaredLength = Number(response.headers.get("content-length") || 0);
-    if (response.status !== 200 || declaredLength !== length) {
-      throw new Error(
-        `Common Crawl range request expected HTTP 206; got HTTP ${response.status}`
-      );
-    }
-  }
 
   const buffer =
     Buffer.from(
@@ -462,12 +432,6 @@ async function downloadWarcRecord(
   if (!buffer.length) {
     throw new Error(
       "Empty WARC response"
-    );
-  }
-
-  if (buffer.length > length) {
-    throw new Error(
-      `WARC range returned too much data (${buffer.length} bytes; expected ${length})`
     );
   }
 
@@ -951,144 +915,59 @@ async function checkR2() {
   );
 }
 
-// ============================================================
-// CHECK EXISTING PAGE
-// ============================================================
+async function r2ObjectExists(key) {
+  try {
+    await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
+    return true;
+  } catch (error) {
+    if (error?.name === "NotFound" || error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return false;
+    throw error;
+  }
+}
 
-async function pageExists(
-  url
-) {
-  const result =
-    await pool.query(
-      `
-      SELECT id, url
-      FROM pages
-      WHERE url = $1
-      LIMIT 1
-      `,
-      [url]
-    );
+async function putR2Json(key, value) {
+  await r2.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: JSON.stringify(value), ContentType: "application/json" }));
+}
 
-  return result.rows[0] || null;
+function indexKeyForUrl(url) {
+  let host = "unknown";
+  try { host = new URL(url).hostname.toLowerCase(); } catch {}
+  return `index/${host}/${sha256(url)}.json`;
 }
 
 // ============================================================
-// SAVE PAGE
+// R2-ONLY DEDUPLICATION + SAVE
 // ============================================================
-
-async function savePage({
-  url,
-  title,
-  description,
-  content,
-  language,
-  contentHash,
-  r2Key,
-}) {
-  // Common Crawl's full HTML is already saved to R2. Keep Neon compact:
-  // store only an excerpt when supported, not the full page body.
-  const columnsResult = await pool.query(
-    `SELECT column_name
-       FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = 'pages'`
-  );
-  const available = new Set(columnsResult.rows.map((row) => row.column_name));
-
-  if (!available.has("url")) {
-    throw new Error("pages.url column is missing from Neon");
-  }
-
-  const excerpt = safeString(content).slice(0, 1800);
-  const hostname = (() => {
-    try { return new URL(url).hostname.toLowerCase(); }
-    catch { return ""; }
-  })();
-
-  const data = {
-    url,
-    canonical_url: url,
-    title: safeString(title).slice(0, 500),
-    description: safeString(description || excerpt).slice(0, 3000),
-    excerpt,
-    content: null,
-    content_hash: contentHash,
-    word_count: safeString(content).split(/\s+/).filter(Boolean).length,
-    language,
-    domain: hostname,
-    r2_key: r2Key,
-    crawl_status: "indexed",
-    last_crawled_at: new Date(),
-    updated_at: new Date(),
-  };
-
-  const fields = Object.keys(data).filter((field) => available.has(field));
-  // Older schemas may not have an excerpt column. Keep a small searchable
-  // fallback in content instead of putting the full page body into Neon.
-  if (!available.has("excerpt") && available.has("content")) {
-    data.content = excerpt;
-    if (!fields.includes("content")) fields.push("content");
-  }
-
-  const values = fields.map((field) => data[field]);
-  const placeholders = fields.map((_, index) => `$${index + 1}`);
-  const updates = fields
-    .filter((field) => field !== "url")
-    .map((field) => `\"${field}\" = EXCLUDED.\"${field}\"`);
-
-  const query = `INSERT INTO pages (${fields.map((field) => `\"${field}\"`).join(", ")})
-    VALUES (${placeholders.join(", ")})
-    ON CONFLICT (url) DO UPDATE SET ${updates.length ? updates.join(", ") : '\"url\" = EXCLUDED.\"url\"'}
-    RETURNING id`;
-
-  const result = await pool.query(query, values);
-  return result.rows[0];
+async function pageExists(url) {
+  return await r2ObjectExists(indexKeyForUrl(url));
 }
 
-// ============================================================
-// QUEUE DISCOVERED LINKS
-// ============================================================
+async function savePage({ url, title, description, content, language, contentHash, r2Key, html }) {
+  const host = new URL(url).hostname.toLowerCase();
+  const pageKey = `pages/${host}/${sha256(url)}.html`;
+  const indexKey = indexKeyForUrl(url);
+  if (await r2ObjectExists(indexKey)) return { duplicate: true, r2Key: pageKey };
+  await uploadToR2(pageKey, html);
+  await putR2Json(indexKey, {
+    id: sha256(url), url, canonical_url: url, title: title || "",
+    description: description || "", excerpt: String(content || "").slice(0, 1800),
+    language: language || "unknown", domain: host, r2_key: pageKey,
+    content_hash: contentHash, crawled_at: new Date().toISOString(),
+    search_text: `${title || ""} ${description || ""} ${String(content || "").slice(0, 5000)}`.slice(0, 7000)
+  });
+  return { duplicate: false, r2Key: pageKey };
+}
 
-async function queueLinks(
-  links
-) {
-  if (!links.length) {
-    return;
-  }
-
+async function queueLinks(links) {
   let inserted = 0;
-
-  for (const url of links) {
-    try {
-      await pool.query(
-        `
-        INSERT INTO crawl_queue
-        (
-          url,
-          status,
-          created_at
-        )
-        VALUES
-        (
-          $1,
-          'pending',
-          NOW()
-        )
-        ON CONFLICT (url)
-        DO NOTHING
-        `,
-        [url]
-      );
-
-      inserted++;
-    } catch (error) {
-      // Do not make a successful page import fail
-      // because crawl_queue schema/status differs.
-      log(
-        `Queue insert skipped: ${error.message}`
-      );
-    }
+  for (const raw of links || []) {
+    const url = normalizeUrl(raw);
+    if (!url || await pageExists(url)) continue;
+    const key = `queue/pending/${sha256(url)}.json`;
+    if (await r2ObjectExists(key)) continue;
+    await putR2Json(key, { url, queued_at: new Date().toISOString(), attempts: 0 });
+    inserted++;
   }
-
   return inserted;
 }
 
@@ -1201,73 +1080,28 @@ async function importRecord(
   const contentHash =
     sha256(html);
 
-  // ----------------------------------------------------------
-  // Check duplicate content
-  // ----------------------------------------------------------
-
-  const duplicateContent =
-    await pool.query(
-      `
-      SELECT id, url
-      FROM pages
-      WHERE content_hash = $1
-      LIMIT 1
-      `,
-      [contentHash]
-    );
-
-  if (
-    duplicateContent.rows.length
-  ) {
-    log(
-      `Duplicate content: ${url}`
-    );
-
-    return {
-      status: "duplicate-content",
-    };
-  }
+  // URL duplicates are checked against the R2 search index before download.
 
   // ----------------------------------------------------------
   // R2 KEY
   // ----------------------------------------------------------
 
-  const r2Key =
-    makeR2Key(
-      url,
-      contentHash
-    );
+  const host = new URL(url).hostname.toLowerCase();
+  const r2Key = `pages/${host}/${sha256(url)}.html`;
 
   // ----------------------------------------------------------
-  // SAVE HTML TO R2 FIRST
+  // SAVE PAGE + SEARCH METADATA TO R2 ONLY
   // ----------------------------------------------------------
-
-  await uploadToR2(
-    r2Key,
-    html
-  );
-
-  log(
-    `R2 saved: ${r2Key}`
-  );
-
-  // ----------------------------------------------------------
-  // SAVE PAGE TO NEON
-  // ----------------------------------------------------------
-
-  await savePage({
-    url,
-    title: parsed.title,
-    description: parsed.description,
-    content: parsed.content,
-    language: parsed.language,
-    contentHash,
-    r2Key,
+  const saved = await savePage({
+    url, title: parsed.title, description: parsed.description,
+    content: parsed.content, language: parsed.language,
+    contentHash, r2Key, html,
   });
-
-  log(
-    `Neon saved: ${url}`
-  );
+  if (saved.duplicate) {
+    log(`Duplicate URL skipped: ${url}`);
+    return { status: "duplicate", url };
+  }
+  log(`R2 saved page and search index: ${url}`);
 
   // ----------------------------------------------------------
   // DISCOVER LINKS
@@ -1329,19 +1163,6 @@ async function main() {
 
   log(
     `Target domains: ${TARGET_DOMAINS.join(",")}`
-  );
-
-  // ----------------------------------------------------------
-  // NEON TEST
-  // ----------------------------------------------------------
-
-  const dbTest =
-    await pool.query(
-      "SELECT NOW() AS now"
-    );
-
-  log(
-    `Neon connected: ${dbTest.rows[0].now}`
   );
 
   // ----------------------------------------------------------
@@ -1462,7 +1283,7 @@ async function main() {
       }
 
       // Small delay so the service does not
-      // hammer Common Crawl/R2/Neon.
+      // hammer Common Crawl and R2.
       await sleep(250);
     }
   }
@@ -1504,14 +1325,13 @@ async function main() {
   );
 
   log(
-    `Neon: connected`
+    `Storage: R2 only (no Neon writes)`
   );
 
   log(
     "=================================================="
   );
 
-  await pool.end();
 }
 
 // ============================================================
@@ -1526,8 +1346,7 @@ main()
     );
 
     try {
-      await pool.end();
-    } catch {}
+        } catch {}
 
     process.exit(1);
   });
