@@ -1,5 +1,4 @@
 import "dotenv/config";
-import pg from "pg";
 import * as cheerio from "cheerio";
 import robotsParser from "robots-parser";
 import crypto from "node:crypto";
@@ -8,20 +7,18 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
-  DeleteObjectCommand
+  DeleteObjectCommand,
+  HeadObjectCommand
 } from "@aws-sdk/client-s3";
 
-const { Pool } = pg;
 const env = process.env;
 
 // ============================================================
 // HEXORA WORLDWIDE CRAWLER
-// Neon = compact searchable metadata only
-// R2 = full crawled page content
-// Full page content is archived to R2 before metadata indexing
+// All new crawl data, metadata, index and queue are stored in R2.
+// Existing Neon data is not modified by this crawler.
 // ============================================================
 
-const DATABASE_URL = env.DATABASE_URL || "";
 const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
 const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
 
@@ -54,23 +51,6 @@ const USER_AGENT =
   env.HEXORA_USER_AGENT ||
   "HEXORA-Bot/1.0 (+https://hexorasearch.com/)";
 
-if (!DATABASE_URL) {
-  console.error("[HEXORA] DATABASE_URL missing.");
-  process.exit(1);
-}
-
-// ============================================================
-// NEON CONNECTION
-// ============================================================
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: Math.max(1, Number(env.DB_POOL_MAX || 5)),
-  connectionTimeoutMillis: 15000,
-  idleTimeoutMillis: 30000,
-  ssl: { rejectUnauthorized: false }
-});
-
 // ============================================================
 // CLOUDFLARE R2 CONNECTION
 // R2 storage is used for archiving pages.
@@ -100,7 +80,6 @@ if (!s3) {
   );
 }
 
-const columnCache = new Map();
 const robotsCache = new Map();
 
 const sleep = ms =>
@@ -151,45 +130,6 @@ function normalizeUrl(value) {
   } catch {
     return null;
   }
-}
-
-// ============================================================
-// DATABASE SCHEMA HELPERS
-// ============================================================
-
-async function getColumns(table) {
-  if (columnCache.has(table)) {
-    return columnCache.get(table);
-  }
-
-  const result = await pool.query(
-    `SELECT column_name
-       FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = $1`,
-    [table]
-  );
-
-  const columns = new Set(
-    result.rows.map(row => row.column_name)
-  );
-
-  if (columns.size === 0) {
-    throw new Error(`Missing database table: public.${table}`);
-  }
-
-  columnCache.set(table, columns);
-  return columns;
-}
-
-// ============================================================
-// STORAGE STATUS
-// New page bodies are stored in R2. Neon stores compact metadata.
-// Do not pause the R2 crawler because the old Neon content quota is full.
-// ============================================================
-
-async function getStorageStatus() {
-  return { safe: true, mode: "R2-first; compact Neon metadata" };
 }
 
 // ============================================================
@@ -278,9 +218,8 @@ async function fetchPage(url) {
   const html = await response.text();
   const $ = cheerio.load(html);
 
-  const jsonLdText = $('script[type="application/ld+json"]').first().text();
   $(
-    "script, style, noscript, svg, canvas, nav, footer"
+    "script, style, noscript, iframe, svg, canvas, nav, footer"
   ).remove();
 
   const title = (
@@ -321,83 +260,48 @@ async function fetchPage(url) {
     .slice(0, MAX_CONTENT);
 
   const links = [];
-  const seenLinks = new Set();
-  const ignoredExtensions = /\.(?:jpg|jpeg|png|gif|webp|svg|ico|css|js|pdf|zip|rar|7z|mp3|mp4|webm|woff2?|ttf|xml|json)(?:$|\?)/i;
-  const ignoredHosts = new Set(["facebook.com", "instagram.com", "tiktok.com"]);
+  const responseHost = new URL(response.url).hostname;
+
   $("a[href]").each((_, element) => {
-    if (links.length >= MAX_LINKS) return false;
+    if (links.length >= MAX_LINKS) {
+      return false;
+    }
+
     try {
-      const target = new URL($(element).attr("href"), response.url);
+      const target = new URL(
+        $(element).attr("href"),
+        response.url
+      );
+
       const normalized = normalizeUrl(target.toString());
-      const host = target.hostname.toLowerCase();
-      const hostBlocked = [...ignoredHosts].some(domain => host === domain || host.endsWith(`.${domain}`));
-      const path = `${target.pathname}${target.search}`;
-      if (normalized && !seenLinks.has(normalized) && !ignoredExtensions.test(path) && !hostBlocked && !target.username && !target.password && !/\/(?:logout|log-out|cart|checkout|wp-admin)(?:\/|$)/i.test(target.pathname) && target.search.length < 180) {
-        seenLinks.add(normalized);
+
+      // Discover same-host links only.
+      if (
+        normalized &&
+        target.hostname === responseHost &&
+        !links.includes(normalized)
+      ) {
         links.push(normalized);
       }
-    } catch { /* Ignore malformed links. */ }
+    } catch {
+      // Ignore malformed links.
+    }
   });
-
-  // Extract actual image URLs and article dates while the metadata is still available.
-  const imageItems = [];
-  const seenImages = new Set();
-  const addImage = (raw, alt = "") => {
-    if (!raw || imageItems.length >= 30) return;
-    try {
-      const imageUrl = new URL(raw, response.url);
-      if (!/^https?:$/.test(imageUrl.protocol)) return;
-      const normalizedImage = imageUrl.toString();
-      if (seenImages.has(normalizedImage) || /\.(?:svg|gif)(?:$|\?)/i.test(imageUrl.pathname)) return;
-      seenImages.add(normalizedImage);
-      imageItems.push({ url: normalizedImage, alt: String(alt || "").trim().slice(0, 250) });
-    } catch { /* Ignore malformed image URLs. */ }
-  };
-  addImage($('meta[property="og:image"]').attr("content"));
-  addImage($('meta[name="twitter:image"]').attr("content"));
-  addImage($('meta[property="og:image:url"]').attr("content"));
-  $("img[src], img[data-src]").each((_, element) => {
-    if (imageItems.length >= 30) return false;
-    addImage($(element).attr("src") || $(element).attr("data-src"), $(element).attr("alt"));
-  });
-
-  const videoItems = [];
-  const seenVideos = new Set();
-  const addVideo = raw => {
-    if (!raw || videoItems.length >= 10) return;
-    try {
-      const videoUrl = new URL(raw, response.url).toString();
-      if (!/^https?:/i.test(videoUrl) || seenVideos.has(videoUrl)) return;
-      seenVideos.add(videoUrl);
-      videoItems.push({ url: videoUrl, title });
-    } catch { /* Ignore malformed video URLs. */ }
-  };
-  addVideo($('meta[property="og:video"]').attr("content"));
-  addVideo($('meta[property="og:video:url"]').attr("content"));
-  $("video[src], video source[src]").each((_, element) => addVideo($(element).attr("src")));
-  $("iframe[src]").each((_, element) => {
-    const src = String($(element).attr("src") || "");
-    if (/youtube\.com|youtu\.be|vimeo\.com/i.test(src)) addVideo(src);
-  });
-
-  let publishedAt = $('meta[property="article:published_time"]').attr("content") || $('meta[name="datePublished"]').attr("content") || $('meta[property="og:updated_time"]').attr("content") || $("time[datetime]").first().attr("datetime") || null;
-  if (!publishedAt) {
-    try {
-      const parsed = JSON.parse(jsonLdText);
-      const items = Array.isArray(parsed) ? parsed : [parsed];
-      publishedAt = items.map(item => item.datePublished || item.dateCreated).find(Boolean) || null;
-    } catch { /* No structured article date. */ }
-  }
-  if (publishedAt && !Number.isFinite(Date.parse(publishedAt))) publishedAt = null;
 
   return {
+    html,
     url: canonical || normalizeUrl(response.url) || url,
-    title, description, content,
+    title,
+    description,
+    content,
     content_hash: hash(content),
-    word_count: content ? content.split(/\s+/u).length : 0,
-    language: ($("html").attr("lang") || "unknown").slice(0, 20),
-    links, image: imageItems[0]?.url || null, image_items: imageItems,
-    video_items: videoItems, published_at: publishedAt
+    word_count: content
+      ? content.split(/\s+/u).length
+      : 0,
+    language: (
+      $("html").attr("lang") || "unknown"
+    ).slice(0, 20),
+    links
   };
 }
 
@@ -423,12 +327,28 @@ async function putR2Json(key, value) {
   }));
 }
 
+async function objectExists(key) {
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+    return true;
+  } catch (error) {
+    if (error?.name === "NotFound" || error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return false;
+    throw error;
+  }
+}
+
+function pageIndexKey(url) {
+  const u = new URL(url);
+  return `index/${u.hostname}/${hash(url)}.json`;
+}
+
 async function enqueueUrls(urls) {
   for (const raw of [...new Set(urls)]) {
     const url = normalizeUrl(raw);
     if (!url) continue;
+    if (await objectExists(pageIndexKey(url))) continue;
     const key = `queue/pending/${hash(url)}.json`;
-    await putR2Json(key, { url, queued_at: new Date().toISOString(), attempts: 0 });
+    if (!(await objectExists(key))) await putR2Json(key, { url, queued_at: new Date().toISOString(), attempts: 0 });
   }
 }
 
@@ -463,57 +383,32 @@ async function finishJob(job, status, message = null) {
   await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: job.key }));
 }
 
-// Import a small batch of the old Neon queue into R2. This query is READ-ONLY;
-// an offset marker in R2 prevents re-importing the same rows on every restart.
-async function importLegacyNeonQueue() {
-  if (!DATABASE_URL || !s3) return;
-  const markerKey = "meta/neon-queue-import-offset.json";
-  const marker = await readR2Json(markerKey);
-  if (marker?.completed === true) return;
-  const offset = Math.max(0, Number(marker?.offset || 0));
-  try {
-    const result = await pool.query(
-      `SELECT url FROM crawl_queue WHERE status IN ('queued','pending','retry') ORDER BY id ASC LIMIT $1 OFFSET $2`,
-      [Math.max(100, Math.min(1000, Number(env.CRAWL_QUEUE_MIGRATE_BATCH || 500))), offset]
-    );
-    for (const row of result.rows) await enqueueUrls([row.url]);
-    const nextOffset = offset + result.rows.length;
-    await putR2Json(markerKey, {
-      offset: result.rows.length ? nextOffset : 0,
-      last_batch_count: result.rows.length,
-      updated_at: new Date().toISOString(),
-      completed: result.rows.length === 0
-    });
-    if (result.rows.length) console.log(`[HEXORA] Imported ${result.rows.length} legacy queue URLs from Neon (read-only); offset=${nextOffset}`);
-  } catch (error) {
-    console.warn("[HEXORA] Legacy Neon queue import skipped (read-only):", error.message);
-  }
-}
-
 // ============================================================
 // R2 ARCHIVE + SEARCH INDEX — no crawler writes to Neon
 // ============================================================
 async function archiveToR2(page) {
   if (!s3) throw new Error("R2 S3 credentials are not configured");
-  const host = new URL(page.url).hostname;
-  const pageKey = `pages/${host}/${hash(page.url)}.json`;
+  const host = new URL(page.url).hostname.toLowerCase();
+  const id = hash(page.url);
+  const pageKey = `pages/${host}/${id}.html`;
+  const metadataKey = `pages/${host}/${id}.json`;
+  const indexKey = `index/${host}/${id}.json`;
+  if (await objectExists(indexKey)) { console.log(`[HEXORA] Duplicate URL skipped: ${page.url}`); return pageKey; }
   const crawledAt = new Date().toISOString();
-  const savedPage = { ...page, crawled_at: crawledAt };
-  await putR2Json(pageKey, savedPage);
+  if (!page.html) throw new Error("Fetched HTML missing; refusing to save incomplete page");
+  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: pageKey, Body: page.html, ContentType: "text/html; charset=utf-8" }));
+  const savedPage = { ...page, html: undefined, r2_key: pageKey, crawled_at: crawledAt };
+  await putR2Json(metadataKey, savedPage);
   const indexDoc = {
-    id: hash(page.url), url: page.url, canonical_url: page.url,
+    id, url: page.url, canonical_url: page.url,
     title: page.title || "", description: page.description || "",
     excerpt: String(page.content || "").slice(0, 1800),
     language: page.language || "unknown", domain: host,
-    image: page.image || page.image_items?.[0]?.url || null,
-    image_items: Array.isArray(page.image_items) ? page.image_items : [],
-    video_items: Array.isArray(page.video_items) ? page.video_items : [],
-    published_at: page.published_at || null,
     r2_key: pageKey, crawled_at: crawledAt,
-    search_text: `${page.title || ""} ${page.description || ""} ${(page.image_items || []).map(item => item.alt || "").join(" ")} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
+    search_text: `${page.title || ""} ${page.description || ""} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
   };
-  await putR2Json(`index/${host}/${hash(page.url)}.json`, indexDoc);
-  console.log(`[HEXORA] R2 saved page + search index: ${page.url}`);
+  await putR2Json(indexKey, indexDoc);
+  console.log(`[HEXORA] R2 saved HTML + metadata + search index: ${page.url}`);
   return pageKey;
 }
 
@@ -523,60 +418,17 @@ async function savePage(page) {
 }
 
 // ============================================================
-// SEARCH-DRIVEN DISCOVERY — use known relevant pages to discover links
-// Query requests and crawl queue remain in R2; Neon is never written.
-// ============================================================
-async function processDiscoveryQueries() {
-  if (!s3) return;
-  const listed = await s3.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "discovery/queries/", MaxKeys: 5 }));
-  for (const item of listed.Contents || []) {
-    if (!item.Key?.endsWith(".json")) continue;
-    const request = await readR2Json(item.Key);
-    if (!request?.query || request.status !== "pending") continue;
-    const words = request.query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length > 1);
-    let token;
-    let scanned = 0;
-    let queued = 0;
-    const seen = new Set();
-    try {
-      do {
-        const page = await s3.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "index/", MaxKeys: 500, ...(token ? { ContinuationToken: token } : {}) }));
-        for (const object of page.Contents || []) {
-          if (!object.Key?.endsWith(".json")) continue;
-          scanned++;
-          let doc;
-          try { doc = await readR2Json(object.Key); } catch { continue; }
-          const haystack = `${doc?.title || ""} ${doc?.description || ""} ${doc?.search_text || doc?.excerpt || ""}`.toLowerCase();
-          const hits = words.filter(word => haystack.includes(word)).length;
-          const needed = words.length <= 1 ? 1 : Math.max(2, Math.ceil(words.length * 0.6));
-          if (!hits || hits < needed || !doc?.r2_key) continue;
-          let saved;
-          try { saved = await readR2Json(doc.r2_key); } catch { continue; }
-          for (const link of (saved?.links || [])) {
-            if (queued >= 100 || seen.has(link)) continue;
-            seen.add(link);
-            await enqueueUrls([link]);
-            queued++;
-          }
-          if (queued >= 100) break;
-        }
-        token = page.NextContinuationToken;
-      } while (token && scanned < 3000 && queued < 100);
-      await putR2Json(item.Key, { ...request, status: "processed", scanned_index_documents: scanned, queued_links: queued, updated_at: new Date().toISOString() });
-      console.log(`[HEXORA] Search discovery processed: query="${request.query}" scanned=${scanned} queued=${queued}`);
-    } catch (error) {
-      console.warn(`[HEXORA] Search discovery failed for "${request.query}":`, error.message);
-    }
-  }
-}
-
-// ============================================================
 // PROCESS A QUEUED URL — queue/status are stored only in R2
 // ============================================================
 async function processJob(job) {
   const url = normalizeUrl(job.url);
   if (!url) { await finishJob(job, "failed", "Invalid URL"); return "failed"; }
   try {
+    if (await objectExists(pageIndexKey(url))) {
+      await finishJob(job, "done");
+      console.log(`[HEXORA] Already indexed; skipped duplicate: ${url}`);
+      return "duplicate";
+    }
     if (!(await canCrawl(url))) {
       await finishJob(job, "blocked", "Robots policy denied or unavailable");
       return "blocked";
@@ -599,23 +451,15 @@ async function processJob(job) {
 // ============================================================
 async function main() {
   console.log("[HEXORA] Worldwide crawler starting...");
-  console.log("[HEXORA] Storage mode: R2-only writes (page data, search index, and queue). Neon is read-only for legacy queue import.");
+  console.log("[HEXORA] Storage mode: R2-only. No Neon connection or writes.");
   if (!s3) { console.error("[HEXORA] R2 credentials missing. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME."); process.exit(1); }
-  if (DATABASE_URL) {
-    try { await pool.query("SELECT 1"); console.log("[HEXORA] Neon read-only connection available for legacy queue import."); }
-    catch (error) { console.warn("[HEXORA] Neon unavailable; continuing with R2 queue only:", error.message); }
-  } else {
-    console.log("[HEXORA] DATABASE_URL not set; using only R2 queue/seeds.");
-  }
   const seeds = String(env.CRAWL_SEED_URLS || "").split(/[\s,]+/).filter(Boolean);
   if (seeds.length) { await enqueueUrls(seeds); console.log(`[HEXORA] Seed URLs queued in R2: ${seeds.length}`); }
   while (true) {
     try {
-      await importLegacyNeonQueue();
-      await processDiscoveryQueries();
       const jobs = await getJobs();
       if (!jobs.length) {
-        console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or wait for legacy queue import.");
+        console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or add seed URLs in R2 queue.");
         await sleep(LOOP_DELAY); continue;
       }
       let indexed = 0, failed = 0, blocked = 0;
@@ -645,15 +489,6 @@ async function shutdown() {
   console.log(
     "[HEXORA] Shutdown requested."
   );
-
-  try {
-    await pool.end();
-  } catch (error) {
-    console.error(
-      "[HEXORA] Database shutdown error:",
-      error.message
-    );
-  }
 
   try {
     s3?.destroy();
