@@ -68,7 +68,7 @@ const TIMEOUT_MS = Math.max(
 
 const MAX_RETRIES = Math.max(
   1,
-  Number(process.env.COMMONCRAWL_MAX_RETRIES || 4)
+  Number(process.env.COMMONCRAWL_MAX_RETRIES || 5)
 );
 
 const MAX_CONTENT = Math.max(
@@ -170,6 +170,8 @@ async function fetchRetry(
   let lastError = null;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
+    let retryAfterMs = 0;
+
     try {
       const response = await fetchWithTimeout(
         url,
@@ -181,20 +183,24 @@ async function fetchRetry(
       }
 
       const status = response.status;
+      const retryAfter = response.headers.get("retry-after");
 
-      if (
-        status !== 408 &&
-        status !== 429 &&
-        status < 500
-      ) {
-        throw new Error(
-          `HTTP ${status}`
-        );
+      if (retryAfter) {
+        const seconds = Number(retryAfter);
+        if (Number.isFinite(seconds) && seconds >= 0) {
+          retryAfterMs = Math.min(120000, seconds * 1000);
+        } else {
+          const retryDate = Date.parse(retryAfter);
+          if (Number.isFinite(retryDate)) {
+            retryAfterMs = Math.min(120000, Math.max(0, retryDate - Date.now()));
+          }
+        }
       }
 
-      throw new Error(
-        `HTTP ${status}`
-      );
+      // Release error response resources before retrying.
+      try { await response.body?.cancel(); } catch {}
+
+      throw new Error(`HTTP ${status}`);
     } catch (error) {
       lastError = error;
 
@@ -207,11 +213,16 @@ async function fetchRetry(
       );
 
       if (attempt < retries) {
-        const delay =
-          Math.min(
-            30000,
-            2000 * Math.pow(2, attempt - 1)
-          );
+        // Common Crawl may temporarily return 503. Use longer exponential
+        // backoff and honor Retry-After when the server provides it.
+        const exponentialDelay = Math.min(
+          60000,
+          5000 * Math.pow(2, attempt - 1)
+        );
+        const delay = Math.max(
+          retryAfterMs,
+          exponentialDelay + Math.floor(Math.random() * 1000)
+        );
 
         log(
           `Retry in ${delay}ms...`
