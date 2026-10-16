@@ -1,4 +1,3 @@
-import "dotenv/config";
 import pg from "pg";
 
 import {
@@ -128,7 +127,24 @@ while (true) {
       );
 
 
-    // Intentionally do not UPDATE Neon. Existing database stays read-only.
+    await pool.query(
+
+      `
+      UPDATE pages
+
+      SET
+        r2_key=$1,
+        r2_etag=$2
+
+      WHERE id=$3
+      `,
+
+      [
+        r.key,
+        r.etag,
+        row.id
+      ]
+    );
 
 
     lastId =
