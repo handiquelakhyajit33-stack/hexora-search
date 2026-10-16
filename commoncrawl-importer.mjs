@@ -1,4 +1,3 @@
-import "dotenv/config";
 // ============================================================
 // HEXORA SEARCH ENGINE
 // COMMON CRAWL IMPORTER
