@@ -1,3 +1,4 @@
+import "dotenv/config";
 // ============================================================
 // HEXORA SEARCH ENGINE
 // COMMON CRAWL IMPORTER
@@ -20,12 +21,12 @@ import {
 // CONFIG
 // ============================================================
 
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
+const R2_ACCOUNT_ID = String(process.env.R2_ACCOUNT_ID || "").trim();
+const R2_ACCESS_KEY_ID = String(process.env.R2_ACCESS_KEY_ID || "").trim();
+const R2_SECRET_ACCESS_KEY = String(process.env.R2_SECRET_ACCESS_KEY || "").trim();
 
 const R2_BUCKET_NAME =
-  process.env.R2_BUCKET_NAME || "hexora";
+  String(process.env.R2_BUCKET_NAME || "hexora").trim();
 
 const COMMONCRAWL_COLLECTION =
   process.env.COMMONCRAWL_COLLECTION || "";
@@ -82,7 +83,7 @@ const MAX_LINKS = Math.max(
 
 const USER_AGENT =
   process.env.HEXORA_USER_AGENT ||
-  "HEXORA-SearchBot/1.0 (+https://www.hexsorasearch.com/)";
+  "HEXORA-SearchBot/1.0 (+https://www.hexorasearch.com/)";
 
 // ============================================================
 // VALIDATION
