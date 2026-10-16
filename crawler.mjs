@@ -260,6 +260,51 @@ async function fetchPage(url) {
     .trim()
     .slice(0, MAX_CONTENT);
 
+  // Extract media and article metadata so the R2 index can power
+  // category-aware image/video/news search, not only web snippets.
+  const absoluteUrl = value => {
+    try {
+      const u = new URL(value, response.url);
+      return ["http:", "https:"].includes(u.protocol) ? u.toString() : null;
+    } catch { return null; }
+  };
+  const imageSet = new Set();
+  for (const value of [
+    $('meta[property="og:image"]').attr('content'),
+    $('meta[name="twitter:image"]').attr('content'),
+    $('meta[property="og:image:url"]').attr('content')
+  ]) {
+    const u = value && absoluteUrl(value);
+    if (u) imageSet.add(u);
+  }
+  $('img[src]').each((_, el) => {
+    if (imageSet.size >= 12) return false;
+    const u = absoluteUrl($(el).attr('src'));
+    if (u) imageSet.add(u);
+  });
+  const videoSet = new Set();
+  for (const value of [
+    $('meta[property="og:video"]').attr('content'),
+    $('meta[property="og:video:url"]').attr('content'),
+    $('meta[name="twitter:player:stream"]').attr('content')
+  ]) {
+    const u = value && absoluteUrl(value);
+    if (u) videoSet.add(u);
+  }
+  $('video[src], video source[src], iframe[src]').each((_, el) => {
+    if (videoSet.size >= 8) return false;
+    const u = absoluteUrl($(el).attr('src'));
+    if (u && (/\.(mp4|webm|m3u8)(?:$|[?#])/i.test(u) || /youtube|youtu\.be|vimeo|dailymotion/i.test(u))) videoSet.add(u);
+  });
+  const publishedAt = (
+    $('meta[property="article:published_time"]').attr('content') ||
+    $('meta[name="pubdate"]').attr('content') ||
+    $('meta[name="date"]').attr('content') ||
+    $('time[datetime]').first().attr('datetime') || ''
+  ).trim().slice(0, 100);
+  const articleType = String($('meta[property="og:type"]').attr('content') || '').toLowerCase();
+  const isNews = /article|news/i.test(articleType) || /news|press-release|journalism/i.test(String($('meta[name="section"]').attr('content') || ''));
+
   const links = [];
   const responseHost = new URL(response.url).hostname;
 
@@ -276,11 +321,12 @@ async function fetchPage(url) {
 
       const normalized = normalizeUrl(target.toString());
 
-      // Discover same-host links only.
+      // Discover both same-host and external links to expand the global
+      // frontier. Queue-level URL deduplication prevents repeated URLs.
       if (
         normalized &&
-        target.hostname === responseHost &&
-        !links.includes(normalized)
+        !links.includes(normalized) &&
+        !/\.(?:pdf|zip|rar|7z|exe|dmg|iso|mp3|wav|mp4|webm)(?:$|[?#])/i.test(target.pathname)
       ) {
         links.push(normalized);
       }
@@ -302,6 +348,11 @@ async function fetchPage(url) {
     language: (
       $("html").attr("lang") || "unknown"
     ).slice(0, 20),
+    image_items: [...imageSet].map(url => ({ url, image_url: url, source_url: canonical || response.url })),
+    video_items: [...videoSet].map(url => ({ url, video_url: url, source_url: canonical || response.url })),
+    published_at: publishedAt || null,
+    is_news: isNews,
+    content_type: isNews ? "news" : (videoSet.size ? "video" : (imageSet.size ? "image" : "web")),
     links
   };
 }
@@ -406,6 +457,11 @@ async function archiveToR2(page) {
     excerpt: String(page.content || "").slice(0, 1800),
     language: page.language || "unknown", domain: host,
     r2_key: pageKey, crawled_at: crawledAt,
+    published_at: page.published_at || null,
+    is_news: Boolean(page.is_news),
+    content_type: page.content_type || "web",
+    image_items: Array.isArray(page.image_items) ? page.image_items : [],
+    video_items: Array.isArray(page.video_items) ? page.video_items : [],
     search_text: `${page.title || ""} ${page.description || ""} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
   };
   await putR2Json(indexKey, indexDoc);
