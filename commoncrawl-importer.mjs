@@ -35,17 +35,23 @@ const COMMONCRAWL_COLLECTION =
 // environment variable can optionally override them with comma-separated
 // domains or Common Crawl wildcard patterns.
 const DEFAULT_TARGET_PATTERNS = [
-  "*.com/*", "*.org/*", "*.net/*", "*.edu/*", "*.gov/*",
-  "*.in/*", "*.uk/*", "*.de/*", "*.jp/*", "*.fr/*",
-  "*.au/*", "*.ca/*", "*.br/*", "*.cn/*", "*.io/*",
-  "*.co/*", "*.info/*", "*.biz/*", "*.app/*", "*.dev/*",
-  "*.ai/*", "*.me/*", "*.us/*", "*.eu/*", "*.ru/*",
-  "*.za/*", "*.ng/*", "*.ke/*", "*.id/*", "*.sg/*",
-  "*.nz/*", "*.mx/*", "*.es/*", "*.it/*", "*.nl/*",
-  "*.se/*", "*.no/*", "*.ch/*", "*.pl/*", "*.tr/*",
-  "*.kr/*", "*.tw/*", "*.hk/*", "*.ar/*", "*.cl/*",
-  "*.pk/*", "*.bd/*", "*.lk/*", "*.np/*", "*.gov.in/*",
-  "*.ac.uk/*", "*.com.au/*", "*.co.in/*"
+  // Use specific hosts instead of top-level wildcard queries such as *.com/*.
+  // TLD-wide queries often time out (HTTP 502/504) on the Common Crawl index.
+  // This is a starter set of worldwide seed hosts, not a complete web index.
+  "wikipedia.org/*", "wikimedia.org/*", "bbc.com/*", "reuters.com/*",
+  "theguardian.com/*", "nytimes.com/*", "apnews.com/*", "cnn.com/*",
+  "nasa.gov/*", "usa.gov/*", "noaa.gov/*", "nih.gov/*",
+  "india.gov.in/*", "nic.in/*", "thehindu.com/*", "indianexpress.com/*",
+  "hindustantimes.com/*", "assam.gov.in/*", "pratidintime.com/*",
+  "bbc.co.uk/*", "gov.uk/*", "parliament.uk/*", "bund.de/*",
+  "dw.com/*", "lemonde.fr/*", "service-public.fr/*", "nhk.or.jp/*",
+  "japan.go.jp/*", "abc.net.au/*", "australia.gov.au/*", "cbc.ca/*",
+  "canada.ca/*", "globo.com/*", "gov.br/*", "elpais.com/*",
+  "administracion.gob.es/*", "ansa.it/*", "go.jp/*", "gov.cn/*",
+  "xinhuanet.com/*", "gov.za/*", "news24.com/*", "channelnewsasia.com/*",
+  "gov.sg/*", "rnz.co.nz/*", "beehive.govt.nz/*", "dawn.com/*",
+  "bdnews24.com/*", "thejakartapost.com/*", "gov.id/*", "aljazeera.com/*",
+  "who.int/*", "un.org/*", "unesco.org/*"
 ];
 const TARGET_DOMAINS = String(
   process.env.COMMONCRAWL_TARGET_DOMAINS || DEFAULT_TARGET_PATTERNS.join(",")
@@ -335,8 +341,8 @@ async function queryIndex(
       "pageSize",
       String(
         Math.max(
-          PAGES_PER_DOMAIN * 2,
-          50
+          PAGES_PER_DOMAIN,
+          10
         )
       )
     );
@@ -389,6 +395,9 @@ async function queryIndex(
         log(`No matching captures for pattern ${pattern} in ${collection}`);
       } else {
         log(`Index query failed for ${pattern}: ${error.message}`);
+        if (/HTTP (?:502|503|504)\b/.test(String(error?.message || ""))) {
+          log(`Skipping this pattern after retries; continue with the next host/pattern.`);
+        }
       }
     }
   }
