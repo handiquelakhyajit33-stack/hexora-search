@@ -35,27 +35,192 @@ const COMMONCRAWL_COLLECTION =
 // environment variable can optionally override them with comma-separated
 // domains or Common Crawl wildcard patterns.
 const DEFAULT_TARGET_PATTERNS = [
-  // Use specific hosts instead of top-level wildcard queries such as *.com/*.
-  // TLD-wide queries often time out (HTTP 502/504) on the Common Crawl index.
-  // This is a starter set of worldwide seed hosts, not a complete web index.
-  "wikipedia.org/*", "wikimedia.org/*", "bbc.com/*", "reuters.com/*",
-  "theguardian.com/*", "nytimes.com/*", "apnews.com/*", "cnn.com/*",
-  "nasa.gov/*", "usa.gov/*", "noaa.gov/*", "nih.gov/*",
-  "india.gov.in/*", "nic.in/*", "thehindu.com/*", "indianexpress.com/*",
-  "hindustantimes.com/*", "assam.gov.in/*", "pratidintime.com/*",
-  "bbc.co.uk/*", "gov.uk/*", "parliament.uk/*", "bund.de/*",
-  "dw.com/*", "lemonde.fr/*", "service-public.fr/*", "nhk.or.jp/*",
-  "japan.go.jp/*", "abc.net.au/*", "australia.gov.au/*", "cbc.ca/*",
-  "canada.ca/*", "globo.com/*", "gov.br/*", "elpais.com/*",
-  "administracion.gob.es/*", "ansa.it/*", "go.jp/*", "gov.cn/*",
-  "xinhuanet.com/*", "gov.za/*", "news24.com/*", "channelnewsasia.com/*",
-  "gov.sg/*", "rnz.co.nz/*", "beehive.govt.nz/*", "dawn.com/*",
-  "bdnews24.com/*", "thejakartapost.com/*", "gov.id/*", "aljazeera.com/*",
-  "who.int/*", "un.org/*", "unesco.org/*"
+  // Start with explicit .com hosts; broad *.com/* queries often time out.
+  // This is a prioritized seed list, not complete coverage of all .com sites.
+  "www.google.com/*",
+  "www.youtube.com/*",
+  "www.facebook.com/*",
+  "www.instagram.com/*",
+  "www.reddit.com/*",
+  "www.linkedin.com/*",
+  "www.microsoft.com/*",
+  "www.apple.com/*",
+  "www.amazon.com/*",
+  "www.wikipedia.org/*",
+  "www.yahoo.com/*",
+  "www.bing.com/*",
+  "www.ebay.com/*",
+  "www.pinterest.com/*",
+  "www.tiktok.com/*",
+  "www.netflix.com/*",
+  "www.adobe.com/*",
+  "www.ibm.com/*",
+  "www.oracle.com/*",
+  "www.salesforce.com/*",
+  "www.cnn.com/*",
+  "www.nbcnews.com/*",
+  "www.foxnews.com/*",
+  "www.usatoday.com/*",
+  "www.washingtonpost.com/*",
+  "www.bloomberg.com/*",
+  "www.forbes.com/*",
+  "www.cbsnews.com/*",
+  "www.npr.org/*",
+  "www.weather.com/*",
+  "www.nationalgeographic.com/*",
+  "www.nytimes.com/*",
+  "www.reuters.com/*",
+  "www.theguardian.com/*",
+  "www.bbc.com/*",
+  "www.espn.com/*",
+  "www.nba.com/*",
+  "www.nfl.com/*",
+  "www.mlb.com/*",
+  "www.fifa.com/*",
+  "www.coursera.org/*",
+  "www.udemy.com/*",
+  "www.khanacademy.org/*",
+  "www.stackoverflow.com/*",
+  "github.com/*",
+  "www.gitlab.com/*",
+  "www.mozilla.org/*",
+  "www.cloudflare.com/*",
+  "www.openai.com/*",
+  "www.nvidia.com/*",
+  "www.intel.com/*",
+  "www.amd.com/*",
+  "www.samsung.com/*",
+  "www.sony.com/*",
+  "www.dell.com/*",
+  "www.hp.com/*",
+  "www.lenovo.com/*",
+  "www.cisco.com/*",
+  "www.zoom.com/*",
+  "www.slack.com/*",
+  "www.shopify.com/*",
+  "www.walmart.com/*",
+  "www.target.com/*",
+  "www.bestbuy.com/*",
+  "www.etsy.com/*",
+  "www.booking.com/*",
+  "www.expedia.com/*",
+  "www.tripadvisor.com/*",
+  "www.airbnb.com/*",
+  "www.uber.com/*",
+  "www.lyft.com/*",
+  "www.paypal.com/*",
+  "www.visa.com/*",
+  "www.mastercard.com/*",
+  "www.chase.com/*",
+  "www.bankofamerica.com/*",
+  "www.wellsfargo.com/*",
+  "www.fidelity.com/*",
+  "www.morningstar.com/*",
+  "www.investopedia.com/*",
+  "www.healthline.com/*",
+  "www.webmd.com/*",
+  "www.mayoclinic.org/*",
+  "www.cdc.gov/*",
+  "www.nih.gov/*",
+  "www.nasa.gov/*",
+  "www.nationalparks.org/*",
+  "www.whitehouse.gov/*",
+  "www.usa.gov/*",
+  "www.state.gov/*",
+  "www.homedepot.com/*",
+  "www.lowes.com/*",
+  "www.ikea.com/*",
+  "www.coca-cola.com/*",
+  "www.pepsi.com/*",
+  "www.nike.com/*",
+  "www.adidas.com/*",
+  "www.puma.com/*",
+  "www.underarmour.com/*",
+  "www.disney.com/*",
+  "www.warnerbros.com/*",
+  "www.universalpictures.com/*",
+  "www.imdb.com/*",
+  "www.rottentomatoes.com/*",
+  "www.goodreads.com/*",
+  "www.medium.com/*",
+  "www.quora.com/*",
+  "www.tumblr.com/*",
+  "www.wordpress.com/*",
+  "www.atlassian.com/*",
+  "www.notion.so/*",
+  "www.dropbox.com/*",
+  "www.box.com/*",
+  "www.intuit.com/*",
+  "www.turbotax.com/*",
+  "www.indeed.com/*",
+  "www.glassdoor.com/*",
+  "www.monster.com/*",
+  "www.zillow.com/*",
+  "www.realtor.com/*",
+  "www.autotrader.com/*",
+  "www.cars.com/*",
+  "www.carmax.com/*",
+  "www.edmunds.com/*",
+  "www.kbb.com/*",
+  "www.allrecipes.com/*",
+  "www.foodnetwork.com/*",
+  "www.bonappetit.com/*",
+  "www.epicurious.com/*",
+  "www.seriouseats.com/*",
+  "www.marthastewart.com/*",
+  "www.food.com/*",
+  "www.delish.com/*",
+  "www.simplyrecipes.com/*",
+  "www.kingarthurbaking.com/*",
+  "www.britannica.com/*",
+  "www.dictionary.com/*",
+  "www.merriam-webster.com/*",
+  "www.thespruce.com/*",
+  "www.parents.com/*",
+  "www.babycenter.com/*",
+  "www.popsugar.com/*",
+  "www.vogue.com/*",
+  "www.gq.com/*",
+  "www.cosmopolitan.com/*",
+  "www.people.com/*",
+  "www.usmagazine.com/*",
+  "www.gamespot.com/*",
+  "www.ign.com/*",
+  "www.polygon.com/*",
+  "www.gamesradar.com/*",
+  "www.pcgamer.com/*",
+  "www.tomshardware.com/*",
+  "www.techradar.com/*",
+  "www.theverge.com/*",
+  "www.wired.com/*",
+  "www.engadget.com/*",
+  "www.cnet.com/*",
+  "www.zdnet.com/*",
+  "www.techcrunch.com/*",
+  "www.producthunt.com/*",
+  "www.kickstarter.com/*",
+  "www.indiegogo.com/*",
+  "www.gofundme.com/*",
+  "www.change.org/*",
+  "www.archive.org/*",
+  "www.fandom.com/*",
+  "www.ziprecruiter.com/*",
+  "www.careerbuilder.com/*",
+  "www.simplyhired.com/*",
+  "www.docusign.com/*",
+  "www.canva.com/*",
+  "www.figma.com/*",
+  "www.autodesk.com/*",
+  "www.sketchup.com/*",
+  "www.trimble.com/*"
 ];
-const TARGET_DOMAINS = String(
-  process.env.COMMONCRAWL_TARGET_DOMAINS || DEFAULT_TARGET_PATTERNS.join(",")
+const EXTRA_TARGET_PATTERNS = String(
+  process.env.COMMONCRAWL_TARGET_DOMAINS || ""
 ).split(",").map((x) => x.trim()).filter(Boolean);
+const TARGET_DOMAINS = [...new Set([
+  ...DEFAULT_TARGET_PATTERNS,
+  ...EXTRA_TARGET_PATTERNS.filter((x) => !DEFAULT_TARGET_PATTERNS.includes(x)),
+])];
 
 const PAGES_PER_DOMAIN = Math.max(
   1,
@@ -74,7 +239,7 @@ const TIMEOUT_MS = Math.max(
 
 const MAX_RETRIES = Math.max(
   1,
-  Number(process.env.COMMONCRAWL_MAX_RETRIES || 5)
+  Number(process.env.COMMONCRAWL_MAX_RETRIES || 1)
 );
 
 const MAX_CONTENT = Math.max(
@@ -230,6 +395,13 @@ async function fetchRetry(
         break;
       }
 
+      // Common Crawl index/WARC overload errors are not helped by repeated
+      // immediate requests. Skip this request and let the importer continue.
+      if ([502, 503, 504].includes(error?.status)) {
+        log(`Not retrying HTTP ${error.status}; skipping this request.`);
+        break;
+      }
+
       if (attempt < retries) {
         // Common Crawl may temporarily return 503. Use longer exponential
         // backoff and honor Retry-After when the server provides it.
@@ -361,7 +533,7 @@ async function queryIndex(
             "User-Agent": USER_AGENT,
             Accept: "application/json",
           },
-        });
+        }, 1);
 
       const text =
         await response.text();
@@ -1278,6 +1450,8 @@ async function main() {
   const collection =
     await discoverCollection();
 
+  log(`Target priority: explicit .com hosts first (${DEFAULT_TARGET_PATTERNS.length} hosts)`);
+  log(`Total configured host patterns: ${TARGET_DOMAINS.length}`);
   log(
     `Using collection: ${collection}`
   );
