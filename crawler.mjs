@@ -1,27 +1,26 @@
 import "dotenv/config";
+import pg from "pg";
 import * as cheerio from "cheerio";
 import robotsParser from "robots-parser";
 import crypto from "node:crypto";
 import {
   S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  ListObjectsV2Command,
-  DeleteObjectCommand,
-  HeadObjectCommand,
-  HeadBucketCommand
+  PutObjectCommand
 } from "@aws-sdk/client-s3";
 
+const { Pool } = pg;
 const env = process.env;
 
 // ============================================================
 // HEXORA WORLDWIDE CRAWLER
-// All new crawl data, metadata, index and queue are stored in R2.
-// Existing Neon data is not modified by this crawler.
+// Neon = compact searchable metadata only
+// R2 = full crawled page content
+// Full page content is archived to R2 before metadata indexing
 // ============================================================
 
-const CF_ACCOUNT_ID = String(env.R2_ACCOUNT_ID || "").trim();
-const R2_BUCKET = String(env.R2_BUCKET_NAME || "hexora").trim();
+const DATABASE_URL = env.DATABASE_URL || "";
+const CF_ACCOUNT_ID = env.R2_ACCOUNT_ID || "";
+const R2_BUCKET = env.R2_BUCKET_NAME || "hexora";
 
 const BATCH_SIZE = Math.max(
   1,
@@ -52,6 +51,146 @@ const USER_AGENT =
   env.HEXORA_USER_AGENT ||
   "HEXORA-Bot/1.0 (+https://hexorasearch.com/)";
 
+// Public .com starting points. Robots rules and site rate limits still apply.
+// Additional seed URLs can be supplied through CRAWL_SEED_URLS (comma-separated).
+const DEFAULT_COM_SEEDS = [
+  // User-requested first targets: Amazon and Flipkart.
+  "https://www.flipkart.com/",
+  "https://www.amazon.com/",
+  "https://www.amazon.in/",
+  "https://www.youtube.com/",
+  "https://www.facebook.com/",
+  "https://www.whatsapp.com/",
+  "https://www.instagram.com/",
+  "https://www.reddit.com/",
+  "https://www.microsoft.com/",
+  "https://www.apple.com/",
+  "https://www.netflix.com/",
+  "https://www.google.com/",
+  "https://www.linkedin.com/",
+  "https://www.nytimes.com/",
+  "https://www.cnn.com/",
+  "https://www.bbc.com/",
+  "https://www.espn.com/",
+  "https://www.nfl.com/",
+  "https://www.ebay.com/",
+  "https://www.walmart.com/",
+  "https://www.target.com/",
+  "https://www.adobe.com/",
+  "https://www.oracle.com/",
+  "https://www.ibm.com/",
+  "https://www.salesforce.com/",
+  "https://www.dropbox.com/",
+  "https://www.zoom.com/",
+  "https://www.canva.com/",
+  "https://www.shopify.com/",
+  "https://www.booking.com/",
+  "https://www.expedia.com/",
+  "https://www.airbnb.com/",
+  "https://www.spotify.com/",
+  "https://www.pinterest.com/",
+  "https://www.tiktok.com/",
+  "https://www.stackoverflow.com/",
+  "https://www.github.com/",
+  "https://www.cloudflare.com/",
+  "https://www.cloudflare.com/learning/",
+  "https://www.weather.com/",
+  "https://www.accuweather.com/",
+  "https://www.imdb.com/",
+  "https://www.rottentomatoes.com/",
+  "https://www.nationalgeographic.com/"
+];
+
+const SEED_URLS = String(env.CRAWL_SEED_URLS || "")
+  .split(",")
+  .map(value => value.trim())
+  .filter(Boolean);
+
+const HOST_MIN_DELAY_MS = Math.max(
+  1500,
+  Number(env.CRAWL_HOST_DELAY_MS || 2500)
+);
+const MAX_HTML_BYTES = Math.max(
+  256 * 1024,
+  Number(env.CRAWL_MAX_HTML_BYTES || 2 * 1024 * 1024)
+);
+const hostLastRequest = new Map();
+
+function isComDomain(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/\.$/, "");
+  return host === "com" || host.endsWith(".com");
+}
+
+function isComUrl(value) {
+  try { return isComDomain(new URL(value).hostname); }
+  catch { return false; }
+}
+
+function crawlPriority(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    // Highest priority for the explicitly requested public storefronts.
+    if (host === "flipkart.com" || host.endsWith(".flipkart.com")) return 100000;
+    if (host === "amazon.com" || host.endsWith(".amazon.com")) return 99000;
+    if (host === "amazon.in" || host.endsWith(".amazon.in")) return 98000;
+  } catch {}
+  return isComUrl(value) ? 1000 : 100;
+}
+
+async function waitForHost(url) {
+  const host = new URL(url).hostname.toLowerCase();
+  const previous = hostLastRequest.get(host) || 0;
+  const wait = HOST_MIN_DELAY_MS - (Date.now() - previous);
+  if (wait > 0) await sleep(wait);
+  hostLastRequest.set(host, Date.now());
+}
+
+async function readHtmlLimited(response) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_HTML_BYTES) {
+      throw new Error(`HTML exceeds ${MAX_HTML_BYTES} byte safety limit`);
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_HTML_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`HTML exceeds ${MAX_HTML_BYTES} byte safety limit`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+if (!DATABASE_URL) {
+  console.error("[HEXORA] DATABASE_URL missing.");
+  process.exit(1);
+}
+
+// ============================================================
+// NEON CONNECTION
+// ============================================================
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: Math.max(1, Number(env.DB_POOL_MAX || 5)),
+  connectionTimeoutMillis: 15000,
+  idleTimeoutMillis: 30000,
+  ssl: { rejectUnauthorized: false }
+});
+
 // ============================================================
 // CLOUDFLARE R2 CONNECTION
 // R2 storage is used for archiving pages.
@@ -60,15 +199,15 @@ const USER_AGENT =
 
 const s3 =
   CF_ACCOUNT_ID &&
-  String(env.R2_ACCESS_KEY_ID || "").trim() &&
-  String(env.R2_SECRET_ACCESS_KEY || "").trim()
+  env.R2_ACCESS_KEY_ID &&
+  env.R2_SECRET_ACCESS_KEY
     ? new S3Client({
         region: "auto",
         endpoint:
           `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
         credentials: {
-          accessKeyId: String(env.R2_ACCESS_KEY_ID || "").trim(),
-          secretAccessKey: String(env.R2_SECRET_ACCESS_KEY || "").trim()
+          accessKeyId: env.R2_ACCESS_KEY_ID,
+          secretAccessKey: env.R2_SECRET_ACCESS_KEY
         }
       })
     : null;
@@ -81,6 +220,7 @@ if (!s3) {
   );
 }
 
+const columnCache = new Map();
 const robotsCache = new Map();
 
 const sleep = ms =>
@@ -131,6 +271,45 @@ function normalizeUrl(value) {
   } catch {
     return null;
   }
+}
+
+// ============================================================
+// DATABASE SCHEMA HELPERS
+// ============================================================
+
+async function getColumns(table) {
+  if (columnCache.has(table)) {
+    return columnCache.get(table);
+  }
+
+  const result = await pool.query(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1`,
+    [table]
+  );
+
+  const columns = new Set(
+    result.rows.map(row => row.column_name)
+  );
+
+  if (columns.size === 0) {
+    throw new Error(`Missing database table: public.${table}`);
+  }
+
+  columnCache.set(table, columns);
+  return columns;
+}
+
+// ============================================================
+// STORAGE STATUS
+// New page bodies are stored in R2. Neon stores compact metadata.
+// Do not pause the R2 crawler because the old Neon content quota is full.
+// ============================================================
+
+async function getStorageStatus() {
+  return { safe: true, mode: "R2-first; compact Neon metadata" };
 }
 
 // ============================================================
@@ -193,17 +372,46 @@ async function canCrawl(url) {
 // ============================================================
 
 async function fetchPage(url) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      Accept: "text/html,application/xhtml+xml"
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT)
-  });
+  let response;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await waitForHost(url);
+    try {
+      response = await fetch(url, {
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml"
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT)
+      });
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      await sleep(1000 * attempt);
+      continue;
+    }
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    if (response.ok) break;
+    const status = response.status;
+    const retryable = status === 408 || status === 425 || status === 429 || status >= 500;
+    if (!retryable || attempt >= 3) {
+      throw new Error(`HTTP ${status}`);
+    }
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const waitMs = Math.min(30000, Math.max(1000 * attempt, retryAfter * 1000));
+    try { await response.body?.cancel(); } catch {}
+    console.warn(`[HEXORA] Temporary HTTP ${status}; bounded retry ${attempt}/2 after ${waitMs}ms: ${url}`);
+    await sleep(waitMs);
+  }
+
+  if (!response || !response.ok) {
+    throw new Error("Request failed after bounded retries");
+  }
+
+  const finalUrl = normalizeUrl(response.url || url);
+  if (!finalUrl) throw new Error("Invalid final URL after redirect");
+  // Do not let an allowed .com seed silently redirect the crawler onto another TLD.
+  if (isComUrl(url) && !isComUrl(finalUrl)) {
+    throw new Error("Redirect left .com domain scope");
   }
 
   const contentType =
@@ -216,7 +424,7 @@ async function fetchPage(url) {
     throw new Error("URL does not return HTML");
   }
 
-  const html = await response.text();
+  const html = await readHtmlLimited(response);
   const $ = cheerio.load(html);
 
   $(
@@ -260,51 +468,6 @@ async function fetchPage(url) {
     .trim()
     .slice(0, MAX_CONTENT);
 
-  // Extract media and article metadata so the R2 index can power
-  // category-aware image/video/news search, not only web snippets.
-  const absoluteUrl = value => {
-    try {
-      const u = new URL(value, response.url);
-      return ["http:", "https:"].includes(u.protocol) ? u.toString() : null;
-    } catch { return null; }
-  };
-  const imageSet = new Set();
-  for (const value of [
-    $('meta[property="og:image"]').attr('content'),
-    $('meta[name="twitter:image"]').attr('content'),
-    $('meta[property="og:image:url"]').attr('content')
-  ]) {
-    const u = value && absoluteUrl(value);
-    if (u) imageSet.add(u);
-  }
-  $('img[src]').each((_, el) => {
-    if (imageSet.size >= 12) return false;
-    const u = absoluteUrl($(el).attr('src'));
-    if (u) imageSet.add(u);
-  });
-  const videoSet = new Set();
-  for (const value of [
-    $('meta[property="og:video"]').attr('content'),
-    $('meta[property="og:video:url"]').attr('content'),
-    $('meta[name="twitter:player:stream"]').attr('content')
-  ]) {
-    const u = value && absoluteUrl(value);
-    if (u) videoSet.add(u);
-  }
-  $('video[src], video source[src], iframe[src]').each((_, el) => {
-    if (videoSet.size >= 8) return false;
-    const u = absoluteUrl($(el).attr('src'));
-    if (u && (/\.(mp4|webm|m3u8)(?:$|[?#])/i.test(u) || /youtube|youtu\.be|vimeo|dailymotion/i.test(u))) videoSet.add(u);
-  });
-  const publishedAt = (
-    $('meta[property="article:published_time"]').attr('content') ||
-    $('meta[name="pubdate"]').attr('content') ||
-    $('meta[name="date"]').attr('content') ||
-    $('time[datetime]').first().attr('datetime') || ''
-  ).trim().slice(0, 100);
-  const articleType = String($('meta[property="og:type"]').attr('content') || '').toLowerCase();
-  const isNews = /article|news/i.test(articleType) || /news|press-release|journalism/i.test(String($('meta[name="section"]').attr('content') || ''));
-
   const links = [];
   const responseHost = new URL(response.url).hostname;
 
@@ -321,12 +484,12 @@ async function fetchPage(url) {
 
       const normalized = normalizeUrl(target.toString());
 
-      // Discover both same-host and external links to expand the global
-      // frontier. Queue-level URL deduplication prevents repeated URLs.
+      // Keep same-host navigation and discover other public .com hosts.
+      // This is bounded by MAX_LINKS and the queue's URL uniqueness constraint.
       if (
         normalized &&
-        !links.includes(normalized) &&
-        !/\.(?:pdf|zip|rar|7z|exe|dmg|iso|mp3|wav|mp4|webm)(?:$|[?#])/i.test(target.pathname)
+        (target.hostname.toLowerCase() === responseHost.toLowerCase() || isComDomain(target.hostname)) &&
+        !links.includes(normalized)
       ) {
         links.push(normalized);
       }
@@ -336,7 +499,6 @@ async function fetchPage(url) {
   });
 
   return {
-    html,
     url: canonical || normalizeUrl(response.url) || url,
     title,
     description,
@@ -348,157 +510,291 @@ async function fetchPage(url) {
     language: (
       $("html").attr("lang") || "unknown"
     ).slice(0, 20),
-    image_items: [...imageSet].map(url => ({ url, image_url: url, source_url: canonical || response.url })),
-    video_items: [...videoSet].map(url => ({ url, video_url: url, source_url: canonical || response.url })),
-    published_at: publishedAt || null,
-    is_news: isNews,
-    content_type: isNews ? "news" : (videoSet.size ? "video" : (imageSet.size ? "image" : "web")),
     links
   };
 }
 
 // ============================================================
-// R2 QUEUE HELPERS — crawler never writes to Neon
+// QUEUE HELPERS
+// Requires crawl_queue.id, url and status.
+// crawl_queue.url must have a UNIQUE constraint.
 // ============================================================
-async function readR2Json(key) {
-  if (!s3) return null;
-  try {
-    const response = await s3.send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }));
-    return JSON.parse(await response.Body.transformToString());
-  } catch (error) {
-    if (error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return null;
-    throw error;
-  }
-}
-
-async function putR2Json(key, value) {
-  if (!s3) throw new Error("R2 S3 credentials are not configured");
-  await s3.send(new PutObjectCommand({
-    Bucket: R2_BUCKET, Key: key,
-    Body: JSON.stringify(value), ContentType: "application/json"
-  }));
-}
-
-async function objectExists(key) {
-  try {
-    await s3.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
-    return true;
-  } catch (error) {
-    if (error?.name === "NotFound" || error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return false;
-    throw error;
-  }
-}
-
-function pageIndexKey(url) {
-  const u = new URL(url);
-  return `index/${u.hostname}/${hash(url)}.json`;
-}
 
 async function enqueueUrls(urls) {
-  for (const raw of [...new Set(urls)]) {
-    const url = normalizeUrl(raw);
-    if (!url) continue;
-    if (await objectExists(pageIndexKey(url))) continue;
-    const key = `queue/pending/${hash(url)}.json`;
-    if (!(await objectExists(key))) await putR2Json(key, { url, queued_at: new Date().toISOString(), attempts: 0 });
+  const columns = await getColumns("crawl_queue");
+
+  for (const url of [...new Set(urls)]) {
+    const fields = ["url", "status"];
+    const values = [url, "queued"];
+
+    if (columns.has("priority")) {
+      fields.push("priority");
+      values.push(crawlPriority(url));
+    }
+
+    if (columns.has("created_at")) {
+      fields.push("created_at");
+      values.push(new Date());
+    }
+
+    if (columns.has("updated_at")) {
+      fields.push("updated_at");
+      values.push(new Date());
+    }
+
+    const placeholders = values.map(
+      (_, i) => `$${i + 1}`
+    );
+
+    await pool.query(
+      `INSERT INTO crawl_queue
+        (${fields.map(c => `"${c}"`).join(",")})
+       VALUES (${placeholders.join(",")})
+       ON CONFLICT (url) DO NOTHING`,
+      values
+    );
   }
 }
 
 async function getJobs() {
-  if (!s3) throw new Error("R2 S3 credentials are not configured");
-  const listed = await s3.send(new ListObjectsV2Command({
-    Bucket: R2_BUCKET, Prefix: "queue/pending/", MaxKeys: BATCH_SIZE
-  }));
-  const jobs = [];
-  for (const item of (listed.Contents || [])) {
-    if (!item.Key) continue;
-    const job = await readR2Json(item.Key);
-    if (job?.url) jobs.push({ ...job, key: item.Key });
+  const columns = await getColumns("crawl_queue");
+
+  if (
+    !columns.has("id") ||
+    !columns.has("url") ||
+    !columns.has("status")
+  ) {
+    throw new Error(
+      "crawl_queue needs id, url and status columns"
+    );
   }
-  return jobs;
+
+  // .com seeds and discoveries are processed before legacy non-.com queue rows.
+  let order = `CASE
+    WHEN lower(split_part(split_part(url, '/', 3), ':', 1)) LIKE '%.com' THEN 0
+    ELSE 1
+  END ASC`;
+
+  if (columns.has("priority")) {
+    order += ', "priority" DESC';
+  }
+  if (columns.has("created_at")) {
+    order += ', "created_at" ASC';
+  } else {
+    order += ', url ASC';
+  }
+
+  const result = await pool.query(
+    `SELECT id, url
+       FROM crawl_queue
+      WHERE status IN ('queued', 'pending', 'retry')
+      ORDER BY ${order}
+      LIMIT $1`,
+    [BATCH_SIZE]
+  );
+
+  return result.rows;
 }
 
-async function finishJob(job, status, message = null) {
-  if (!job?.key) return;
-  if (status === "done" || status === "blocked") {
-    await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: job.key }));
-    if (status === "blocked") {
-      await putR2Json(`queue/blocked/${hash(job.url)}.json`, {
-        url: job.url, status, message, updated_at: new Date().toISOString()
-      });
-    }
-    return;
+async function updateJob(id, status, message = null) {
+  const columns = await getColumns("crawl_queue");
+
+  const sets = ['"status" = $1'];
+  const values = [status];
+  let next = 2;
+
+  if (columns.has("updated_at")) {
+    sets.push('"updated_at" = NOW()');
   }
-  await putR2Json(`queue/failed/${hash(job.url)}.json`, {
-    url: job.url, status, message, updated_at: new Date().toISOString()
-  });
-  await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: job.key }));
+
+  if (
+    status === "done" &&
+    columns.has("last_crawled_at")
+  ) {
+    sets.push('"last_crawled_at" = NOW()');
+  }
+
+  if (columns.has("last_error")) {
+    sets.push(`"last_error" = $${next++}`);
+    values.push(message);
+  } else if (columns.has("error")) {
+    sets.push(`"error" = $${next++}`);
+    values.push(message);
+  }
+
+  values.push(id);
+
+  await pool.query(
+    `UPDATE crawl_queue
+        SET ${sets.join(", ")}
+      WHERE id = $${next}`,
+    values
+  );
 }
 
 // ============================================================
-// R2 ARCHIVE + SEARCH INDEX — no crawler writes to Neon
+// R2 ARCHIVE
+// Writes a JSON copy of the crawled page to R2.
+// No R2 storage usage check is performed.
 // ============================================================
+
 async function archiveToR2(page) {
-  if (!s3) throw new Error("R2 S3 credentials are not configured");
-  const host = new URL(page.url).hostname.toLowerCase();
-  const id = hash(page.url);
-  const pageKey = `pages/${host}/${id}.html`;
-  const metadataKey = `pages/${host}/${id}.json`;
-  const indexKey = `index/${host}/${id}.json`;
-  if (await objectExists(indexKey)) { console.log(`[HEXORA] Duplicate URL skipped: ${page.url}`); return pageKey; }
-  const crawledAt = new Date().toISOString();
-  if (!page.html) throw new Error("Fetched HTML missing; refusing to save incomplete page");
-  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: pageKey, Body: page.html, ContentType: "text/html; charset=utf-8" }));
-  const savedPage = { ...page, html: undefined, r2_key: pageKey, crawled_at: crawledAt };
-  await putR2Json(metadataKey, savedPage);
-  const indexDoc = {
-    id, url: page.url, canonical_url: page.url,
-    title: page.title || "", description: page.description || "",
-    excerpt: String(page.content || "").slice(0, 1800),
-    language: page.language || "unknown", domain: host,
-    r2_key: pageKey, crawled_at: crawledAt,
-    published_at: page.published_at || null,
-    is_news: Boolean(page.is_news),
-    content_type: page.content_type || "web",
-    image_items: Array.isArray(page.image_items) ? page.image_items : [],
-    video_items: Array.isArray(page.video_items) ? page.video_items : [],
-    search_text: `${page.title || ""} ${page.description || ""} ${String(page.content || "").slice(0, 5000)}`.slice(0, 7000)
-  };
-  await putR2Json(indexKey, indexDoc);
-  console.log(`[HEXORA] R2 saved HTML + metadata + search index: ${page.url}`);
-  return pageKey;
+  if (!s3) {
+    throw new Error(
+      "R2 S3 credentials are not configured"
+    );
+  }
+
+  const host = new URL(page.url).hostname;
+  const key = `pages/${host}/${hash(page.url)}.json`;
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+      Body: JSON.stringify({
+        ...page,
+        crawled_at: new Date().toISOString()
+      }),
+      ContentType: "application/json"
+    })
+  );
+
+  return key;
 }
+
+// ============================================================
+// SAVE TO NEON
+// Requires a UNIQUE constraint on pages.url.
+// ============================================================
 
 async function savePage(page) {
+  // First save the complete page body to R2. If R2 fails, do not pretend
+  // that the page was archived or mark the job complete.
   const r2Key = await archiveToR2(page);
+  const columns = await getColumns("pages");
+  const hostname = (() => {
+    try { return new URL(page.url).hostname.toLowerCase(); }
+    catch { return ""; }
+  })();
+
+  // Keep only a compact searchable excerpt in Neon. The full body stays in R2.
+  // Existing rows' content is deliberately excluded from UPDATE so old data
+  // is never erased by a new crawl.
+  const compactExcerpt = String(page.content || "").slice(0, 1800);
+  const compactDescription = String(
+    page.description || compactExcerpt || ""
+  ).slice(0, 3000);
+
+  const data = {
+    url: page.url,
+    canonical_url: page.canonical_url || page.url,
+    title: page.title,
+    description: compactDescription,
+    excerpt: compactExcerpt,
+    content: null,
+    content_hash: page.content_hash,
+    word_count: page.word_count,
+    language: page.language,
+    domain: hostname,
+    r2_key: r2Key,
+    last_crawled_at: new Date(),
+    updated_at: new Date(),
+    crawl_status: "indexed"
+  };
+
+  const fields = Object.keys(data).filter(key => columns.has(key));
+  if (!fields.includes("url")) {
+    throw new Error("pages.url column is missing");
+  }
+
+  const values = fields.map(key => data[key]);
+  const placeholders = fields.map((_, i) => `$${i + 1}`);
+  // Never overwrite the existing full content column on conflict.
+  const updates = fields
+    .filter(key => key !== "url" && key !== "content")
+    .map(key => `"${key}" = EXCLUDED."${key}"`);
+
+  await pool.query(
+    `INSERT INTO pages (${fields.map(c => `"${c}"`).join(",")})
+     VALUES (${placeholders.join(",")})
+     ON CONFLICT (url) DO UPDATE SET
+       ${updates.length ? updates.join(",") : '"url" = EXCLUDED."url"'}`,
+    values
+  );
+
+  console.log(`[HEXORA] R2 archived: ${r2Key}; compact metadata indexed in Neon`);
   return { duplicate: false, r2Key };
 }
 
 // ============================================================
-// PROCESS A QUEUED URL — queue/status are stored only in R2
+// PROCESS A QUEUED URL
 // ============================================================
+
 async function processJob(job) {
   const url = normalizeUrl(job.url);
-  if (!url) { await finishJob(job, "failed", "Invalid URL"); return "failed"; }
+
+  if (!url) {
+    await updateJob(
+      job.id,
+      "failed",
+      "Invalid URL"
+    );
+
+    return "failed";
+  }
+
   try {
-    if (await objectExists(pageIndexKey(url))) {
-      await finishJob(job, "done");
-      console.log(`[HEXORA] Already indexed; skipped duplicate: ${url}`);
-      return "duplicate";
-    }
     if (!(await canCrawl(url))) {
-      await finishJob(job, "blocked", "Robots policy denied or unavailable");
+      await updateJob(
+        job.id,
+        "blocked",
+        "Robots policy denied or unavailable"
+      );
+
       return "blocked";
     }
+
     const page = await fetchPage(url);
-    await savePage(page);
+    const saved = await savePage(page);
+
+    if (saved.duplicate) {
+      await updateJob(job.id, "done");
+
+      console.log(
+        `[HEXORA] Duplicate skipped: ${page.url}`
+      );
+
+      return "duplicate";
+    }
+
     await enqueueUrls(page.links);
-    await finishJob(job, "done");
-    console.log(`[HEXORA] Indexed to R2: ${page.url}`);
+    await updateJob(job.id, "done");
+
+    console.log(
+      `[HEXORA] Indexed: ${page.url}`
+    );
+
     return "indexed";
   } catch (error) {
-    console.error(`[HEXORA] Failed ${url}:`, error.message);
-    try { await finishJob(job, "failed", error.message.slice(0, 1000)); } catch {}
+    console.error(
+      `[HEXORA] Failed ${url}:`,
+      error.message
+    );
+
+    try {
+      await updateJob(
+        job.id,
+        "failed",
+        error.message.slice(0, 1000)
+      );
+    } catch (updateError) {
+      console.error(
+        "[HEXORA] Queue update failed:",
+        updateError.message
+      );
+    }
+
     return "failed";
   }
 }
@@ -506,57 +802,102 @@ async function processJob(job) {
 // ============================================================
 // MAIN
 // ============================================================
+
 async function main() {
-  console.log("[HEXORA] Worldwide crawler starting...");
-  console.log("[HEXORA] Storage mode: R2-only. No Neon connection or writes.");
-  if (!s3) { console.error("[HEXORA] R2 credentials missing. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME."); process.exit(1); }
-  const defaultSeeds = [
-    "https://www.wikipedia.org/", "https://www.britannica.com/", "https://www.bbc.com/",
-    "https://www.reuters.com/", "https://apnews.com/", "https://www.theguardian.com/",
-    "https://www.npr.org/", "https://www.nationalgeographic.com/", "https://www.nasa.gov/",
-    "https://www.noaa.gov/", "https://www.un.org/", "https://www.who.int/",
-    "https://www.worldbank.org/", "https://www.imf.org/", "https://www.oecd.org/",
-    "https://www.gov.uk/", "https://www.usa.gov/", "https://www.india.gov.in/",
-    "https://www.pib.gov.in/", "https://www.isro.gov.in/", "https://www.incredibleindia.gov.in/",
-    "https://www.thehindu.com/", "https://indianexpress.com/", "https://www.ndtv.com/",
-    "https://www.hindustantimes.com/", "https://www.indiatoday.in/", "https://www.livemint.com/",
-    "https://www.assam.gov.in/", "https://assamtribune.com/", "https://nenow.in/",
-    "https://github.com/", "https://developer.mozilla.org/", "https://docs.python.org/",
-    "https://nodejs.org/", "https://www.w3.org/", "https://www.rfc-editor.org/",
-    "https://arxiv.org/", "https://pubmed.ncbi.nlm.nih.gov/", "https://www.nature.com/",
-    "https://www.science.org/", "https://www.khanacademy.org/", "https://www.openstreetmap.org/",
-    "https://www.unesco.org/", "https://www.unicef.org/", "https://www.fao.org/",
-    "https://www.bbc.co.uk/", "https://www.dw.com/", "https://www.france24.com/",
-    "https://www.aljazeera.com/", "https://www.cbc.ca/", "https://www.abc.net.au/"
-  ];
-  const configuredSeeds = String(env.CRAWL_SEED_URLS || "").split(/[\s,]+/).filter(Boolean);
-  const seeds = configuredSeeds.length ? configuredSeeds : defaultSeeds;
+  console.log(
+    "[HEXORA] Worldwide crawler starting..."
+  );
+
+  console.log(
+    "[HEXORA] Storage mode: full page bodies in R2; compact search metadata in Neon."
+  );
+
   try {
-    await s3.send(new HeadBucketCommand({ Bucket: R2_BUCKET }));
-    console.log(`[HEXORA] R2 connection verified for bucket: ${R2_BUCKET}`);
+    await pool.query("SELECT 1");
+
+    console.log(
+      "[HEXORA] Neon database connected."
+    );
+
+    await getColumns("pages");
+    await getColumns("crawl_queue");
+    const seeds = [...new Set([...DEFAULT_COM_SEEDS, ...SEED_URLS])]
+      .map(normalizeUrl)
+      .filter(Boolean);
+    await enqueueUrls(seeds);
+
+    // Promote already-queued storefront URLs too; ON CONFLICT alone would
+    // otherwise leave old queue rows at their previous priority.
+    const queueColumns = await getColumns("crawl_queue");
+    if (queueColumns.has("priority")) {
+      await pool.query(`
+        UPDATE crawl_queue
+           SET priority = GREATEST(COALESCE(priority, 0),
+             CASE
+               WHEN lower(url) ~ '^https?://([^/]*\.)?flipkart\.com([/:]|$)' THEN 100000
+               WHEN lower(url) ~ '^https?://([^/]*\.)?amazon\.com([/:]|$)' THEN 99000
+               WHEN lower(url) ~ '^https?://([^/]*\.)?amazon\.in([/:]|$)' THEN 98000
+               ELSE COALESCE(priority, 0)
+             END)
+         WHERE status IN ('queued', 'pending', 'retry')
+           AND lower(url) ~ '^https?://([^/]*\.)?(flipkart\.com|amazon\.com|amazon\.in)([/:]|$)'
+      `);
+    }
+    console.log(`[HEXORA] Priority seeds queued: Flipkart, Amazon.com, Amazon.in; total seeds: ${seeds.length}`);
+    console.log(`[HEXORA] Host delay: ${HOST_MIN_DELAY_MS}ms; max HTML: ${MAX_HTML_BYTES} bytes; transient retries: 2`);
   } catch (error) {
-    console.error(`[HEXORA] R2 preflight failed. Check account ID, bucket and API key pair. ${error.message}`);
+    console.error(
+      "[HEXORA] Database/schema check failed:",
+      error.message
+    );
+
     process.exit(1);
   }
-  await enqueueUrls(seeds);
-  console.log(`[HEXORA] Seed URLs submitted to R2 queue: ${seeds.length}`);
+
   while (true) {
     try {
+      // Do not pause crawling on the old Neon content-storage threshold.
+      // R2 holds full content; Neon receives compact metadata only.
+
       const jobs = await getJobs();
+
       if (!jobs.length) {
-        console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or add seed URLs in R2 queue.");
-        await sleep(LOOP_DELAY); continue;
+        console.log(
+          "[HEXORA] No queued jobs."
+        );
+
+        await sleep(LOOP_DELAY);
+        continue;
       }
-      let indexed = 0, failed = 0, blocked = 0;
+
+      let indexed = 0;
+      let failed = 0;
+      let blocked = 0;
+      let duplicates = 0;
+
       for (const job of jobs) {
         const result = await processJob(job);
+
         if (result === "indexed") indexed++;
         else if (result === "failed") failed++;
         else if (result === "blocked") blocked++;
+        else if (result === "duplicate") duplicates++;
+
         await sleep(1000);
       }
-      console.log(`[HEXORA] Cycle complete: jobs=${jobs.length} indexed=${indexed} failed=${failed} blocked=${blocked}`);
-    } catch (error) { console.error("[HEXORA] Cycle error:", error.message); }
+
+      console.log(
+        `[HEXORA] Cycle complete: jobs=${jobs.length} ` +
+        `indexed=${indexed} failed=${failed} ` +
+        `blocked=${blocked} duplicates=${duplicates}`
+      );
+    } catch (error) {
+      console.error(
+        "[HEXORA] Cycle error:",
+        error.message
+      );
+    }
+
     await sleep(LOOP_DELAY);
   }
 }
@@ -574,6 +915,15 @@ async function shutdown() {
   console.log(
     "[HEXORA] Shutdown requested."
   );
+
+  try {
+    await pool.end();
+  } catch (error) {
+    console.error(
+      "[HEXORA] Database shutdown error:",
+      error.message
+    );
+  }
 
   try {
     s3?.destroy();
