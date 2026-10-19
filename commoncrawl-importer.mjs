@@ -1,3 +1,4 @@
+import "dotenv/config";
 // ============================================================
 // HEXORA SEARCH ENGINE
 // COMMON CRAWL IMPORTER
@@ -30,197 +31,25 @@ const R2_BUCKET_NAME =
 const COMMONCRAWL_COLLECTION =
   process.env.COMMONCRAWL_COLLECTION || "";
 
-// Broad Common Crawl URL patterns by public suffix. These are discovery
-// patterns, not a claim that every URL on the live web is covered. The
-// environment variable can optionally override them with comma-separated
-// domains or Common Crawl wildcard patterns.
-const DEFAULT_TARGET_PATTERNS = [
-  // Start with explicit .com hosts; broad *.com/* queries often time out.
-  // This is a prioritized seed list, not complete coverage of all .com sites.
-  "www.google.com/*",
-  "www.youtube.com/*",
-  "www.facebook.com/*",
-  "www.instagram.com/*",
-  "www.reddit.com/*",
-  "www.linkedin.com/*",
-  "www.microsoft.com/*",
-  "www.apple.com/*",
-  "www.amazon.com/*",
-  "www.wikipedia.org/*",
-  "www.yahoo.com/*",
-  "www.bing.com/*",
-  "www.ebay.com/*",
-  "www.pinterest.com/*",
-  "www.tiktok.com/*",
-  "www.netflix.com/*",
-  "www.adobe.com/*",
-  "www.ibm.com/*",
-  "www.oracle.com/*",
-  "www.salesforce.com/*",
-  "www.cnn.com/*",
-  "www.nbcnews.com/*",
-  "www.foxnews.com/*",
-  "www.usatoday.com/*",
-  "www.washingtonpost.com/*",
-  "www.bloomberg.com/*",
-  "www.forbes.com/*",
-  "www.cbsnews.com/*",
-  "www.npr.org/*",
-  "www.weather.com/*",
-  "www.nationalgeographic.com/*",
-  "www.nytimes.com/*",
-  "www.reuters.com/*",
-  "www.theguardian.com/*",
-  "www.bbc.com/*",
-  "www.espn.com/*",
-  "www.nba.com/*",
-  "www.nfl.com/*",
-  "www.mlb.com/*",
-  "www.fifa.com/*",
-  "www.coursera.org/*",
-  "www.udemy.com/*",
-  "www.khanacademy.org/*",
-  "www.stackoverflow.com/*",
-  "github.com/*",
-  "www.gitlab.com/*",
-  "www.mozilla.org/*",
-  "www.cloudflare.com/*",
-  "www.openai.com/*",
-  "www.nvidia.com/*",
-  "www.intel.com/*",
-  "www.amd.com/*",
-  "www.samsung.com/*",
-  "www.sony.com/*",
-  "www.dell.com/*",
-  "www.hp.com/*",
-  "www.lenovo.com/*",
-  "www.cisco.com/*",
-  "www.zoom.com/*",
-  "www.slack.com/*",
-  "www.shopify.com/*",
-  "www.walmart.com/*",
-  "www.target.com/*",
-  "www.bestbuy.com/*",
-  "www.etsy.com/*",
-  "www.booking.com/*",
-  "www.expedia.com/*",
-  "www.tripadvisor.com/*",
-  "www.airbnb.com/*",
-  "www.uber.com/*",
-  "www.lyft.com/*",
-  "www.paypal.com/*",
-  "www.visa.com/*",
-  "www.mastercard.com/*",
-  "www.chase.com/*",
-  "www.bankofamerica.com/*",
-  "www.wellsfargo.com/*",
-  "www.fidelity.com/*",
-  "www.morningstar.com/*",
-  "www.investopedia.com/*",
-  "www.healthline.com/*",
-  "www.webmd.com/*",
-  "www.mayoclinic.org/*",
-  "www.cdc.gov/*",
-  "www.nih.gov/*",
-  "www.nasa.gov/*",
-  "www.nationalparks.org/*",
-  "www.whitehouse.gov/*",
-  "www.usa.gov/*",
-  "www.state.gov/*",
-  "www.homedepot.com/*",
-  "www.lowes.com/*",
-  "www.ikea.com/*",
-  "www.coca-cola.com/*",
-  "www.pepsi.com/*",
-  "www.nike.com/*",
-  "www.adidas.com/*",
-  "www.puma.com/*",
-  "www.underarmour.com/*",
-  "www.disney.com/*",
-  "www.warnerbros.com/*",
-  "www.universalpictures.com/*",
-  "www.imdb.com/*",
-  "www.rottentomatoes.com/*",
-  "www.goodreads.com/*",
-  "www.medium.com/*",
-  "www.quora.com/*",
-  "www.tumblr.com/*",
-  "www.wordpress.com/*",
-  "www.atlassian.com/*",
-  "www.notion.so/*",
-  "www.dropbox.com/*",
-  "www.box.com/*",
-  "www.intuit.com/*",
-  "www.turbotax.com/*",
-  "www.indeed.com/*",
-  "www.glassdoor.com/*",
-  "www.monster.com/*",
-  "www.zillow.com/*",
-  "www.realtor.com/*",
-  "www.autotrader.com/*",
-  "www.cars.com/*",
-  "www.carmax.com/*",
-  "www.edmunds.com/*",
-  "www.kbb.com/*",
-  "www.allrecipes.com/*",
-  "www.foodnetwork.com/*",
-  "www.bonappetit.com/*",
-  "www.epicurious.com/*",
-  "www.seriouseats.com/*",
-  "www.marthastewart.com/*",
-  "www.food.com/*",
-  "www.delish.com/*",
-  "www.simplyrecipes.com/*",
-  "www.kingarthurbaking.com/*",
-  "www.britannica.com/*",
-  "www.dictionary.com/*",
-  "www.merriam-webster.com/*",
-  "www.thespruce.com/*",
-  "www.parents.com/*",
-  "www.babycenter.com/*",
-  "www.popsugar.com/*",
-  "www.vogue.com/*",
-  "www.gq.com/*",
-  "www.cosmopolitan.com/*",
-  "www.people.com/*",
-  "www.usmagazine.com/*",
-  "www.gamespot.com/*",
-  "www.ign.com/*",
-  "www.polygon.com/*",
-  "www.gamesradar.com/*",
-  "www.pcgamer.com/*",
-  "www.tomshardware.com/*",
-  "www.techradar.com/*",
-  "www.theverge.com/*",
-  "www.wired.com/*",
-  "www.engadget.com/*",
-  "www.cnet.com/*",
-  "www.zdnet.com/*",
-  "www.techcrunch.com/*",
-  "www.producthunt.com/*",
-  "www.kickstarter.com/*",
-  "www.indiegogo.com/*",
-  "www.gofundme.com/*",
-  "www.change.org/*",
-  "www.archive.org/*",
-  "www.fandom.com/*",
-  "www.ziprecruiter.com/*",
-  "www.careerbuilder.com/*",
-  "www.simplyhired.com/*",
-  "www.docusign.com/*",
-  "www.canva.com/*",
-  "www.figma.com/*",
-  "www.autodesk.com/*",
-  "www.sketchup.com/*",
-  "www.trimble.com/*"
-];
-const EXTRA_TARGET_PATTERNS = String(
-  process.env.COMMONCRAWL_TARGET_DOMAINS || ""
-).split(",").map((x) => x.trim()).filter(Boolean);
-const TARGET_DOMAINS = [...new Set([
-  ...DEFAULT_TARGET_PATTERNS,
-  ...EXTRA_TARGET_PATTERNS.filter((x) => !DEFAULT_TARGET_PATTERNS.includes(x)),
-])];
+const TARGET_DOMAINS = (
+  process.env.COMMONCRAWL_TARGET_DOMAINS ||
+  [
+    "wikipedia.org",
+    "github.com",
+    "mozilla.org",
+    "python.org",
+    "nodejs.org",
+    "apache.org",
+    "bbc.com",
+    "reuters.com",
+    "ndtv.com",
+    "thehindu.com",
+    "indianexpress.com",
+  ].join(",")
+)
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
 
 const PAGES_PER_DOMAIN = Math.max(
   1,
@@ -239,7 +68,7 @@ const TIMEOUT_MS = Math.max(
 
 const MAX_RETRIES = Math.max(
   1,
-  Number(process.env.COMMONCRAWL_MAX_RETRIES || 1)
+  Number(process.env.COMMONCRAWL_MAX_RETRIES || 4)
 );
 
 const MAX_CONTENT = Math.max(
@@ -341,8 +170,6 @@ async function fetchRetry(
   let lastError = null;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
-    let retryAfterMs = 0;
-
     try {
       const response = await fetchWithTimeout(
         url,
@@ -354,32 +181,20 @@ async function fetchRetry(
       }
 
       const status = response.status;
-      const retryAfter = response.headers.get("retry-after");
 
-      if (retryAfter) {
-        const seconds = Number(retryAfter);
-        if (Number.isFinite(seconds) && seconds >= 0) {
-          retryAfterMs = Math.min(120000, seconds * 1000);
-        } else {
-          const retryDate = Date.parse(retryAfter);
-          if (Number.isFinite(retryDate)) {
-            retryAfterMs = Math.min(120000, Math.max(0, retryDate - Date.now()));
-          }
-        }
+      if (
+        status !== 408 &&
+        status !== 429 &&
+        status < 500
+      ) {
+        throw new Error(
+          `HTTP ${status}`
+        );
       }
 
-      // Common Crawl commonly uses HTTP 404 when a valid pattern has no
-      // matching captures. Do not waste all retries on a no-match response.
-      let responseDetail = "";
-      if (status === 404) {
-        try { responseDetail = (await response.text()).slice(0, 300).replace(/\s+/g, " "); } catch {}
-      } else {
-        try { await response.body?.cancel(); } catch {}
-      }
-
-      const httpError = new Error(`HTTP ${status}${responseDetail ? `: ${responseDetail}` : ""}`);
-      httpError.status = status;
-      throw httpError;
+      throw new Error(
+        `HTTP ${status}`
+      );
     } catch (error) {
       lastError = error;
 
@@ -391,28 +206,12 @@ async function fetchRetry(
         `Reason: ${error.message}`
       );
 
-      if (error?.status === 404) {
-        break;
-      }
-
-      // Common Crawl index/WARC overload errors are not helped by repeated
-      // immediate requests. Skip this request and let the importer continue.
-      if ([502, 503, 504].includes(error?.status)) {
-        log(`Not retrying HTTP ${error.status}; skipping this request.`);
-        break;
-      }
-
       if (attempt < retries) {
-        // Common Crawl may temporarily return 503. Use longer exponential
-        // backoff and honor Retry-After when the server provides it.
-        const exponentialDelay = Math.min(
-          60000,
-          5000 * Math.pow(2, attempt - 1)
-        );
-        const delay = Math.max(
-          retryAfterMs,
-          exponentialDelay + Math.floor(Math.random() * 1000)
-        );
+        const delay =
+          Math.min(
+            30000,
+            2000 * Math.pow(2, attempt - 1)
+          );
 
         log(
           `Retry in ${delay}ms...`
@@ -482,12 +281,11 @@ async function queryIndex(
   const indexBase =
     `https://index.commoncrawl.org/${collection}-index`;
 
-  // Common Crawl accepts URL patterns directly (for example *.ca/*).
-  // Do not expand a wildcard into https://*.ca/* and http://*.ca/*:
-  // those broad scheme-specific queries are expensive and may time out.
-  const queries = domain.includes("*") || domain.includes("/")
-    ? [domain]
-    : [`${domain}/*`, `*.${domain}/*`];
+  const queries = [
+    `https://${domain}/*`,
+    `http://${domain}/*`,
+    `*.${domain}/*`,
+  ];
 
   let records = [];
 
@@ -513,8 +311,8 @@ async function queryIndex(
       "pageSize",
       String(
         Math.max(
-          PAGES_PER_DOMAIN,
-          10
+          PAGES_PER_DOMAIN * 2,
+          50
         )
       )
     );
@@ -533,7 +331,7 @@ async function queryIndex(
             "User-Agent": USER_AGENT,
             Accept: "application/json",
           },
-        }, 1);
+        });
 
       const text =
         await response.text();
@@ -563,14 +361,9 @@ async function queryIndex(
         }
       }
     } catch (error) {
-      if (error?.status === 404 || /HTTP 404\b/.test(String(error?.message || ""))) {
-        log(`No matching captures for pattern ${pattern} in ${collection}`);
-      } else {
-        log(`Index query failed for ${pattern}: ${error.message}`);
-        if (/HTTP (?:502|503|504)\b/.test(String(error?.message || ""))) {
-          log(`Skipping this pattern after retries; continue with the next host/pattern.`);
-        }
-      }
+      log(
+        `Index query failed: ${error.message}`
+      );
     }
   }
 
@@ -631,10 +424,6 @@ async function downloadWarcRecord(
         Range: `bytes=${start}-${end}`,
       },
     });
-
-  if (response.status !== 206 && response.status !== 200) {
-    throw new Error(`WARC download returned HTTP ${response.status} for ${record.filename}`);
-  }
 
   const buffer =
     Buffer.from(
@@ -881,19 +670,18 @@ function detectLanguage(
 // CLEAN URL
 // ============================================================
 
-function normalizeUrl(value) {
+function normalizeUrl(
+  value
+) {
   try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const url =
+      new URL(value);
+
     url.hash = "";
-    url.hostname = url.hostname.toLowerCase();
-    for (const key of ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"]) {
-      url.searchParams.delete(key);
-    }
-    if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
+
     return url.toString();
   } catch {
-    return null;
+    return value;
   }
 }
 
@@ -1027,49 +815,6 @@ function parseHtml(
       `${title} ${description} ${content}`
     );
 
-  const absoluteUrl = value => {
-    try {
-      const u = new URL(value, sourceUrl);
-      return ["http:", "https:"].includes(u.protocol) ? u.toString() : null;
-    } catch { return null; }
-  };
-  const imageSet = new Set();
-  for (const value of [
-    $('meta[property="og:image"]').attr('content'),
-    $('meta[name="twitter:image"]').attr('content'),
-    $('meta[property="og:image:url"]').attr('content')
-  ]) {
-    const u = value && absoluteUrl(value);
-    if (u) imageSet.add(u);
-  }
-  $('img[src]').each((_, el) => {
-    if (imageSet.size >= 12) return false;
-    const u = absoluteUrl($(el).attr('src'));
-    if (u) imageSet.add(u);
-  });
-  const videoSet = new Set();
-  for (const value of [
-    $('meta[property="og:video"]').attr('content'),
-    $('meta[property="og:video:url"]').attr('content'),
-    $('meta[name="twitter:player:stream"]').attr('content')
-  ]) {
-    const u = value && absoluteUrl(value);
-    if (u) videoSet.add(u);
-  }
-  $('video[src], video source[src], iframe[src]').each((_, el) => {
-    if (videoSet.size >= 8) return false;
-    const u = absoluteUrl($(el).attr('src'));
-    if (u && (/\.(mp4|webm|m3u8)(?:$|[?#])/i.test(u) || /youtube|youtu\.be|vimeo|dailymotion/i.test(u))) videoSet.add(u);
-  });
-  const publishedAt = (
-    $('meta[property="article:published_time"]').attr('content') ||
-    $('meta[name="pubdate"]').attr('content') ||
-    $('meta[name="date"]').attr('content') ||
-    $('time[datetime]').first().attr('datetime') || ''
-  ).trim().slice(0, 100);
-  const articleType = String($('meta[property="og:type"]').attr('content') || '').toLowerCase();
-  const isNews = /article|news/i.test(articleType) || /news|press-release|journalism/i.test(String($('meta[name="section"]').attr('content') || ''));
-
   // ----------------------------------------------------------
   // LINKS
   // ----------------------------------------------------------
@@ -1124,11 +869,6 @@ function parseHtml(
     description,
     content,
     language,
-    image_items: [...imageSet].map(url => ({ url, image_url: url, source_url: sourceUrl })),
-    video_items: [...videoSet].map(url => ({ url, video_url: url, source_url: sourceUrl })),
-    published_at: publishedAt || null,
-    is_news: isNews,
-    content_type: isNews ? "news" : (videoSet.size ? "video" : (imageSet.size ? "image" : "web")),
     links,
   };
 }
@@ -1158,9 +898,6 @@ async function uploadToR2(
         "public, max-age=31536000",
     })
   );
-
-  // Confirm the object exists before reporting the page as saved.
-  await r2.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
 }
 
 // ============================================================
@@ -1206,7 +943,7 @@ async function pageExists(url) {
   return await r2ObjectExists(indexKeyForUrl(url));
 }
 
-async function savePage({ url, title, description, content, language, contentHash, r2Key, html, published_at, is_news, content_type, image_items, video_items }) {
+async function savePage({ url, title, description, content, language, contentHash, r2Key, html }) {
   const host = new URL(url).hostname.toLowerCase();
   const pageKey = `pages/${host}/${sha256(url)}.html`;
   const indexKey = indexKeyForUrl(url);
@@ -1217,11 +954,6 @@ async function savePage({ url, title, description, content, language, contentHas
     description: description || "", excerpt: String(content || "").slice(0, 1800),
     language: language || "unknown", domain: host, r2_key: pageKey,
     content_hash: contentHash, crawled_at: new Date().toISOString(),
-    published_at: published_at || null,
-    is_news: Boolean(is_news),
-    content_type: content_type || "web",
-    image_items: Array.isArray(image_items) ? image_items : [],
-    video_items: Array.isArray(video_items) ? video_items : [],
     search_text: `${title || ""} ${description || ""} ${String(content || "").slice(0, 5000)}`.slice(0, 7000)
   });
   return { duplicate: false, r2Key: pageKey };
@@ -1250,8 +982,10 @@ async function importRecord(
   const originalUrl =
     safeString(record.url);
 
-  const url = normalizeUrl(originalUrl);
-  if (!url) throw new Error("Invalid or unsupported URL from Common Crawl");
+  const url =
+    normalizeUrl(
+      originalUrl
+    );
 
   log(
     `Processing: ${url}`
@@ -1363,11 +1097,6 @@ async function importRecord(
     url, title: parsed.title, description: parsed.description,
     content: parsed.content, language: parsed.language,
     contentHash, r2Key, html,
-    published_at: parsed.published_at,
-    is_news: parsed.is_news,
-    content_type: parsed.content_type,
-    image_items: parsed.image_items,
-    video_items: parsed.video_items,
   });
   if (saved.duplicate) {
     log(`Duplicate URL skipped: ${url}`);
@@ -1434,7 +1163,7 @@ async function main() {
   );
 
   log(
-    `Worldwide Common Crawl patterns: ${TARGET_DOMAINS.length}`
+    `Target domains: ${TARGET_DOMAINS.join(",")}`
   );
 
   // ----------------------------------------------------------
@@ -1450,8 +1179,6 @@ async function main() {
   const collection =
     await discoverCollection();
 
-  log(`Target priority: explicit .com hosts first (${DEFAULT_TARGET_PATTERNS.length} hosts)`);
-  log(`Total configured host patterns: ${TARGET_DOMAINS.length}`);
   log(
     `Using collection: ${collection}`
   );
@@ -1484,7 +1211,7 @@ async function main() {
     }
 
     log(
-      `WORLDWIDE URL PATTERN: ${domain}`
+      `DOMAIN: ${domain}`
     );
 
     let records = [];
@@ -1497,11 +1224,11 @@ async function main() {
         );
 
       log(
-        `Found ${records.length} records for pattern ${domain}`
+        `Found ${records.length} records for ${domain}`
       );
     } catch (error) {
       log(
-        `Index pattern ${domain} failed: ${error.message}`
+        `Index ${domain} failed: ${error.message}`
       );
 
       continue;
