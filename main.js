@@ -249,15 +249,11 @@
       "hexora-search-active"
     );
 
-    /* Use the single, full-featured map engine embedded in index.html.
-       Do not construct a second MapLibre instance on the same container. */
-    if (window.HEXORA_MAP_ENGINE?.open) {
-      window.HEXORA_MAP_ENGINE.open();
-    }
+    initMap();
 
     setTimeout(() => {
-      if (window.HEXORA_MAP_ENGINE?.open) {
-        window.dispatchEvent(new Event("resize"));
+      if (state.map) {
+        state.map.resize();
       }
     }, 150);
   }
@@ -1053,13 +1049,6 @@
   ========================================================= */
 
   async function initMap() {
-    /* The full map engine lives in index.html. Delegate to it so a second
-       MapLibre instance is never created on the same page. */
-    if (window.HEXORA_MAP_ENGINE?.open) {
-      window.HEXORA_MAP_ENGINE.open();
-      return;
-    }
-
     if (state.map) {
       setTimeout(() => {
         state.map.resize();
@@ -2211,7 +2200,7 @@
 
     setupQuickActions();
 
-    /* Map controls are bound once by HEXORA_MAP_ENGINE in index.html. */
+    setupMapControls();
 
     setupFeatureButtons();
 

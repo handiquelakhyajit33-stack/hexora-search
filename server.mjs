@@ -25,7 +25,8 @@ const r2Client = R2_ACCOUNT_ID && String(process.env.R2_ACCESS_KEY_ID || "").tri
     })
   : null;
 let r2IndexCache = { loadedAt: 0, rows: [] };
-const R2_INDEX_CACHE_MS = Math.max(15000, Number(process.env.R2_INDEX_CACHE_MS || 15000));
+let r2IndexLoadPromise = null;
+const R2_INDEX_CACHE_MS = Math.max(30000, Number(process.env.R2_INDEX_CACHE_MS || 300000));
 const R2_INDEX_MAX_OBJECTS = Math.max(100, Math.min(50000, Number(process.env.R2_INDEX_MAX_OBJECTS || 10000)));
 
 
@@ -1299,30 +1300,83 @@ async function readR2ObjectJson(key) {
 
 async function loadR2Index() {
   if (!r2Client) return [];
-  if (Date.now() - r2IndexCache.loadedAt < R2_INDEX_CACHE_MS) return r2IndexCache.rows;
-  const rows = [];
-  let continuationToken;
-  do {
-    const page = await r2Client.send(new ListObjectsV2Command({
-      Bucket: R2_BUCKET_NAME, Prefix: "index/", MaxKeys: 1000,
-      ...(continuationToken ? { ContinuationToken: continuationToken } : {})
-    }));
-    const keys = (page.Contents || [])
-      .map(object => object.Key)
-      .filter(key => key && key.endsWith(".json"));
-    for (let i = 0; i < keys.length && rows.length < R2_INDEX_MAX_OBJECTS; i += 30) {
-      const batch = keys.slice(i, i + Math.min(30, R2_INDEX_MAX_OBJECTS - rows.length));
-      const loaded = await Promise.all(batch.map(async key => {
-        try { return await readR2ObjectJson(key); }
-        catch (error) { console.warn("[HEXORA] R2 index object skipped:", key, error.message); return null; }
+  if (Date.now() - r2IndexCache.loadedAt < R2_INDEX_CACHE_MS && r2IndexCache.rows.length) {
+    return r2IndexCache.rows;
+  }
+  // Coalesce simultaneous cold-cache requests so they do not each scan R2.
+  if (r2IndexLoadPromise) return r2IndexLoadPromise;
+  r2IndexLoadPromise = (async () => {
+    const rows = [];
+    let continuationToken;
+    do {
+      const page = await r2Client.send(new ListObjectsV2Command({
+        Bucket: R2_BUCKET_NAME, Prefix: "index/", MaxKeys: 1000,
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {})
       }));
-      for (const doc of loaded) if (doc) rows.push(doc);
+      const keys = (page.Contents || [])
+        .map(object => object.Key)
+        .filter(key => key && key.endsWith(".json"));
+      for (let i = 0; i < keys.length && rows.length < R2_INDEX_MAX_OBJECTS; i += 100) {
+        const batch = keys.slice(i, i + Math.min(100, R2_INDEX_MAX_OBJECTS - rows.length));
+        const loaded = await Promise.all(batch.map(async key => {
+          try { return await readR2ObjectJson(key); }
+          catch (error) { console.warn("[HEXORA] R2 index object skipped:", key, error.message); return null; }
+        }));
+        for (const doc of loaded) {
+          if (doc && typeof doc === "object" && (doc.url || doc.canonical_url)) rows.push(doc);
+        }
+      }
+      continuationToken = rows.length >= R2_INDEX_MAX_OBJECTS ? undefined : page.NextContinuationToken;
+    } while (continuationToken);
+    // Only mark cache fresh after a successful full scan. Empty failures must be retryable.
+    r2IndexCache = { loadedAt: Date.now(), rows };
+    console.log(`[HEXORA] R2 search index loaded: ${rows.length} documents`);
+    return rows;
+  })();
+  try {
+    return await r2IndexLoadPromise;
+  } catch (error) {
+    console.warn("[HEXORA] R2 index load failed:", error.message);
+    throw error;
+  } finally {
+    r2IndexLoadPromise = null;
+  }
+}
+
+function normalizedSearchUrl(value) {
+  try {
+    const u = new URL(String(value || ""));
+    u.hash = "";
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
+    u.protocol = "https:";
+    u.pathname = u.pathname.replace(/\/null\/?$/i, "/").replace(/\/{2,}/g, "/");
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/$/, "");
+    for (const key of [...u.searchParams.keys()]) {
+      if (/^(utm_.+|fbclid|gclid|ref|source)$/i.test(key)) u.searchParams.delete(key);
     }
-    continuationToken = rows.length >= R2_INDEX_MAX_OBJECTS ? undefined : page.NextContinuationToken;
-  } while (continuationToken);
-  r2IndexCache = { loadedAt: Date.now(), rows };
-  console.log(`[HEXORA] R2 search index loaded: ${rows.length} documents`);
-  return rows;
+    u.searchParams.sort();
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return String(value || "").trim().toLowerCase().replace(/\/$/, "");
+  }
+}
+
+function queryRelevanceBoost(row, query) {
+  const q = normalizeQuery(query).toLowerCase();
+  const terms = wordsOf(query);
+  const title = String(row.title || "").toLowerCase();
+  const description = String(row.description || row.snippet || "").toLowerCase();
+  const url = String(row.url || row.canonical_url || "").toLowerCase();
+  const domain = String(row.domain || "").toLowerCase().replace(/^www\./, "");
+  let boost = 0;
+  if (q && title.trim() === q) boost += 80;
+  else if (q && title.includes(q)) boost += 42;
+  const titleHits = terms.filter(term => title.includes(term)).length;
+  boost += Math.min(24, titleHits * 12);
+  if (q && (domain === q || domain.startsWith(`${q}.`) || url.includes(`://${q}/`) || url.includes(`://${q}?`))) boost += 35;
+  if (q && description.includes(q)) boost += 8;
+  if (q && url.includes(q)) boost += 10;
+  return boost;
 }
 
 async function searchR2Index(query, limit = 20) {
@@ -1332,28 +1386,53 @@ async function searchR2Index(query, limit = 20) {
   const q = normalizeQuery(query).toLowerCase();
   const ranked = [];
   for (const doc of docs) {
-    const title = String(doc.title || "").toLowerCase();
+    const title = String(doc.title || "").toLowerCase().replace(/\s+/g, " ").trim();
     const description = String(doc.description || "").toLowerCase();
-    const url = String(doc.url || "").toLowerCase();
+    const url = String(doc.url || doc.canonical_url || "").toLowerCase();
+    const domain = String(doc.domain || "").toLowerCase().replace(/^www\./, "");
     const body = String(doc.search_text || doc.excerpt || "").toLowerCase();
-    const haystack = `${title} ${description} ${url} ${body}`;
-    let matched = 0;
-    for (const word of words) if (haystack.includes(word)) matched++;
-    if (!matched) continue;
     const titleHits = words.filter(word => title.includes(word)).length;
-    const score = (title === q ? 10000 : 0) + (title.startsWith(q) ? 5000 : 0) + titleHits * 700 + matched * 100 + (description.includes(q) ? 300 : 0);
+    const descHits = words.filter(word => description.includes(word)).length;
+    const urlHits = words.filter(word => url.includes(word) || domain.includes(word)).length;
+    const bodyHits = words.filter(word => body.includes(word)).length;
+    const phraseTitle = Boolean(q && title.includes(q));
+    const phraseDesc = Boolean(q && description.includes(q));
+    const phraseBody = Boolean(q && body.includes(q));
+    const hostExact = Boolean(q && (domain === q || domain === `www.${q}` || url.includes(`://${q}/`)));
+    const allTermsInTitle = titleHits === words.length;
+    const allTermsInBody = bodyHits === words.length;
+
+    // Reject body-only noise unless all query terms or the exact phrase match.
+    if (!titleHits && !descHits && !urlHits && !(phraseBody || allTermsInBody || words.length === 1 && bodyHits === 1)) continue;
+    if (words.length > 1 && !titleHits && !descHits && !urlHits && !phraseBody && !allTermsInBody) continue;
+
+    let score = 0;
+    if (title === q) score += 12000;
+    else if (phraseTitle) score += 5000;
+    if (allTermsInTitle) score += 1800;
+    score += titleHits * 650;
+    if (hostExact) score += 1600;
+    score += urlHits * 120;
+    if (phraseDesc) score += 500;
+    score += descHits * 130;
+    if (phraseBody) score += 240;
+    score += bodyHits * 28;
+    if (doc.quality_score != null) score += Math.min(100, Math.max(0, Number(doc.quality_score) || 0)) * 0.5;
+    if (doc.authority_score != null) score += Math.min(100, Math.max(0, Number(doc.authority_score) || 0)) * 0.6;
+
     ranked.push({
-      id: String(doc.id || doc.url), title: doc.title || doc.url || "Untitled page",
-      url: doc.url || "", canonical_url: doc.canonical_url || doc.url || "",
+      id: String(doc.id || doc.url || doc.canonical_url), title: doc.title || doc.url || doc.canonical_url || "Untitled page",
+      url: doc.url || doc.canonical_url || "", canonical_url: doc.canonical_url || doc.url || "",
       domain: doc.domain || "", source: doc.domain || "",
       description: doc.description || "", snippet: String(doc.excerpt || doc.description || doc.search_text || "").slice(0, 320),
       language: doc.language || "unknown", date: doc.crawled_at || null,
-      published_at: null, score, image: null, image_items: null, video_items: null,
+      published_at: doc.published_at || null, score, image: doc.image || doc.image_url || null,
+      image_items: doc.image_items || null, video_items: doc.video_items || null,
       _r2: true
     });
   }
   ranked.sort((a, b) => b.score - a.score);
-  return { total: ranked.length, rows: ranked.slice(0, Math.min(100, limit)) };
+  return { total: ranked.length, rows: ranked.slice(0, Math.min(500, Math.max(1, limit))) };
 }
 
 async function healthCheck() {
@@ -1868,21 +1947,54 @@ const server =
             console.warn("[HEXORA] Neon search unavailable; using R2 results:", error.message);
           }
           let r2Results = { total: 0, rows: [] };
-          try { r2Results = await searchR2Index(query, Math.min(100, limit * page)); }
+          try { r2Results = await searchR2Index(query, Math.min(500, Math.max(100, limit * page))); }
           catch (error) { console.warn("[HEXORA] R2 search unavailable:", error.message); }
-          const combined = [];
-          const seenUrls = new Set();
-          for (const row of [...neonResults.rows.map(row => resultFromRow(row, query)), ...r2Results.rows]) {
-            const key = String(row.canonical_url || row.url || "").toLowerCase();
-            if (!key || seenUrls.has(key)) continue;
-            seenUrls.add(key); combined.push(row);
-          }
+
+          // Merge by canonical URL and use Reciprocal Rank Fusion. Neon final_score
+          // and the R2 text score have different scales, so comparing raw scores
+          // caused one index to dominate regardless of relevance.
+          const merged = new Map();
+          const addRanked = (rows, source) => {
+            rows.forEach((row, index) => {
+              const rawUrl = row.canonical_url || row.url || "";
+              const key = normalizedSearchUrl(rawUrl);
+              if (!key) return;
+              const existing = merged.get(key);
+              const sourceRank = index + 1;
+              if (!existing) {
+                merged.set(key, {
+                  ...row,
+                  _sourceRanks: { [source]: sourceRank },
+                  _rawSourceScore: Number(row.score || 0)
+                });
+              } else {
+                existing._sourceRanks[source] = sourceRank;
+                // Prefer populated metadata from either index without overwriting
+                // a good title/snippet with empty archive fields.
+                for (const field of ["title", "description", "snippet", "image", "image_items", "video_items", "published_at", "date", "language", "domain", "source"]) {
+                  if ((!existing[field] || existing[field] === "unknown") && row[field]) existing[field] = row[field];
+                }
+                if (!existing.url && row.url) existing.url = row.url;
+                if (!existing.canonical_url && row.canonical_url) existing.canonical_url = row.canonical_url;
+                existing._rawSourceScore = Math.max(existing._rawSourceScore || 0, Number(row.score || 0));
+              }
+            });
+          };
+          addRanked(neonResults.rows.map(row => resultFromRow(row, query)), "neon");
+          addRanked(r2Results.rows, "r2");
+
+          const combined = [...merged.values()].map(row => {
+            const ranks = row._sourceRanks || {};
+            const rrf = (ranks.neon ? 1000 / (60 + ranks.neon) : 0) + (ranks.r2 ? 1000 / (60 + ranks.r2) : 0);
+            const relevance = queryRelevanceBoost(row, query);
+            return { ...row, score: Number((rrf + relevance).toFixed(5)), _sourceRanks: undefined, _rawSourceScore: undefined };
+          });
           combined.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
           const start = (page - 1) * limit;
           const finalRows = combined.slice(start, start + limit);
           return sendJson(res, 200, {
             success: true, engine: "HEXORA", query, mode: "web", page, limit,
-            total: Number(neonResults.total || 0) + Number(r2Results.total || 0),
+            total: Math.max(combined.length, Number(neonResults.total || 0), Number(r2Results.total || 0)),
             suggestion: neonResults.suggestion || null,
             results: finalRows
           });
