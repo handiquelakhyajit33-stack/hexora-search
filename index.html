@@ -1111,206 +1111,11 @@ footer{
   }
 }
 
-
-/* =========================================================
-   HEXORA CLEAN LIVE-SEARCH UI — VISUAL ONLY OVERRIDES
-   Search API, crawler, database, R2, and map JavaScript untouched.
-========================================================= */
-:root{
-  --cyan:#1769ff;
-  --max:1180px;
-}
-html{background:#fff;scroll-behavior:smooth}
-body{
-  background:#fff!important;
-  color:#101828!important;
-  font-family:Inter,Roboto,"Segoe UI",Arial,sans-serif!important;
-}
-.app{background:#fff!important;min-height:100vh}
-.sidebar{
-  background:#fff!important;
-  border-right:1px solid #e8edf4!important;
-  box-shadow:none!important;
-}
-.brand-name{color:#101828!important;letter-spacing:-.06em}
-.brand-sub{color:#718096!important}
-.brand-logo{
-  background:linear-gradient(145deg,#1677ff,#0750d7)!important;
-  color:#fff!important;box-shadow:0 5px 16px #1769ff24!important;
-}
-.side-btn{color:#475467!important}
-.side-btn .ico{color:#64748b!important}
-.side-btn:hover,.side-btn.active{
-  color:#145bd7!important;background:#eff6ff!important;
-  border-color:#dbeafe!important;box-shadow:inset 3px 0 0 #1769ff!important;
-}
-.side-btn.active .ico{color:#1769ff!important}
-.ai-card{background:#f5f8ff!important;border-color:#e1eaff!important;box-shadow:none!important}
-.ai-card b{color:#175cd3!important}
-.ai-card p{color:#667085!important}
-.ai-open{background:#1769ff!important;color:white!important}
-.main{background:#fff!important}
-.topbar{
-  background:rgba(255,255,255,.96)!important;
-  border-bottom:1px solid #edf0f5!important;
-  box-shadow:0 2px 12px #10182805!important;
-}
-.top-status{color:#667085!important}
-.dot{background:#12b76a!important;box-shadow:0 0 8px #12b76a55!important}
-.icon-btn,.signin{
-  background:#fff!important;border:1px solid #e4e7ec!important;
-  color:#344054!important;border-radius:12px!important;
-}
-.hero{
-  min-height:440px!important;
-  padding:62px 24px 36px!important;
-  background:#fff!important;
-}
-.stars,.earth-glow{display:none!important}
-.kicker{
-  color:#1769ff!important;background:#eff6ff!important;
-  border:1px solid #dbeafe!important;letter-spacing:.08em!important;
-}
-.hero-title{
-  color:#101828!important;background:none!important;
-  -webkit-text-fill-color:#101828!important;
-  filter:none!important;letter-spacing:-.075em!important;
-  font-weight:850!important;
-}
-.hero-tag{
-  color:#718096!important;letter-spacing:.02em!important;
-  font-size:clamp(15px,2vw,21px)!important;font-weight:500!important;
-}
-.search-box{
-  width:min(900px,100%)!important;
-  padding:8px 10px 8px 18px!important;
-  border:1.5px solid #d0d9e8!important;border-radius:999px!important;
-  background:#fff!important;box-shadow:0 5px 24px #10182808!important;
-}
-.search-icon{color:#667085!important}
-#searchInput{color:#101828!important;font-size:17px!important;outline:none!important}
-#searchInput::placeholder{color:#8492a6!important}
-.search-btn{
-  color:#fff!important;background:#1769ff!important;
-  box-shadow:none!important;border-radius:999px!important;
-}
-.search-modes{gap:30px!important;margin-top:22px!important}
-.mode{
-  color:#344054!important;font-size:14px!important;
-  padding:9px 4px 12px!important;border-bottom:3px solid transparent!important;
-}
-.mode:hover,.mode.active{color:#1769ff!important}
-.mode.active{border-bottom-color:#1769ff!important}
-.content{width:min(1100px,calc(100% - 48px))!important;padding-bottom:42px!important}
-.quick-grid{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:12px!important;margin-top:0!important}
-.quick-card{
-  min-height:95px!important;text-align:center!important;
-  background:#f5f8fd!important;border:1px solid #edf2f8!important;
-  border-radius:20px!important;color:#101828!important;
-  box-shadow:none!important;
-}
-.quick-card:hover{transform:translateY(-2px);background:#eff6ff!important;border-color:#dbeafe!important}
-.quick-card .q-ico{font-size:24px!important}
-.quick-card b{font-size:13px!important;color:#101828!important}
-.quick-card span{color:#667085!important;font-size:11px!important}
-.section{margin-top:32px!important}
-.section-title{color:#101828!important;font-size:18px!important}
-.section-sub{color:#667085!important}
-.panel,.news-card,.tool-card{
-  background:#fff!important;border-color:#e8edf4!important;
-  box-shadow:0 3px 15px #10182805!important;
-}
-.news-card{border-color:#edf0f5!important}
-.news-card h3,.tool-card h3{color:#101828!important}
-.news-card p,.tool-card p{color:#667085!important}
-.news-card .tag{color:#175cd3!important;background:#eff6ff!important;border-color:#dbeafe!important}
-.map-card{background:#eef4fb!important;border-color:#dbe4f0!important}
-.map-cover{background:linear-gradient(180deg,transparent 10%,#101828db 100%)!important}
-footer{color:#718096!important}
-#searchView{background:#fff!important}
-.results-toolbar,#resultMeta{color:#667085!important}
-.result-card{
-  background:#fff!important;border:1px solid #e8edf4!important;
-  box-shadow:0 3px 15px #10182805!important;
-}
-.result-card h3{color:#175cd3!important}
-.result-card .url{color:#16805d!important}
-.result-card p{color:#475467!important}
-.result-score{color:#98a2b3!important}
-#mapView{background:#f8fafc!important}
-.map-search{background:#fff!important;border-color:#d0d9e8!important}
-.map-search input{color:#101828!important}
-.map-search input::placeholder{color:#8492a6!important}
-.map-search button{background:#1769ff!important;color:#fff!important}
-.map-tool{background:#fff!important;color:#344054!important;border-color:#d0d9e8!important}
-#mapInfo{background:#fff!important;color:#344054!important;border-color:#d0d9e8!important}
-
-/* Tablet */
-@media(max-width:1100px){
-  .quick-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}
-  .hero{min-height:410px!important}
-}
-/* Mobile: screenshot-inspired compact search home */
-@media(max-width:800px){
-  .sidebar{display:none!important}
-  .main{margin-left:0!important;width:100%!important}
-  .topbar{height:52px!important;padding:0 16px!important;position:relative!important}
-  .top-status{display:flex!important;font-size:11px!important}
-  .top-actions{gap:5px!important}
-  .icon-btn{padding:7px 9px!important}
-  .signin{padding:7px 10px!important}
-  .hero{min-height:0!important;padding:48px 18px 24px!important}
-  .kicker{font-size:9px!important;padding:6px 10px!important}
-  .hero-title{font-size:clamp(48px,12vw,76px)!important;margin-top:20px!important}
-  .hero-tag{margin:12px 0 28px!important;font-size:16px!important;letter-spacing:0!important}
-  .search-box{gap:5px!important;padding:7px 8px 7px 14px!important;border-radius:999px!important}
-  #searchInput{height:42px!important;font-size:15px!important}
-  .search-icon{width:27px!important;font-size:20px!important}
-  .search-btn{height:40px!important;padding:0 13px!important;font-size:12px!important}
-  .search-modes{
-    justify-content:space-between!important;gap:10px!important;
-    margin-top:18px!important;overflow-x:auto!important;flex-wrap:nowrap!important;
-  }
-  .mode{font-size:14px!important;padding:8px 7px 10px!important}
-  .content{width:calc(100% - 32px)!important}
-  .quick-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:9px!important}
-  .quick-card{min-height:88px!important;padding:12px 5px!important;border-radius:18px!important}
-  .quick-card .q-ico{font-size:22px!important}
-  .quick-card b{font-size:11px!important}
-  .quick-card span{font-size:9px!important}
-  .section{margin-top:27px!important}
-  .section-title{font-size:16px!important}
-  .news-grid{grid-template-columns:1fr!important}
-  .news-card{border-right:0!important;border-bottom:1px solid #edf0f5!important}
-  #searchView{padding:20px 16px!important;min-height:calc(100vh - 52px)!important}
-  #mapView{inset:0!important}
-  .map-ui{top:10px!important;left:10px!important;right:10px!important}
-  .map-card{min-height:290px!important}
-}
-/* Small phones */
-@media(max-width:520px){
-  .top-status{font-size:10px!important}
-  .top-actions .icon-btn:first-child{display:none!important}
-  .hero{padding-top:42px!important}
-  .hero-title{font-size:clamp(45px,13vw,62px)!important}
-  .hero-tag{font-size:15px!important;margin-bottom:24px!important}
-  .search-btn{font-size:0!important;width:40px!important;padding:0!important;position:relative!important}
-  .search-btn:after{content:"➜";font-size:18px!important}
-  .content{width:calc(100% - 28px)!important}
-  .quick-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:7px!important}
-  .quick-card{min-height:78px!important;padding:10px 3px!important}
-  .quick-card .q-ico{font-size:20px!important;margin-bottom:6px!important}
-  .quick-card b{font-size:10px!important}
-  .quick-card span{display:none!important}
-  .tools-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
-  .map-cover{padding:16px!important}
-  .map-cover h2{font-size:23px!important}
-}
-@media(min-width:1200px){
-  .hero{min-height:480px!important}
-  .hero-title{font-size:clamp(78px,7vw,108px)!important}
-  .content{padding-top:12px!important}
-}
+/* Screenshot-matched light mobile experience; search/map engine JS stays connected. */
+:root{--bg:#f6f8fa;--bg2:#fff;--panel:#fff;--panel2:#fff;--line:rgba(25,42,58,.09);--line2:rgba(25,42,58,.08);--text:#111c28;--muted:#68788b;--cyan:#00a7d5;--cyan2:#20bde5;--blue:#0879ff;--shadow:0 5px 20px rgba(20,35,50,.08)}
+html,body,.app{background:#f8f9fb!important;color:#111c28!important}.app{min-height:100dvh;background:#f8f9fb!important}.sidebar{display:none!important}.main{margin:0!important;width:100%!important;max-width:none!important;padding:0 0 82px!important}.topbar{height:66px!important;position:sticky;top:0;z-index:80;background:rgba(255,255,255,.96)!important;border:0!important;border-bottom:1px solid #edf0f3!important;display:flex!important;align-items:center!important;justify-content:space-between!important;padding:0 20px!important;backdrop-filter:blur(16px)}.top-status{display:none!important}.mobile-menu{display:block!important;border:0;background:none;color:#15202b;font-size:27px;padding:3px}.mobile-brand{display:block!important;position:absolute;left:50%;transform:translateX(-50%);font-size:28px;font-weight:850;letter-spacing:-1.5px;color:#101a24}.top-actions{display:flex;gap:10px}.top-actions .icon-btn{background:#f3f5f7!important;color:#15202b!important;border:0!important;border-radius:50%;width:38px;height:38px;font-size:20px}.top-actions .signin{display:none!important}#homeView{display:block}.hero{min-height:365px!important;padding:48px 22px 20px!important;position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(238,248,253,.18),rgba(255,255,255,.08)),radial-gradient(ellipse at 86% 61%,#fff0d6 0,transparent 23%),linear-gradient(170deg,#c6e0ef 0%,#f9f5ef 45%,#b9d0dd 66%,#658ba1 100%)!important;border-radius:0!important;border:0!important;box-shadow:none!important}.hero:before{content:"";position:absolute;left:-6%;bottom:0;width:70%;height:58%;background:linear-gradient(145deg,#9eb8c7,#547b91 48%,#d6e1e5 49%,#7b9cab 65%,#456b80);clip-path:polygon(0 60%,12% 38%,20% 43%,35% 0,48% 26%,59% 54%,76% 69%,100% 100%,0 100%);opacity:.88}.hero:after{content:"";position:absolute;right:-8%;bottom:0;width:63%;height:40%;background:linear-gradient(160deg,#f8f0df,#a5c0cc 45%,#66899c 80%);clip-path:polygon(0 72%,21% 50%,36% 62%,60% 28%,72% 42%,88% 0,100% 28%,100% 100%,0 100%);opacity:.9}.hero-content{position:relative;z-index:2;max-width:850px!important;margin:0 auto!important;text-align:center!important}.kicker{display:none!important}.hero-title{font-size:clamp(46px,10vw,76px)!important;letter-spacing:-2px!important;font-weight:800!important;color:#050b10!important;text-shadow:none!important;margin:18px 0 3px!important}.hero-tag{font-size:clamp(16px,4vw,22px)!important;color:#26384a!important;letter-spacing:0!important;text-transform:none!important;margin:0 0 54px!important}.search-box{height:70px!important;max-width:850px!important;margin:0 auto!important;border:0!important;border-radius:50px!important;background:#fff!important;box-shadow:0 7px 25px rgba(23,47,62,.14)!important;padding:0 19px!important;gap:14px!important;position:relative;z-index:3}.search-icon{font-size:36px!important;color:#121c27!important}.search-box input{font-size:17px!important;color:#182331!important}.search-box input::placeholder{color:#6d7b8c!important}.search-btn{display:none!important}.search-tool{display:block!important;background:transparent;border:0;color:#111c28;font-size:23px;padding:6px}.home-content{padding:16px 20px 24px!important;max-width:1100px;margin:auto}.search-modes.home-modes{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px!important;margin:0 0 28px!important;padding:0!important}.home-modes .mode{min-width:0!important;min-height:88px!important;border:0!important;border-radius:27px!important;background:#f0f2f5!important;color:#111c28!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:7px!important;font-size:14px!important;box-shadow:none!important;padding:9px 3px!important}.home-modes .mode span{font-size:27px;line-height:1}.home-modes .mode.active{background:#fff!important;box-shadow:0 5px 18px rgba(20,35,50,.08)!important}.section{margin:25px 0!important}.section-head{display:flex!important;align-items:center!important;justify-content:space-between!important;margin-bottom:15px!important}.section-title{font-size:20px!important;font-weight:750!important;color:#111c28!important}.section-sub{display:none!important}.see-all{border:0;background:none;color:#68788b;font-size:14px}.trending-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 13px}.trend{display:flex;align-items:center;gap:14px;min-width:0;height:48px;padding:0 14px;border:0;border-radius:28px;background:#f0f2f5;color:#4c5d70;font-size:17px;text-align:left}.trend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1b2938}.quick-access{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px}.access-card{padding:0 0 12px!important;overflow:hidden;text-align:left;background:#fff!important;border:0!important;border-radius:18px!important;box-shadow:0 5px 15px rgba(24,39,55,.1)!important;color:#111c28!important;min-width:0}.access-art{height:80px;display:flex;align-items:center;justify-content:center;font-size:36px;color:#fff;background:linear-gradient(130deg,#07172b,#123b63,#030a12)}.ai-art{font-size:42px;color:#21bfff;background:radial-gradient(circle at 45% 55%,#173f67,#061321 60%,#03070e)}.ai-art small{font-size:18px;margin-left:-8px}.image-art{background:linear-gradient(130deg,#9fc4dc,#d9e6ef,#758da5)}.map-art{background:linear-gradient(135deg,#dcece8,#b4d7c8,#e6f0ed)}.access-card b{display:block;font-size:14px;font-weight:650;padding:9px 12px 2px}.access-card>span{display:block;position:relative;padding:0 12px;font-size:12px;color:#718093}.access-card i{position:absolute;right:10px;top:-8px;width:32px;height:32px;border:2px solid #edf0f3;border-radius:50%;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:24px;color:#172333;background:#fff}.latest-news{display:flex;align-items:center;gap:12px;min-height:82px}.news-thumb{width:110px;height:78px;border-radius:12px;background:linear-gradient(145deg,#a6c5d7,#4d829a);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0}.news-copy{display:flex;flex-direction:column;gap:6px;min-width:0}.news-copy b{font-size:15px;line-height:1.3;font-weight:650}.news-copy span{font-size:12px;color:#718093}.news-go{margin-left:auto;border:0;border-radius:50%;width:42px;height:42px;background:#f0f2f5;color:#46566a;font-size:28px;flex-shrink:0}.legacy-home{display:none!important}footer{padding:22px 0 8px!important;color:#8b98a6!important;font-size:11px!important;text-align:center}#searchView,#mapView{background:#f8f9fb!important;color:#111c28!important;padding:18px!important;min-height:80vh}.results-toolbar{color:#111c28!important}.bottom-nav{position:fixed;z-index:1000;bottom:0;left:0;right:0;height:78px;padding:8px 12px max(8px,env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(4,1fr);background:rgba(18,30,41,.97);border-radius:32px 32px 0 0;box-shadow:0 -5px 24px rgba(0,0,0,.08)}.bottom-item{border:0;background:transparent;color:#d5dce3;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}.bottom-item span{font-size:24px;line-height:1}.bottom-item.active{color:#fff}.bottom-item.active span{font-weight:800}.mobile-menu{display:block}.mode,button{ -webkit-tap-highlight-color:transparent}.side-nav .side-btn{color:#111c28}
+@media(min-width:760px){.main{max-width:100%!important}.hero{min-height:400px!important;padding-top:55px!important}.home-content{padding-left:36px!important;padding-right:36px!important}.home-modes .mode{min-height:100px!important}.quick-access{gap:20px}.access-art{height:115px}.bottom-nav{left:50%;right:auto;transform:translateX(-50%);width:min(100%,700px);border-radius:28px 28px 0 0}}
+@media(max-width:390px){.topbar{padding:0 14px!important}.mobile-brand{font-size:25px}.hero{padding-left:14px!important;padding-right:14px!important;min-height:350px!important}.search-box{height:62px!important;padding:0 13px!important;gap:8px!important}.home-content{padding-left:14px!important;padding-right:14px!important}.home-modes{gap:6px!important}.home-modes .mode{font-size:12px!important;min-height:78px!important;border-radius:22px!important}.home-modes .mode span{font-size:24px}.quick-access{gap:8px}.access-art{height:66px}.access-card b{font-size:12px;padding-left:9px}.access-card>span{font-size:10px;padding-left:9px}.access-card i{width:24px;height:24px;font-size:18px;right:6px}.trend{font-size:14px;padding:0 10px;gap:9px}.section-title{font-size:18px!important}}
 
 </style>
 
@@ -1325,542 +1130,40 @@ footer{color:#718096!important}
 
 <div class="app">
 
-  <aside class="sidebar">
-
-    <div class="brand">
-
-      <div class="brand-logo">
-        H
-      </div>
-
-      <div>
-        <span class="brand-name">HEXORA</span>
-        <span class="brand-sub">SEARCH BEYOND LIMITS</span>
-      </div>
-
-    </div>
-
-
-    <nav class="side-nav">
-
-      <button class="side-btn active" data-home>
-        <span class="ico">⌂</span>
-        <span>Home</span>
-      </button>
-
-      <button class="side-btn" data-mode="web">
-        <span class="ico">⌕</span>
-        <span>Web Search</span>
-      </button>
-
-      <button class="side-btn" data-mode="news">
-        <span class="ico">▤</span>
-        <span>News</span>
-      </button>
-
-      <button class="side-btn" data-mode="maps">
-        <span class="ico">⌖</span>
-        <span>Maps</span>
-      </button>
-
-      <button class="side-btn" data-mode="images">
-        <span class="ico">▧</span>
-        <span>Images</span>
-      </button>
-
-      <button class="side-btn" data-mode="ai">
-        <span class="ico">✦</span>
-        <span>HEXORA AI</span>
-      </button>
-
-    </nav>
-
-
-    <div class="ai-card">
-
-      <div class="ai-orb">
-        ✦
-      </div>
-
-      <b>HEXORA AI</b>
-
-      <p>
-        Ask questions, explore ideas
-        and search beyond limits.
-      </p>
-
-      <button class="ai-open">
-        Open AI
-      </button>
-
-    </div>
-
+  <aside class="sidebar" aria-label="Navigation">
+    <div class="brand"><div class="brand-logo">H</div><div><span class="brand-name">HEXORA</span><span class="brand-sub">SEARCH BEYOND LIMITS</span></div></div>
+    <nav class="side-nav"><button class="side-btn active" data-home>⌂ <span>Home</span></button><button class="side-btn" data-mode="web">⌕ <span>Web</span></button><button class="side-btn" data-mode="images">▧ <span>Images</span></button><button class="side-btn" data-mode="videos">▷ <span>Videos</span></button><button class="side-btn" data-mode="news">▤ <span>News</span></button><button class="side-btn" data-mode="maps">⌖ <span>Maps</span></button><button class="side-btn" data-mode="ai">✦ <span>HEXORA AI</span></button></nav>
   </aside>
-
-
   <main class="main">
-
-    <header class="topbar">
-
-      <div class="top-status">
-
-        <span class="dot"></span>
-
-        HEXORA Engine Online
-
-      </div>
-
-
-      <div class="top-actions">
-
-        <button class="icon-btn">
-          ⚙
-        </button>
-
-        <button class="icon-btn">
-          ?
-        </button>
-
-        <button class="signin">
-          Sign in
-        </button>
-
-      </div>
-
-    </header>
-
-
+    <header class="topbar"><button class="mobile-menu" aria-label="Menu" data-home>☰</button><div class="mobile-brand">HEXORA</div><div class="top-actions"><button class="icon-btn" aria-label="Profile">●</button><button class="icon-btn" aria-label="More">⋮</button></div></header>
     <section id="homeView">
 
       <div class="hero">
-
-        <div class="stars"></div>
-
-        <div class="earth-glow"></div>
-
-
         <div class="hero-content">
-
-          <div class="kicker">
-            ✦ INDEPENDENT SEARCH ENGINE
-          </div>
-
-
-          <h1 class="hero-title">
-            HEXORA
-          </h1>
-
-
-          <div class="hero-tag">
-            SEARCH BEYOND LIMITS
-          </div>
-
-
-          <form
-            class="search-box"
-            id="searchForm"
-            autocomplete="off"
-          >
-
-            <div class="search-icon">
-              ⌕
-            </div>
-
-            <input
-              id="searchInput"
-              type="search"
-              placeholder="Search the web..."
-              autocomplete="off"
-            >
-
-            <button
-              class="search-btn"
-              type="submit"
-            >
-              Search
-            </button>
-
+          <h1 class="hero-title">HEXORA</h1>
+          <div class="hero-tag">Search the world, find more</div>
+          <form class="search-box" id="searchForm" autocomplete="off">
+            <span class="search-icon">⌕</span><input id="searchInput" type="search" placeholder="Search anything..." autocomplete="off" aria-label="Search anything" />
+            <button class="search-tool" type="button" aria-label="Voice search" id="voiceSearchBtn">🎙</button><button class="search-tool" type="button" aria-label="Search images" data-mode="images">▣</button>
           </form>
-
-
-          <div class="search-modes">
-
-            <button class="mode active" data-search-mode="web">
-              Web
-            </button>
-
-            <button class="mode" data-search-mode="news">
-              News
-            </button>
-
-            <button class="mode" data-search-mode="images">
-              Images
-            </button>
-
-            <button class="mode" data-search-mode="maps">
-              Maps
-            </button>
-
-          </div>
-
         </div>
-
       </div>
-
-
-      <div class="content">
-
-
-        <div class="quick-grid">
-
-          <button class="quick-card" data-query="latest technology news">
-
-            <div class="q-ico">⚡</div>
-
-            <b>Technology</b>
-
-            <span>
-              Latest technology
-            </span>
-
-          </button>
-
-
-          <button class="quick-card" data-query="world news">
-
-            <div class="q-ico">🌎</div>
-
-            <b>World</b>
-
-            <span>
-              Global information
-            </span>
-
-          </button>
-
-
-          <button class="quick-card" data-query="science">
-
-            <div class="q-ico">🔬</div>
-
-            <b>Science</b>
-
-            <span>
-              Explore science
-            </span>
-
-          </button>
-
-
-          <button class="quick-card" data-query="programming">
-
-            <div class="q-ico">💻</div>
-
-            <b>Programming</b>
-
-            <span>
-              Developer resources
-            </span>
-
-          </button>
-
-
-          <button class="quick-card" data-query="India">
-
-            <div class="q-ico">🇮🇳</div>
-
-            <b>India</b>
-
-            <span>
-              Indian web
-            </span>
-
-          </button>
-
-
-          <button class="quick-card" data-query="Assam">
-
-            <div class="q-ico">🌿</div>
-
-            <b>Assam</b>
-
-            <span>
-              Assam information
-            </span>
-
-          </button>
-
+      <div class="home-content">
+        <div class="search-modes home-modes">
+          <button class="mode active" data-mode="web"><span>◎</span>Web</button><button class="mode" data-mode="images"><span>▧</span>Images</button><button class="mode" data-mode="videos"><span>▷</span>Videos</button><button class="mode" data-mode="news"><span>▤</span>News</button><button class="mode" data-mode="maps"><span>♧</span>Maps</button>
         </div>
-
-
-        <section class="section">
-
-          <div class="section-head">
-
-            <div>
-
-              <div class="section-title">
-                Explore
-              </div>
-
-              <div class="section-sub">
-                Discover information with HEXORA
-              </div>
-
-            </div>
-
-          </div>
-
-
-          <div class="panel">
-
-            <div class="news-grid">
-
-              <article class="news-card">
-
-                <span class="tag">
-                  SEARCH
-                </span>
-
-                <h3>
-                  Search the web
-                </h3>
-
-                <p>
-                  Search HEXORA's own indexed
-                  web pages and discover
-                  relevant information.
-                </p>
-
-              </article>
-
-
-              <article class="news-card">
-
-                <span class="tag">
-                  MAPS
-                </span>
-
-                <h3>
-                  Explore the world
-                </h3>
-
-                <p>
-                  Open HEXORA Earth and
-                  search real-world locations.
-                </p>
-
-              </article>
-
-
-              <article class="news-card">
-
-                <span class="tag">
-                  AI
-                </span>
-
-                <h3>
-                  Ask HEXORA AI
-                </h3>
-
-                <p>
-                  Explore questions and
-                  ideas with the HEXORA AI
-                  interface.
-                </p>
-
-              </article>
-
-            </div>
-
-          </div>
-
+        <section class="section trending-section"><div class="section-head"><div class="section-title">♨ &nbsp;Trending Searches</div><button class="see-all" data-query="trending searches">See all →</button></div>
+          <div class="trending-grid"><button class="trend" data-query="Assam News">⌕ <span>Assam News</span></button><button class="trend" data-query="India News">⌕ <span>India News</span></button><button class="trend" data-query="AI Tools">⌕ <span>AI Tools</span></button><button class="trend" data-query="Travel Assam">⌕ <span>Travel Assam</span></button><button class="trend" data-query="Python">⌕ <span>Python</span></button><button class="trend" data-query="Education">⌕ <span>Education</span></button></div>
         </section>
-
-
-        <section class="section">
-
-          <div class="section-head">
-
-            <div>
-
-              <div class="section-title">
-                HEXORA Tools
-              </div>
-
-              <div class="section-sub">
-                Search and explore
-              </div>
-
-            </div>
-
-          </div>
-
-
-          <div class="tools-grid">
-
-            <div class="tool-card">
-
-              <h3>
-                🔎 Web Search
-              </h3>
-
-              <p>
-                Search indexed web pages
-                using the HEXORA search engine.
-              </p>
-
-            </div>
-
-
-            <div class="tool-card">
-
-              <h3>
-                🌍 HEXORA Earth
-              </h3>
-
-              <p>
-                Explore real-world map data,
-                places and locations.
-              </p>
-
-            </div>
-
-
-            <div class="tool-card">
-
-              <h3>
-                📰 News
-              </h3>
-
-              <p>
-                Search news and information
-                from indexed sources.
-              </p>
-
-            </div>
-
-
-            <div class="tool-card">
-
-              <h3>
-                ✦ HEXORA AI
-              </h3>
-
-              <p>
-                Ask questions and explore
-                ideas using HEXORA AI.
-              </p>
-
-            </div>
-
-          </div>
-
-        </section>
-
-
-        <section class="section">
-
-          <div class="panel map-panel">
-
-            <div class="map-panel-head">
-
-              <div>
-
-                <div class="panel-title">
-
-                  <i>🌍</i>
-
-                  Explore the world with
-                  HEXORA Maps
-
-                </div>
-
-
-                <div
-                  style="
-                  color:#71879b;
-                  font-size:11px;
-                  margin-top:5px
-                  "
-                >
-
-                  3D Earth · Satellite · Real Terrain · Live Location
-
-                </div>
-
-              </div>
-
-            </div>
-
-
-            <div class="map-card">
-
-              <div id="mapPreview"></div>
-
-
-              <div class="map-cover">
-
-                <div class="map-cover-content">
-
-                  <h2>
-                    HEXORA Earth
-                  </h2>
-
-                  <p>
-
-                    Interactive real-world map
-                    experience. Open the full map
-                    to search places, use your
-                    location and switch map views.
-
-                  </p>
-
-
-                  <div class="map-actions">
-
-                    <button
-                      class="primary"
-                      id="openMapBtn"
-                    >
-                      Open Maps →
-                    </button>
-
-
-                    <button
-                      class="secondary"
-                      id="satelliteMapBtn"
-                    >
-                      Satellite
-                    </button>
-
-
-                    <button
-                      class="secondary"
-                      id="3dMapBtn"
-                    >
-                      3D
-                    </button>
-
-                  </div>
-
-                </div>
-
-              </div>
-
-            </div>
-
-          </div>
-
-        </section>
-
-
-        <footer>
-          HEXORA © 2026 · Search Beyond Limits
-        </footer>
-
+        <section class="section"><div class="section-head"><div class="section-title">ϟ &nbsp;Quick Access</div></div><div class="quick-access">
+          <button class="access-card ai-access" data-mode="ai"><div class="access-art ai-art">✧<small>AI</small></div><b>HEXORA AI</b><span>Ask anything <i>›</i></span></button>
+          <button class="access-card image-access" data-mode="images"><div class="access-art image-art">▧</div><b>Images</b><span>Explore visuals <i>›</i></span></button>
+          <button class="access-card map-access" data-mode="maps"><div class="access-art map-art">📍</div><b>Maps</b><span>Find places <i>›</i></span></button>
+        </div></section>
+        <section class="section latest-section"><div class="section-head"><div class="section-title">▤ &nbsp;Latest News</div><button class="see-all" data-mode="news">See all →</button></div><div id="newsResults" class="latest-news"><div class="news-thumb">🌄</div><div class="news-copy"><b>Discover the latest news with HEXORA</b><span>Search news from indexed sources</span></div><button class="news-go" data-mode="news">›</button></div></section>
+        <section class="legacy-home" aria-hidden="true"><div class="quick-grid"><button class="quick-card" data-query="Assam">Assam</button></div><div class="tools-grid"><button data-mode="maps">Maps</button><button data-mode="ai">AI</button></div><div id="mapPreview"></div></section>
+        <footer>HEXORA © 2026 · Search Beyond Limits</footer>
       </div>
-
     </section>
 
 
@@ -2003,6 +1306,7 @@ footer{color:#718096!important}
 
     </section>
 
+    <nav class="bottom-nav" aria-label="Bottom navigation"><button class="bottom-item active" data-home><span>⌂</span>Home</button><button class="bottom-item" data-mode="web"><span>◉</span>Explore</button><button class="bottom-item" id="historyBtn"><span>◷</span>History</button><button class="bottom-item" id="savedBtn"><span>♧</span>Saved</button></nav>
   </main>
 
 </div>
@@ -3015,9 +2319,19 @@ footer{color:#718096!important}
 
 
 <script
-  src="/main.js?v=20260928-4"
+  src="/main.js?v=hexora-mobile-20261021"
   defer
 ></script>
+
+
+<script>
+(function(){
+ const hist=document.getElementById('historyBtn'); if(hist) hist.addEventListener('click',()=>{const q=localStorage.getItem('hexora:lastQuery'); if(q){const i=document.getElementById('searchInput');if(i)i.value=q;document.querySelector('#searchForm')?.requestSubmit();}else alert('Your recent searches will appear here after you search.');});
+ const saved=document.getElementById('savedBtn'); if(saved) saved.addEventListener('click',()=>alert('Saved pages can be added from search results.'));
+ const voice=document.getElementById('voiceSearchBtn'); if(voice) voice.addEventListener('click',()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){alert('Voice search is not supported by this browser.');return;}const r=new SR();r.lang='en-IN';r.onresult=e=>{const i=document.getElementById('searchInput');i.value=e.results[0][0].transcript;document.getElementById('searchForm').requestSubmit();};r.start();});
+ const form=document.getElementById('searchForm');if(form)form.addEventListener('submit',()=>{const i=document.getElementById('searchInput');if(i&&i.value.trim())localStorage.setItem('hexora:lastQuery',i.value.trim());});
+})();
+</script>
 
 </body>
 </html>
