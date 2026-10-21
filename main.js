@@ -360,13 +360,20 @@
     });
 
     try {
+      // Every tab must tell the backend which result type it needs.
+      // News has a dedicated endpoint; Web, Images, and Videos use
+      // /api/search with an explicit mode so they cannot fall back to Web.
       const endpoint =
         mode === "news"
           ? CONFIG.newsEndpoint
           : CONFIG.searchEndpoint;
 
-      const url =
-        `${endpoint}?q=${encodeURIComponent(query)}`;
+      const params = new URLSearchParams({ q: query });
+      if (mode !== "news") {
+        params.set("mode", ["web", "images", "videos", "maps"].includes(mode) ? mode : "web");
+      }
+
+      const url = `${endpoint}?${params.toString()}`;
 
       console.log(
         "[HEXORA] Searching:",
