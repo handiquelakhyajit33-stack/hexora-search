@@ -540,10 +540,21 @@
           item.content ||
           "";
 
+        const imageItems = Array.isArray(item.image_items)
+          ? item.image_items
+          : (typeof item.image_items === "string"
+              ? (() => { try { const parsed = JSON.parse(item.image_items); return Array.isArray(parsed) ? parsed : []; } catch { return []; } })()
+              : []);
+        const firstImageItem = imageItems.find(entry =>
+          entry && typeof entry === "object" && (entry.url || entry.image_url || entry.src)
+        );
         const image =
           item.image ||
           item.thumbnail ||
           item.image_url ||
+          firstImageItem?.url ||
+          firstImageItem?.image_url ||
+          firstImageItem?.src ||
           "";
 
         const source =

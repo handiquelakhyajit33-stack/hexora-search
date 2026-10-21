@@ -23,29 +23,36 @@ const env = process.env;
 const CF_ACCOUNT_ID = String(env.R2_ACCOUNT_ID || "").trim();
 const R2_BUCKET = String(env.R2_BUCKET_NAME || "hexora").trim();
 
+function envNumber(name, fallback) {
+  const raw = env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 const BATCH_SIZE = Math.max(
   1,
-  Math.min(20, Number(env.CRAWL_BATCH_SIZE || 5))
+  Math.min(20, Math.floor(envNumber("CRAWL_BATCH_SIZE", 5)))
 );
 
 const LOOP_DELAY = Math.max(
   5000,
-  Number(env.CRAWL_DELAY_MS || 15000)
+  Math.floor(envNumber("CRAWL_DELAY_MS", 15000))
 );
 
 const REQUEST_TIMEOUT = Math.max(
   5000,
-  Number(env.CRAWL_TIMEOUT_MS || 15000)
+  Math.floor(envNumber("CRAWL_TIMEOUT_MS", 15000))
 );
 
 const MAX_CONTENT = Math.max(
   1000,
-  Number(env.CRAWL_MAX_CONTENT || 50000)
+  Math.floor(envNumber("CRAWL_MAX_CONTENT", 50000))
 );
 
 const MAX_LINKS = Math.max(
   1,
-  Math.min(200, Number(env.CRAWL_MAX_LINKS || 50))
+  Math.min(200, Math.floor(envNumber("CRAWL_MAX_LINKS", 50)))
 );
 
 const USER_AGENT =
@@ -534,10 +541,16 @@ async function main() {
     console.error(`[HEXORA] R2 preflight failed. Check account ID, bucket and API key pair. ${error.message}`);
     process.exit(1);
   }
-  await enqueueUrls(seeds);
-  console.log(`[HEXORA] Seed URLs submitted to R2 queue: ${seeds.length}`);
+  let seedsEnqueued = false;
   while (true) {
     try {
+      // Retry queue seeding after transient R2 errors instead of terminating
+      // the crawler after a successful bucket preflight.
+      if (!seedsEnqueued) {
+        await enqueueUrls(seeds);
+        seedsEnqueued = true;
+        console.log(`[HEXORA] Seed URLs submitted to R2 queue: ${seeds.length}`);
+      }
       const jobs = await getJobs();
       if (!jobs.length) {
         console.log("[HEXORA] No R2 queued jobs. Set CRAWL_SEED_URLS or add seed URLs in R2 queue.");

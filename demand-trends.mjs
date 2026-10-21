@@ -1,4 +1,3 @@
-```js
 import "dotenv/config";
 import pg from "pg";
 
@@ -347,4 +346,3 @@ main().catch((error) => {
 
   process.exitCode = 1;
 });
-```
