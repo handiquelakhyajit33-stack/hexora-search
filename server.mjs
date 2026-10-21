@@ -216,50 +216,15 @@ function makeSnippet(row, query) {
   return snippet;
 }
 
-function cleanCanonicalUrl(canonicalValue, pageValue) {
-  const pageUrl = String(pageValue || "").trim();
-  const canonical = String(canonicalValue || "").trim();
-
-  // Older imported rows can contain placeholder values such as /null.
-  // Never expose those as a canonical URL; fall back to the actual page URL.
-  const invalidPlaceholder = value =>
-    !value || /^(?:null|undefined|false)$/i.test(value) || /\/(?:null|undefined)(?:[?#].*)?$/i.test(value);
-
-  if (!invalidPlaceholder(canonical)) {
-    try {
-      const parsed = new URL(canonical);
-      if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname) {
-        parsed.hash = "";
-        return parsed.href;
-      }
-    } catch {
-      // Fall back to the actual page URL below.
-    }
-  }
-
-  if (!invalidPlaceholder(pageUrl)) {
-    try {
-      const parsed = new URL(pageUrl);
-      if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname) {
-        parsed.hash = "";
-        return parsed.href;
-      }
-    } catch {
-      // An invalid source URL is returned as an empty canonical URL.
-    }
-  }
-
-  return "";
-}
-
 function resultFromRow(row, query) {
-  const pageUrl = row.url || "";
-  const canonicalUrl = cleanCanonicalUrl(row.canonical_url, pageUrl);
   return {
     id: String(row.id),
     title: row.title || "",
-    url: pageUrl,
-    canonical_url: canonicalUrl || pageUrl,
+    url: row.url || "",
+    canonical_url:
+      row.canonical_url ||
+      row.url ||
+      "",
     domain: row.domain || "",
     source:
       row.domain ||
@@ -294,32 +259,6 @@ function resultFromRow(row, query) {
       row.video_items ||
       null
   };
-}
-
-function navigationalScoreBonus(query, row) {
-  const q = normalizeQuery(query).toLowerCase();
-  // Only apply to a single-word or domain-style navigational query.
-  const queryToken = q.replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#\s]/)[0].replace(/[^a-z0-9.-]/g, "");
-  const brand = queryToken.replace(/\.(com|org|net|edu|gov|io|co|in|uk|app|ai)$/i, "").replace(/\.$/, "");
-  if (!brand || brand.length < 2 || /\s/.test(q)) return 0;
-
-  let parsed;
-  try {
-    parsed = new URL(row.url || row.canonical_url || "");
-  } catch {
-    return 0;
-  }
-  if (!["http:", "https:"].includes(parsed.protocol)) return 0;
-
-  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-  const labels = host.split(".");
-  const hostBrandLabels = labels.filter(label => !["com", "org", "net", "edu", "gov", "io", "co", "in", "uk", "app", "ai"].includes(label));
-  if (!hostBrandLabels.includes(brand)) return 0;
-
-  const isHomepage = parsed.pathname === "/" || parsed.pathname === "";
-  // Strongly prefer the brand's own homepage for a plain brand-name query.
-  if (isHomepage && (labels[0] === brand || host === `${brand}.com` || host === `${brand}.org` || host === `${brand}.net` || host === `${brand}.in`)) return 50000;
-  return 1200;
 }
 
 function suggestQuery(rows, query) {
@@ -1322,7 +1261,7 @@ async function getMedia(
         row.url || "",
 
       canonical_url:
-        cleanCanonicalUrl(row.canonical_url, row.url) ||
+        row.canonical_url ||
         row.url ||
         "",
 
@@ -1405,7 +1344,7 @@ async function searchR2Index(query, limit = 20) {
     const score = (title === q ? 10000 : 0) + (title.startsWith(q) ? 5000 : 0) + titleHits * 700 + matched * 100 + (description.includes(q) ? 300 : 0);
     ranked.push({
       id: String(doc.id || doc.url), title: doc.title || doc.url || "Untitled page",
-      url: doc.url || "", canonical_url: cleanCanonicalUrl(doc.canonical_url, doc.url) || doc.url || "",
+      url: doc.url || "", canonical_url: doc.canonical_url || doc.url || "",
       domain: doc.domain || "", source: doc.domain || "",
       description: doc.description || "", snippet: String(doc.excerpt || doc.description || doc.search_text || "").slice(0, 320),
       language: doc.language || "unknown", date: doc.crawled_at || null,
@@ -1934,16 +1873,9 @@ const server =
           const combined = [];
           const seenUrls = new Set();
           for (const row of [...neonResults.rows.map(row => resultFromRow(row, query)), ...r2Results.rows]) {
-            row.canonical_url = cleanCanonicalUrl(row.canonical_url, row.url) || row.url || "";
-            const key = String(row.canonical_url || row.url || "").replace(/\/$/, "").toLowerCase();
+            const key = String(row.canonical_url || row.url || "").toLowerCase();
             if (!key || seenUrls.has(key)) continue;
-            seenUrls.add(key);
-            const bonus = navigationalScoreBonus(query, row);
-            if (bonus) {
-              row.score = Number(row.score || 0) + bonus;
-              row._navigation_boost = bonus;
-            }
-            combined.push(row);
+            seenUrls.add(key); combined.push(row);
           }
           combined.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
           const start = (page - 1) * limit;

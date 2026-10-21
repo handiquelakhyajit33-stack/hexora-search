@@ -249,11 +249,15 @@
       "hexora-search-active"
     );
 
-    initMap();
+    /* Use the single, full-featured map engine embedded in index.html.
+       Do not construct a second MapLibre instance on the same container. */
+    if (window.HEXORA_MAP_ENGINE?.open) {
+      window.HEXORA_MAP_ENGINE.open();
+    }
 
     setTimeout(() => {
-      if (state.map) {
-        state.map.resize();
+      if (window.HEXORA_MAP_ENGINE?.open) {
+        window.dispatchEvent(new Event("resize"));
       }
     }, 150);
   }
@@ -540,21 +544,10 @@
           item.content ||
           "";
 
-        const imageItems = Array.isArray(item.image_items)
-          ? item.image_items
-          : (typeof item.image_items === "string"
-              ? (() => { try { const parsed = JSON.parse(item.image_items); return Array.isArray(parsed) ? parsed : []; } catch { return []; } })()
-              : []);
-        const firstImageItem = imageItems.find(entry =>
-          entry && typeof entry === "object" && (entry.url || entry.image_url || entry.src)
-        );
         const image =
           item.image ||
           item.thumbnail ||
           item.image_url ||
-          firstImageItem?.url ||
-          firstImageItem?.image_url ||
-          firstImageItem?.src ||
           "";
 
         const source =
@@ -1060,6 +1053,13 @@
   ========================================================= */
 
   async function initMap() {
+    /* The full map engine lives in index.html. Delegate to it so a second
+       MapLibre instance is never created on the same page. */
+    if (window.HEXORA_MAP_ENGINE?.open) {
+      window.HEXORA_MAP_ENGINE.open();
+      return;
+    }
+
     if (state.map) {
       setTimeout(() => {
         state.map.resize();
@@ -2211,7 +2211,7 @@
 
     setupQuickActions();
 
-    setupMapControls();
+    /* Map controls are bound once by HEXORA_MAP_ENGINE in index.html. */
 
     setupFeatureButtons();
 
