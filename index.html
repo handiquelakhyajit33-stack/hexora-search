@@ -1117,6 +1117,35 @@ html,body,.app{background:#f8f9fb!important;color:#111c28!important}.app{min-hei
 @media(min-width:760px){.main{max-width:100%!important}.hero{min-height:400px!important;padding-top:55px!important}.home-content{padding-left:36px!important;padding-right:36px!important}.home-modes .mode{min-height:100px!important}.quick-access{gap:20px}.access-art{height:115px}.bottom-nav{left:50%;right:auto;transform:translateX(-50%);width:min(100%,700px);border-radius:28px 28px 0 0}}
 @media(max-width:390px){.topbar{padding:0 14px!important}.mobile-brand{font-size:25px}.hero{padding-left:14px!important;padding-right:14px!important;min-height:350px!important}.search-box{height:62px!important;padding:0 13px!important;gap:8px!important}.home-content{padding-left:14px!important;padding-right:14px!important}.home-modes{gap:6px!important}.home-modes .mode{font-size:12px!important;min-height:78px!important;border-radius:22px!important}.home-modes .mode span{font-size:24px}.quick-access{gap:8px}.access-art{height:66px}.access-card b{font-size:12px;padding-left:9px}.access-card>span{font-size:10px;padding-left:9px}.access-card i{width:24px;height:24px;font-size:18px;right:6px}.trend{font-size:14px;padding:0 10px;gap:9px}.section-title{font-size:18px!important}}
 
+
+/* HEXORA FIX: readable search results on the light mobile UI */
+#searchView, #searchView.active { background:#f8f9fb !important; color:#111827 !important; }
+#searchView #resultMeta, #searchView .results-toolbar { color:#202a36 !important; }
+#searchView #results .result-card,
+#searchView #results article,
+#searchView #results .search-result {
+  background:#ffffff !important; color:#111827 !important;
+  border:1px solid #e1e6eb !important; box-shadow:0 3px 14px rgba(15,23,42,.07) !important;
+}
+#searchView #results .result-card h1,
+#searchView #results .result-card h2,
+#searchView #results .result-card h3,
+#searchView #results .result-card h4,
+#searchView #results .result-card a,
+#searchView #results article h1,
+#searchView #results article h2,
+#searchView #results article h3,
+#searchView #results article a,
+#searchView #results .search-result h3,
+#searchView #results .search-result a { color:#111827 !important; }
+#searchView #results .result-card p,
+#searchView #results .result-card .url,
+#searchView #results .result-card .result-score,
+#searchView #results article p,
+#searchView #results article .url,
+#searchView #results .search-result p { color:#374151 !important; }
+#searchView #results a { color:#111827 !important; text-decoration:none; }
+#searchView #results a:visited { color:#111827 !important; }
 </style>
 
 <link
