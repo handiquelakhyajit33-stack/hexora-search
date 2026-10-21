@@ -444,23 +444,8 @@
           "<strong>${escapeHTML(query)}</strong>".
         </p>
 
-        <button
-          type="button"
-          class="hexora-retry"
-          id="hexoraRetryBtn"
-        >
-          🔄 Search Again
-        </button>
-
       </div>
     `;
-
-    $("#hexoraRetryBtn")?.addEventListener(
-      "click",
-      () => {
-        doSearch(query, state.mode);
-      }
-    );
   }
 
   /* =========================================================
@@ -469,45 +454,30 @@
 
   function showSearchError(error) {
     const results = $("#results");
-
     if (!results) return;
 
+    const rawMessage = String(error?.message || "Unknown network error");
+    let reason = "Search server is not responding. Please try again later.";
+    if (/HTTP 5\d\d/.test(rawMessage)) {
+      reason = "HEXORA server had a temporary error. Please try again later.";
+    } else if (/HTTP 4\d\d/.test(rawMessage)) {
+      reason = "The search request was rejected by HEXORA. Check the query and server API configuration.";
+    } else if (/abort|timeout/i.test(rawMessage)) {
+      reason = "The search request timed out. The server may be busy or unavailable.";
+    } else if (/Failed to fetch|network/i.test(rawMessage)) {
+      reason = "Could not reach the HEXORA search API. Check the deployment and API connection.";
+    }
+
     results.innerHTML = `
-      <div class="hexora-error">
-
-        <div class="hexora-error-logo">
-          !
-        </div>
-
-        <h2>HEXORA search error</h2>
-
-        <p>
-          HEXORA could not connect to the
-          search server.
-        </p>
-
-        <button
-          type="button"
-          class="hexora-retry"
-          id="hexoraRetryBtn"
-        >
-          🔄 Retry Search
-        </button>
-
+      <div class="hexora-error" role="status" aria-live="polite">
+        <div class="hexora-error-logo" aria-hidden="true">!</div>
+        <h2>HEXORA Search is temporarily unavailable</h2>
+        <p>${escapeHTML(reason)}</p>
+        <p class="hexora-error-detail">${escapeHTML(rawMessage.slice(0, 180))}</p>
+        <p>Automatic retries are disabled. Your search will not loop endlessly. Submit the search again when the server is available.</p>
       </div>
     `;
-
-    $("#hexoraRetryBtn")?.addEventListener(
-      "click",
-      () => {
-        doSearch(
-          state.query,
-          state.mode
-        );
-      }
-    );
-
-    console.error(error);
+    console.error("[HEXORA] Search request failed; no automatic retry:", error);
   }
 
   /* =========================================================
@@ -540,10 +510,21 @@
           item.content ||
           "";
 
+        const imageItems = Array.isArray(item.image_items)
+          ? item.image_items
+          : (typeof item.image_items === "string"
+              ? (() => { try { const parsed = JSON.parse(item.image_items); return Array.isArray(parsed) ? parsed : []; } catch { return []; } })()
+              : []);
+        const firstImageItem = imageItems.find(entry =>
+          entry && typeof entry === "object" && (entry.url || entry.image_url || entry.src)
+        );
         const image =
           item.image ||
           item.thumbnail ||
           item.image_url ||
+          firstImageItem?.url ||
+          firstImageItem?.image_url ||
+          firstImageItem?.src ||
           "";
 
         const source =
